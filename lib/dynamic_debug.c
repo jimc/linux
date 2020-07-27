@@ -44,6 +44,8 @@
 
 extern struct _ddebug __start___dyndbg[];
 extern struct _ddebug __stop___dyndbg[];
+extern struct _ddebug_site __start___dyndbg_sites[];
+extern struct _ddebug_site __stop___dyndbg_sites[];
 extern struct ddebug_class_map __start___dyndbg_classes[];
 extern struct ddebug_class_map __stop___dyndbg_classes[];
 
@@ -52,6 +54,7 @@ struct ddebug_table {
 	const char *mod_name;
 	unsigned int num_ddebugs;
 	struct _ddebug *ddebugs;
+	struct _ddebug_site *sites;
 };
 
 struct ddebug_query {
@@ -1478,20 +1481,27 @@ static int __init dynamic_debug_init_control(void)
 
 	return 0;
 }
+fs_initcall(dynamic_debug_init_control);
+
+static struct _ddebug_info builtin_state;
 
 static int __init dynamic_debug_init(void)
 {
 	struct _ddebug *iter, *iter_mod_start;
+	struct _ddebug_site *site, *site_mod_start;
 	int ret, i, mod_sites, mod_ct;
 	const char *modname;
 	char *cmdline;
 
 	struct _ddebug_info di = {
 		.descs = __start___dyndbg,
+		.sites = __start___dyndbg_sites,
 		.classes = __start___dyndbg_classes,
-		.num_descs = __stop___dyndbg - __start___dyndbg,
-		.num_classes = __stop___dyndbg_classes - __start___dyndbg_classes,
+		.num_descs	= __stop___dyndbg		- __start___dyndbg,
+		.num_sites	= __stop___dyndbg_sites		- __start___dyndbg_sites,
+		.num_classes	= __stop___dyndbg_classes	- __start___dyndbg_classes,
 	};
+	builtin_state = di;
 
 	if (&__start___dyndbg == &__stop___dyndbg) {
 		if (IS_ENABLED(CONFIG_DYNAMIC_DEBUG)) {
@@ -1502,28 +1512,40 @@ static int __init dynamic_debug_init(void)
 		ddebug_init_success = 1;
 		return 0;
 	}
-
+	if (di.num_descs != di.num_sites) {
+		/* cant happen, unless site section has __used, desc does not */
+		pr_err("unequal vectors: descs/sites %d/%d\n", di.num_descs, di.num_sites);
+		return 1;
+	}
 	iter = iter_mod_start = __start___dyndbg;
-	modname = iter->_modname;
+	site = site_mod_start = __start___dyndbg_sites;
+	modname = iter->site->_modname;
 	i = mod_sites = mod_ct = 0;
 
-	for (; iter < __stop___dyndbg; iter++, i++, mod_sites++) {
+	for (; iter < __stop___dyndbg; iter++, site++, i++, mod_sites++) {
 
-		if (strcmp(modname, iter->_modname)) {
+		if (site != iter->site)
+			/* XXX: also cant happen, but lets see how it plays */
+			pr_err("linkage problem: site != iter->site\n");
+
+		if (strcmp(modname, site->_modname)) {
 			mod_ct++;
 			di.num_descs = mod_sites;
 			di.descs = iter_mod_start;
+			di.sites = site_mod_start;
 			ret = __ddebug_add_module(&di, i - mod_sites, modname);
 			if (ret)
 				goto out_err;
 
 			mod_sites = 0;
-			modname = iter->_modname;
+			modname = site->_modname;
 			iter_mod_start = iter;
+			site_mod_start = site;
 		}
 	}
 	di.num_descs = mod_sites;
 	di.descs = iter_mod_start;
+	di.sites = site_mod_start;
 	ret = __ddebug_add_module(&di, i - mod_sites, modname);
 	if (ret)
 		goto out_err;
@@ -1557,5 +1579,3 @@ out_err:
 /* Allow early initialization for boot messages via boot param */
 early_initcall(dynamic_debug_init);
 
-/* Debugfs setup must be done later */
-fs_initcall(dynamic_debug_init_control);

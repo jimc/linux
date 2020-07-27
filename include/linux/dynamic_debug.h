@@ -9,20 +9,28 @@
 #include <linux/build_bug.h>
 
 /*
- * An instance of this structure is created in a special
- * ELF section at every dynamic debug callsite.  At runtime,
- * the special section is treated as an array of these.
+ * A pair of these structs are created in 2 special ELF sections
+ * (__dyndbg, __dyndbg_sites) for every dynamic debug callsite.
+ * At runtime, the sections are treated as arrays.
  */
-struct _ddebug {
+struct _ddebug;
+struct _ddebug_site {
 	/*
-	 * These fields are used to drive the user interface
-	 * for selecting and displaying debug callsites.
+	 * These fields (and lineno) are used to:
+	 * - decorate log messages per _ddebug.flags
+	 * - select callsites for modification via >control
+	 * - display callsites & settings in `cat control`
 	 */
 	const char *_modname;
 	const char *_function;
 	const char *_filename;
+} __aligned(8);
+
+struct _ddebug {
+	struct _ddebug_site *site;
+	/* format is always needed, lineno shares word with flags */
 	const char *format;
-	unsigned int lineno:18;
+	const unsigned lineno:18;
 #define CLS_BITS 5
 	unsigned int class_id:CLS_BITS;
 #define _DPRINTK_CLASS_DFLT		((1 << CLS_BITS) - 1)
@@ -58,7 +66,7 @@ struct _ddebug {
 		struct static_key_false dd_key_false;
 	} key;
 #endif
-} __attribute__((aligned(8)));
+} __aligned(8);
 
 enum class_map_type {
 	DD_CLASS_TYPE_DISJOINT_BITS,
@@ -119,8 +127,10 @@ struct ddebug_class_map {
 /* encapsulate linker provided built-in (or module) dyndbg data */
 struct _ddebug_info {
 	struct _ddebug *descs;
+	struct _ddebug_site *sites;
 	struct ddebug_class_map *classes;
 	unsigned int num_descs;
+	unsigned int num_sites;
 	unsigned int num_classes;
 };
 
@@ -132,7 +142,9 @@ struct ddebug_class_param {
 	const struct ddebug_class_map *map;
 };
 
-#define _desc_field(desc, fld)	(desc ? desc->fld : "_na_")
+#define _desc_field(desc, _fld)	(desc \
+				 ? (desc->site ? desc->site->_fld : "_na_") \
+				 : "_nope_")
 #define desc_modname(desc)	_desc_field(desc, _modname)
 #define desc_function(desc)	_desc_field(desc, _function)
 #define desc_filename(desc)	_desc_field(desc, _filename)
@@ -142,6 +154,7 @@ struct ddebug_class_param {
 int ddebug_add_module(struct _ddebug_info *dyndbg, const char *modname);
 
 extern int ddebug_remove_module(const char *mod_name);
+
 extern __printf(2, 3)
 void __dynamic_pr_debug(struct _ddebug *descriptor, const char *fmt, ...);
 
@@ -169,11 +182,15 @@ void __dynamic_ibdev_dbg(struct _ddebug *descriptor,
 			 const char *fmt, ...);
 
 #define DEFINE_DYNAMIC_DEBUG_METADATA_CLS(name, cls, fmt)	\
+	static struct _ddebug_site  __aligned(8)		\
+	__section("__dyndbg_sites") name##_site = {		\
+		._modname = KBUILD_MODNAME,			\
+		._filename = __FILE__,				\
+		._function = __func__,				\
+	};							\
 	static struct _ddebug  __aligned(8)			\
 	__section("__dyndbg") name = {				\
-		._modname = KBUILD_MODNAME,			\
-		._function = __func__,				\
-		._filename = __FILE__,				\
+		.site = &name##_site,				\
 		.format = (fmt),				\
 		.lineno = __LINE__,				\
 		.flags = _DPRINTK_FLAGS_DEFAULT,		\
