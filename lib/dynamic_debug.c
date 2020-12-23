@@ -1335,6 +1335,7 @@ static int __ddebug_add_module(struct _ddebug_info *di, unsigned int base,
 			       const char *modname)
 {
 	struct ddebug_table *dt;
+	int i;
 
 	v3pr_info("add-module: %s.%d sites\n", modname, di->num_descs);
 	if (!di->num_descs) {
@@ -1355,6 +1356,7 @@ static int __ddebug_add_module(struct _ddebug_info *di, unsigned int base,
 	 */
 	dt->mod_name = modname;
 	dt->ddebugs = di->descs;
+	dt->sites = di->sites;
 	dt->num_ddebugs = di->num_descs;
 
 	INIT_LIST_HEAD(&dt->link);
@@ -1362,6 +1364,12 @@ static int __ddebug_add_module(struct _ddebug_info *di, unsigned int base,
 
 	if (di->classes && di->num_classes)
 		ddebug_attach_module_classes(dt, di->classes, di->num_classes);
+
+	for (i = 0; i < di->num_descs; i++) {
+		di->descs[i]._index = base + i;
+		v3pr_info(" %d %d %s.%s.%d\n", i, base, modname,
+			  di->descs[i].site->_function, di->descs[i].lineno);
+	}
 
 	mutex_lock(&ddebug_lock);
 	list_add_tail(&dt->link, &ddebug_tables);
