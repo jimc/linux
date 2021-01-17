@@ -81,6 +81,8 @@ compress-$(CONFIG_KERNEL_LZMA) = lzma_with_size
 compress-$(CONFIG_KERNEL_XZ)   = xzkern_with_size
 compress-$(CONFIG_KERNEL_LZ4)  = lz4_with_size
 
+KBUILD_CFLAGS += -DNO_DYNAMIC_DEBUG_TABLE
+
 libfdt_objs := fdt_rw.o fdt_ro.o fdt_wip.o fdt.o
 
 ifeq ($(CONFIG_ARM_ATAG_DTB_COMPAT),y)
