@@ -1502,6 +1502,7 @@ static int __init dynamic_debug_init_control(void)
 fs_initcall(dynamic_debug_init_control);
 
 static struct _ddebug_info builtin_state;
+static __initdata struct _ddebug_site *last_site;
 
 static int __init dynamic_debug_init(void)
 {
@@ -1570,11 +1571,12 @@ static int __init dynamic_debug_init(void)
 	if (ret)
 		goto out_err;
 
+	last_site = &__start___dyndbg_sites[site_base];
 	ddebug_init_success = 1;
 
-	vpr_info("%d prdebugs in %d modules, %d KiB in ddebug tables, %d kiB in __dyndbg section\n",
-		 i, mod_ct, (int)((mod_ct * sizeof(struct ddebug_table)) >> 10),
-		 (int)((i * sizeof(struct _ddebug)) >> 10));
+	vpr_info("%d prdebugs in %d functions, %d modules, %d KiB in ddebug tables, %d,%d kiB in __dyndbg,_sites sections\n",
+		 i, site_base, mod_ct, (int)((mod_ct * sizeof(struct ddebug_table)) >> 10),
+		 (int)((i * sizeof(struct _ddebug)) >> 10), (int)((site_base * sizeof(struct _ddebug_site)) >> 10));
 
 	if (di.num_classes)
 		v2pr_info("  %d builtin ddebug class-maps\n", di.num_classes);
@@ -1600,3 +1602,40 @@ out_err:
 /* Allow early initialization for boot messages via boot param */
 early_initcall(dynamic_debug_init);
 
+static int __init dynamic_debug_sites_reclaim(void)
+{
+	unsigned long addr, end, start;
+	/*
+	 * from mm/init.c:free_initmem (void) wo poisoning
+	 * The init section is aligned to 8k in vmlinux.lds.
+	 * Page align for >8k pagesizes.
+	 */
+	start = (unsigned long)__start___dyndbg_sites;
+	end = (unsigned long)__stop___dyndbg_sites;
+	addr = (unsigned long)last_site;
+
+	vpr_info("full    range: %px-%px, %lx-%lx\n",
+		 virt_to_page(start), virt_to_page(end), start, end);
+
+	vpr_info("freeing range: %px-%px, %lx-%lx\n",
+		 virt_to_page(addr), virt_to_page(end), addr, end);
+
+	addr &= PAGE_MASK;
+	addr += PAGE_SIZE;
+	end &= PAGE_MASK;
+	end += PAGE_SIZE;
+
+	vpr_info("ie      range: %px-%px, %lx-%lx\n",
+		 virt_to_page(addr), virt_to_page(end), addr, end);
+
+	if (verbose < 2) {
+		vpr_info(" skipping reclaim cuz its broken by `cat control`\n");
+		return 0;
+	}
+	for (; addr < end; addr += PAGE_SIZE) {
+		vpr_info("freeing page: %px, %lx\n", virt_to_page(addr), addr);
+		free_reserved_page(virt_to_page(addr));
+	}
+	return 0;
+}
+late_initcall(dynamic_debug_sites_reclaim);
