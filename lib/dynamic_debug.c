@@ -67,6 +67,21 @@ struct flag_settings {
 	unsigned int mask;
 };
 
+struct ddebug_tracer {
+	struct hlist_node hnode;
+	u64 key;
+	void (*tracefn)(const char *lbl, struct va_format *vaf);
+};
+static DEFINE_HASHTABLE(ddebug_tracer_by_module, 6);
+/*
+ * This hashtable holds tracer-fns registered by modules wanting to
+ * trace their pr_debugs (or some subset of them).  For the key, we
+ * need to use something readily available from a pr_debug descriptor,
+ * which also has the uniqueness properties we want; the decorator
+ * fields/columns (modname, filename, function) in the __dyndbg table,
+ * packed by the linker, are suitable.
+ */
+
 static DEFINE_MUTEX(ddebug_lock);
 static LIST_HEAD(ddebug_tables);
 static int verbose;
@@ -85,6 +100,7 @@ static inline const char *trim_prefix(const char *path)
 
 static struct { unsigned flag:8; char opt_char; } opt_array[] = {
 	{ _DPRINTK_FLAGS_PRINT, 'p' },
+	{ _DPRINTK_FLAGS_PRINT_TRACE, 'T' },
 	{ _DPRINTK_FLAGS_INCL_MODNAME, 'm' },
 	{ _DPRINTK_FLAGS_INCL_FUNCNAME, 'f' },
 	{ _DPRINTK_FLAGS_INCL_LINENO, 'l' },
@@ -207,11 +223,12 @@ static int ddebug_change(const struct ddebug_query *query,
 			newflags = (dp->flags & modifiers->mask) | modifiers->flags;
 			if (newflags == dp->flags)
 				continue;
+
 #ifdef CONFIG_JUMP_LABEL
-			if (dp->flags & _DPRINTK_FLAGS_PRINT) {
-				if (!(modifiers->flags & _DPRINTK_FLAGS_PRINT))
+			if (dp->flags & _DPRINTK_ENABLED) {
+				if (!(modifiers->flags & _DPRINTK_ENABLED))
 					static_branch_disable(&dp->key.dd_key_true);
-			} else if (modifiers->flags & _DPRINTK_FLAGS_PRINT)
+			} else if (modifiers->flags & _DPRINTK_ENABLED)
 				static_branch_enable(&dp->key.dd_key_true);
 #endif
 			dp->flags = newflags;
@@ -517,10 +534,19 @@ static int ddebug_exec_query(char *query_string, const char *modname)
    last error or number of matching callsites.  Module name is either
    in param (for boot arg) or perhaps in query string.
 */
-static int ddebug_exec_queries(char *query, const char *modname)
+static int ddebug_exec_queries(const char *query_in, const char *modname)
 {
 	char *split;
 	int qct, errs = 0, exitcode = 0, rc, nfound = 0;
+	char *query; /* writable copy of query_in */
+
+	if (!query_in) {
+		pr_err("non-null query/command string expected\n");
+		return -EINVAL;
+	}
+	query = kstrndup(query_in, PAGE_SIZE, GFP_KERNEL);
+	if (!query)
+		return -ENOMEM;
 
 	for (qct = 0; query; query = split) {
 		split = strpbrk(query, ";\n");
@@ -542,6 +568,8 @@ static int ddebug_exec_queries(char *query, const char *modname)
 		}
 		qct++;
 	}
+
+	kfree(query);
 	if (qct)
 		v2pr_info("processed %d queries, with %d matches, %d errs\n",
 			  qct, nfound, errs);
@@ -563,20 +591,7 @@ static int ddebug_exec_queries(char *query, const char *modname)
  */
 int dynamic_debug_exec_queries(const char *query, const char *modname)
 {
-	int rc;
-	char *qry; /* writable copy of query */
-
-	if (!query) {
-		pr_err("non-null query/command string expected\n");
-		return -EINVAL;
-	}
-	qry = kstrndup(query, PAGE_SIZE, GFP_KERNEL);
-	if (!qry)
-		return -ENOMEM;
-
-	rc = ddebug_exec_queries(qry, modname);
-	kfree(qry);
-	return rc;
+	return ddebug_exec_queries(query, modname);
 }
 EXPORT_SYMBOL_GPL(dynamic_debug_exec_queries);
 
@@ -702,11 +717,14 @@ static inline char *dynamic_emit_prefix(struct _ddebug *desc, char *buf)
 	return buf;
 }
 
+static struct ddebug_tracer *ddebug_tracer_fetch(struct _ddebug *desc);
+
 void __dynamic_pr_debug(struct _ddebug *descriptor, const char *fmt, ...)
 {
 	va_list args;
 	struct va_format vaf;
 	char buf[PREFIX_SIZE] = "";
+	struct ddebug_tracer *trc;
 
 	BUG_ON(!descriptor);
 	BUG_ON(!fmt);
@@ -716,8 +734,18 @@ void __dynamic_pr_debug(struct _ddebug *descriptor, const char *fmt, ...)
 	vaf.fmt = fmt;
 	vaf.va = &args;
 
-	printk(KERN_DEBUG "%s%pV", dynamic_emit_prefix(descriptor, buf), &vaf);
+	if (descriptor->flags & _DPRINTK_ENABLED)
+		dynamic_emit_prefix(descriptor, buf);
 
+	if (descriptor->flags & _DPRINTK_FLAGS_PRINT)
+		printk(KERN_DEBUG "%s%pV", buf, &vaf);
+
+	if (descriptor->flags & _DPRINTK_FLAGS_PRINT_TRACE) {
+		trc = ddebug_tracer_fetch(descriptor);
+		if (trc)
+			(*trc->tracefn)(buf, &vaf);
+		/* else warn_once ? */
+	}
 	va_end(args);
 }
 EXPORT_SYMBOL(__dynamic_pr_debug);
@@ -1182,6 +1210,7 @@ static int __init dynamic_debug_init(void)
 		entries++;
 		if (modname != iter->modname) {
 			modct++;
+			
 			ret = ddebug_add_module(iter_start, n, modname);
 			if (ret)
 				goto out_err;
@@ -1233,3 +1262,127 @@ early_initcall(dynamic_debug_init);
 
 /* Debugfs setup must be done later */
 fs_initcall(dynamic_debug_init_control);
+
+static struct ddebug_tracer *ddebug_tracer_find(const char *modname)
+{
+	struct ddebug_tracer *trc;
+
+	hash_for_each_possible(ddebug_tracer_by_module, trc, hnode, (u64)modname)
+		if (trc->key == (u64)modname)
+			return trc;
+
+	return NULL;
+}
+
+/* called when pr_debug has +T */
+static struct ddebug_tracer *ddebug_tracer_fetch(struct _ddebug *desc)
+{
+	struct ddebug_tracer *trc;
+
+	v4pr_info("fetch tracer for %s.%s.%d: 0x%x\n", desc->modname, desc->function, desc->lineno,
+		  desc->flags & _DPRINTK_FLAGS_PRINT_TRACE);
+
+	trc = ddebug_tracer_find(desc->modname);
+	if (trc)
+		v4pr_info("found tracer for %s\n", desc->modname);
+
+	else if (desc->flags & _DPRINTK_FLAGS_PRINT_TRACE)
+		pr_notice("missed tracer for %s\n", desc->modname);
+
+	return trc;
+}
+
+/*
+ * key computation is done on insert, such that lookup is trivial.
+ * We use the modname ref in the 1st ddebug descriptor, the others in
+ * the table are identical, giving us the module-scope lookup we want.
+ */
+static int ddebug_tracer_add(void (*tracer)(const char *lbl, struct va_format *vaf),
+			     struct module *mod, struct ddebug_table *dt)
+{
+	struct ddebug_tracer *trc;
+
+	trc = ddebug_tracer_find(dt->ddebugs[0].modname);
+	if (trc) {
+		pr_warn("tracer-fn already set for %s\n", mod->name);
+		return -1;
+	}
+	trc = kmalloc(sizeof(*trc), GFP_ATOMIC);
+	if (!trc)
+		return -ENOMEM;
+
+	trc->tracefn = tracer;
+	trc->key = (u64)dt->ddebugs[0].modname;
+	hash_add(ddebug_tracer_by_module, &trc->hnode, (u64)dt->ddebugs[0].modname);
+
+	vpr_info("added tracer-fn for module %s\n", dt->ddebugs[0].modname);
+
+	return 0;
+}
+
+static int ddebug_tracer_del(void (*tracer)(const char *lbl, struct va_format *vaf),
+			     struct module *mod, struct ddebug_table *dt)
+{
+	struct ddebug_tracer *trc;
+
+	trc = ddebug_tracer_find(dt->ddebugs[0].modname);
+	if (!trc) {
+		pr_warn("delete: cant find tracer for %s\n", mod->name);
+		return -1;
+	}
+	hash_del(&trc->hnode);
+	vpr_info("deleted tracer for %s\n", mod->name);
+
+	kfree(trc);
+	return 0;
+}
+
+static void __dynamic_debug_tracer_action(int (*action)
+					  ( void (*tracer)
+					    (const char *lbl, struct va_format *vaf),
+					    struct module *mod, struct ddebug_table *dt),
+					  void (*tracer)(const char *lbl, struct va_format *vaf),
+					  struct module *mod)
+{
+	struct ddebug_table *dt;
+
+	mutex_lock(&ddebug_lock);
+	list_for_each_entry(dt, &ddebug_tables, link) {
+		if (!strcmp(mod->name, dt->mod_name)) {
+			(*action)(tracer, mod, dt);
+			break;
+		}
+	}
+	mutex_unlock(&ddebug_lock);
+}
+/**
+ * dynamic_debug_register_tracer - register a "printer" function for module
+ * @modref: caller's THIS_MODULE
+ * @tracefn: printf-to-tracefs
+ *
+ * Attach a trace-print callback for the module, to enable tracing of pr_debugs.
+ */
+void dynamic_debug_register_tracer(struct module *mod,
+				   void (*tracefn)(const char *lbl, struct va_format *vaf))
+{
+	vpr_info("%s %s\n", __func__, mod->name);
+	__dynamic_debug_tracer_action(ddebug_tracer_add, tracefn, mod);
+}
+EXPORT_SYMBOL(dynamic_debug_register_tracer);
+
+/**
+ * dynamic_debug_unregister_tracer - unregister your "printer" function
+ * @modref: caller's THIS_MODULE
+ * @tracefn: reserved to validate unregisters against pirates
+ *
+ * Detach the trace-print callback for the module. @tracer may be checked
+ * against registrant fn before unregistering, as a modest protection
+ * against tracer takeover.
+ */
+void dynamic_debug_unregister_tracer(struct module *mod,
+				     void (*tracefn)(const char *lbl, struct va_format *vaf))
+{
+	vpr_info("%s %s\n", __func__, mod->name);
+	__dynamic_debug_tracer_action(ddebug_tracer_del, tracefn, mod);
+}
+EXPORT_SYMBOL(dynamic_debug_unregister_tracer);

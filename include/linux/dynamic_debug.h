@@ -27,7 +27,11 @@ struct _ddebug {
 	 * writes commands to <debugfs>/dynamic_debug/control
 	 */
 #define _DPRINTK_FLAGS_NONE	0
-#define _DPRINTK_FLAGS_PRINT	(1<<0) /* printk() a message using the format */
+#define _DPRINTK_FLAGS_PRINT		(1<<0) /* printk() a message */
+#define _DPRINTK_FLAGS_PRINT_TRACE	(1<<5) /* call (*tracefn) */
+
+#define _DPRINTK_ENABLED (_DPRINTK_FLAGS_PRINT | _DPRINTK_FLAGS_PRINT_TRACE)
+
 #define _DPRINTK_FLAGS_INCL_MODNAME	(1<<1)
 #define _DPRINTK_FLAGS_INCL_FUNCNAME	(1<<2)
 #define _DPRINTK_FLAGS_INCL_LINENO	(1<<3)
@@ -281,5 +285,10 @@ extern const struct kernel_param_ops param_ops_dyndbg;
 	BUILD_BUG_ON_MSG(1, "CONFIG_DYNAMIC_DEBUG needed to use this macro: " #var)
 #endif
 #endif /* DYNDBG || _CORE &&_MODULE */
+
+void dynamic_debug_register_tracer(struct module *mod,
+				   void (*tracefn)(const char *lbl, struct va_format *vaf));
+void dynamic_debug_unregister_tracer(struct module *mod,
+				     void (*tracefn)(const char *lbl, struct va_format *vaf));
 
 #endif
