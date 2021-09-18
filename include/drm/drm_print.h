@@ -218,7 +218,8 @@ static inline struct drm_printer drm_info_printer(struct device *dev)
 }
 
 /**
- * drm_debug_printer - construct a &drm_printer that outputs to pr_debug()
+ * drm_debug_printer - construct a &drm_printer that outputs to pr_debug() and
+ * drm tracefs
  * @prefix: debug output prefix
  *
  * RETURNS:
@@ -426,6 +427,32 @@ static inline bool drm_debug_enabled(enum drm_debug_category category)
 	})
 
 #endif /* CONFIG_DRM_USE_DYNAMIC_DEBUG */
+
+
+#if defined(CONFIG_TRACING) && defined(CONFIG_DRM_USE_DYNAMIC_DEBUG)
+void drm_trace_init(void);
+__printf(1, 2)
+void drm_trace_printf(const char *format, ...);
+void drm_trace_printvaf(const char *prefix, struct va_format *vaf);
+void drm_trace_cleanup(void);
+#else
+static inline void drm_trace_init(void)
+{
+}
+
+__printf(1, 2)
+static inline void drm_trace_printf(const char *format, ...)
+{
+}
+
+static inline void drm_trace_printvaf(const char *prefix, struct va_format *vaf)
+{
+}
+
+static inline void drm_trace_cleanup(void)
+{
+}
+#endif
 
 /*
  * struct device based logging

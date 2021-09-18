@@ -32,6 +32,8 @@
 #include <linux/moduleparam.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
+#include <linux/trace.h>
+#include <linux/dynamic_debug.h>
 
 #include <drm/drm.h>
 #include <drm/drm_drv.h>
@@ -55,8 +57,12 @@ EXPORT_SYMBOL(__drm_debug);
 "\t\tBit 7 (0x80)  will enable LEASE messages (leasing code)\n"		\
 "\t\tBit 8 (0x100) will enable DP messages (displayport code)."
 
-#ifdef CONFIG_DRM_USE_DYNAMIC_DEBUG
-#include <linux/dynamic_debug.h>
+#if !defined(CONFIG_DRM_USE_DYNAMIC_DEBUG)
+
+MODULE_PARM_DESC(debug, DRM_DEBUG_DESC);
+module_param_named(debug, __drm_debug, ulong, 0600);
+
+#else
 DEFINE_DYNAMIC_DEBUG_CATEGORIES(debug, __drm_debug,
 				DRM_DEBUG_DESC,
 				[0] = { DRM_DBG_CAT_CORE },
@@ -70,10 +76,7 @@ DEFINE_DYNAMIC_DEBUG_CATEGORIES(debug, __drm_debug,
 				[8] = { DRM_DBG_CAT_DP },
 				[9] = { DRM_DBG_CAT_DRMRES } );
 
-#else
-MODULE_PARM_DESC(debug, DRM_DEBUG_DESC);
-module_param_named(debug, __drm_debug, ulong, 0600);
-#endif
+#endif /* CONFIG_DRM_USE_DYNAMIC_DEBUG */
 
 void __drm_puts_coredump(struct drm_printer *p, const char *str)
 {
@@ -363,3 +366,120 @@ void drm_print_regset32(struct drm_printer *p, struct debugfs_regset32 *regset)
 	}
 }
 EXPORT_SYMBOL(drm_print_regset32);
+
+
+/**
+ * DOC: DRM Tracing
+ *
+ * *tl;dr* DRM tracing is a lightweight alternative to traditional DRM debug
+ * logging.
+ *
+ * While DRM logging is quite convenient when reproducing a specific issue, it
+ * doesn't help when something goes wrong unexpectedly. There are a couple
+ * reasons why one does not want to enable DRM logging at all times:
+ *
+ * 1. We don't want to overwhelm syslog with drm spam, others have to use it too
+ * 2. Console logging is slow
+ *
+ * DRM tracing aims to solve both these problems.
+ *
+ * To use DRM tracing, set the drm.trace module parameter (via cmdline or sysfs)
+ * to a DRM debug category mask (this is a bitmask of &drm_debug_category
+ * values):
+ * ::
+ *
+ *    eg: echo 0x106 > /sys/module/drm/parameters/trace
+ *
+ * Once active, all log messages in the specified categories will be written to
+ * the DRM trace. Once at capacity, the trace will overwrite old messages with
+ * new ones. At any point, one can read the trace file to extract the previous N
+ * DRM messages:
+ * ::
+ *
+ *    eg: cat /sys/kernel/tracing/instances/drm/trace
+ *
+ * Considerations
+ * **************
+ * The trace is subsystem wide, so if you have multiple devices active, they
+ * will be adding logs to the same trace.
+ *
+ * The contents of the DRM Trace are **not** considered UABI. **DO NOT depend on
+ * the values of these traces in your userspace.** These traces are intended for
+ * entertainment purposes only. The contents of these logs carry no warranty,
+ * expressed or implied.
+ */
+
+
+#if defined(CONFIG_TRACING) && defined(CONFIG_DRM_USE_DYNAMIC_DEBUG)
+
+/**
+ * drm_trace_init - initializes the drm trace array
+ *
+ * This function fetches (or creates) the drm trace array. This should be called
+ * once on drm subsystem creation and matched with drm_trace_cleanup().
+ */
+void drm_trace_init(void)
+{
+	int ret;
+
+	trace_arr = trace_array_get_by_name("drm");
+	if (!trace_arr)
+		return;
+
+	ret = trace_array_init_printk(trace_arr);
+	if (ret) {
+		drm_trace_cleanup();
+		return;
+	}
+	dynamic_debug_register_tracer(THIS_MODULE, drm_trace_printvaf);
+}
+EXPORT_SYMBOL(drm_trace_init);
+
+/**
+ * drm_trace_printf - adds an entry to the drm tracefs instance
+ * @format: printf format of the message to add to the trace
+ *
+ * This function adds a new entry in the drm tracefs instance
+ */
+void drm_trace_printf(const char *format, ...)
+{
+	struct va_format vaf;
+	va_list args;
+
+	va_start(args, format);
+	vaf.fmt = format;
+	vaf.va = &args;
+	trace_array_printk(trace_arr, _THIS_IP_, "%pV", &vaf);
+	va_end(args);
+}
+
+/**
+ * drm_trace_printvaf - adds an entry to the drm tracefs instance
+ * @prefix: prefix string, maybe null?
+ * @vaf: &struct va_format
+ *
+ * This function adds a new entry in the drm tracefs instance
+ */
+void drm_trace_printvaf(const char *prefix, struct va_format *vaf)
+{
+	trace_array_printk(trace_arr, _THIS_IP_, "%s%pV", prefix, vaf);
+}
+
+/**
+ * drm_trace_cleanup - destroys the drm trace array
+ *
+ * This function destroys the drm trace array created with drm_trace_init. This
+ * should be called once on drm subsystem close and matched with
+ * drm_trace_init().
+ */
+void drm_trace_cleanup(void)
+{
+	dynamic_debug_unregister_tracer(THIS_MODULE, drm_trace_printvaf);
+	if (trace_arr) {
+		trace_array_put(trace_arr);
+		trace_array_destroy(trace_arr);
+		trace_arr = NULL;
+	}
+}
+EXPORT_SYMBOL(drm_trace_cleanup);
+#endif
