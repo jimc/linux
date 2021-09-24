@@ -1101,7 +1101,7 @@ static int __init dynamic_debug_init(void)
 	iter_start = iter;
 	for (; iter < __stop___dyndbg; iter++) {
 		entries++;
-		if (strcmp(modname, iter->modname)) {
+		if (modname != iter->modname) {
 			modct++;
 			ret = ddebug_add_module(iter_start, n, modname);
 			if (ret)
