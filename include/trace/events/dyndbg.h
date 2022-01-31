@@ -6,6 +6,7 @@
 #define _TRACE_DYNDBG_H
 
 #include <linux/tracepoint.h>
+#include <linux/dynamic_debug.h>
 
 /* capture pr_debug() callsite descriptor and message */
 TRACE_EVENT(prdbg,
@@ -32,8 +33,8 @@ TRACE_EVENT(prdbg,
 		    __get_str(msg)[len] = 0;
 		    ),
 
-	    TP_printk("%s.%s %s", __entry->desc->modname,
-		      __entry->desc->function, __get_str(msg))
+	    TP_printk("%s.%s %s", desc_modname(__entry->desc),
+		      desc_function(__entry->desc), __get_str(msg))
 );
 
 /* capture dev_dbg() callsite descriptor, device, and message */
@@ -64,8 +65,8 @@ TRACE_EVENT(devdbg,
 		    __get_str(msg)[len] = 0;
 		    ),
 
-	    TP_printk("%s.%s %s", __entry->desc->modname,
-		      __entry->desc->function, __get_str(msg))
+	    TP_printk("%s.%s %s", desc_modname(__entry->desc),
+		      desc_function(__entry->desc), __get_str(msg))
 );
 
 #endif /* _TRACE_DYNDBG_H */

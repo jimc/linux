@@ -18,9 +18,9 @@ struct _ddebug {
 	 * These fields are used to drive the user interface
 	 * for selecting and displaying debug callsites.
 	 */
-	const char *modname;
-	const char *function;
-	const char *filename;
+	const char *_modname;
+	const char *_function;
+	const char *_filename;
 	const char *format;
 	unsigned int lineno:18;
 #define CLS_BITS 5
@@ -132,6 +132,11 @@ struct ddebug_class_param {
 	const struct ddebug_class_map *map;
 };
 
+#define _desc_field(desc, fld)	(desc ? desc->fld : "_na_")
+#define desc_modname(desc)	_desc_field(desc, _modname)
+#define desc_function(desc)	_desc_field(desc, _function)
+#define desc_filename(desc)	_desc_field(desc, _filename)
+
 #if defined(CONFIG_DYNAMIC_DEBUG_CORE)
 
 int ddebug_add_module(struct _ddebug_info *dyndbg, const char *modname);
@@ -166,9 +171,9 @@ void __dynamic_ibdev_dbg(struct _ddebug *descriptor,
 #define DEFINE_DYNAMIC_DEBUG_METADATA_CLS(name, cls, fmt)	\
 	static struct _ddebug  __aligned(8)			\
 	__section("__dyndbg") name = {				\
-		.modname = KBUILD_MODNAME,			\
-		.function = __func__,				\
-		.filename = __FILE__,				\
+		._modname = KBUILD_MODNAME,			\
+		._function = __func__,				\
+		._filename = __FILE__,				\
 		.format = (fmt),				\
 		.lineno = __LINE__,				\
 		.flags = _DPRINTK_FLAGS_DEFAULT,		\
