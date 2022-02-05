@@ -30,7 +30,7 @@ struct _ddebug {
 	struct _ddebug_site *site;
 	/* format is always needed, lineno shares word with flags */
 	const char *format;
-	const unsigned lineno:18;
+	const unsigned lineno:16;
 #define CLS_BITS 5
 	unsigned int class_id:CLS_BITS;
 #define _DPRINTK_CLASS_DFLT		((1 << CLS_BITS) - 1)
