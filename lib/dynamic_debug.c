@@ -1332,7 +1332,8 @@ static void ddebug_attach_module_classes(struct ddebug_table *dt,
  * and add it to the global list.
  */
 static int __ddebug_add_module(struct _ddebug_info *di, unsigned int base,
-			       const char *modname)
+			       const char *modname, struct _ddebug_site *packed_sites,
+			       unsigned int *packed_base)
 {
 	struct ddebug_table *dt;
 	int i;
@@ -1381,7 +1382,8 @@ static int __ddebug_add_module(struct _ddebug_info *di, unsigned int base,
 
 int ddebug_add_module(struct _ddebug_info *di, const char *modname)
 {
-	return __ddebug_add_module(di, 0, modname);
+	unsigned int packed_base = 0;
+	return __ddebug_add_module(di, 0, modname, di->sites, &packed_base);
 }
 
 /* helper for ddebug_dyndbg_(boot|module)_param_cb */
@@ -1497,7 +1499,7 @@ static int __init dynamic_debug_init(void)
 {
 	struct _ddebug *iter, *iter_mod_start;
 	struct _ddebug_site *site, *site_mod_start;
-	int ret, i, mod_sites, mod_ct;
+	int ret, i, mod_sites, mod_ct, site_base;
 	const char *modname;
 	char *cmdline;
 
@@ -1541,7 +1543,8 @@ static int __init dynamic_debug_init(void)
 			di.num_descs = mod_sites;
 			di.descs = iter_mod_start;
 			di.sites = site_mod_start;
-			ret = __ddebug_add_module(&di, i - mod_sites, modname);
+			ret = __ddebug_add_module(&di, i - mod_sites, modname,
+						  __start___dyndbg_sites, &site_base);
 			if (ret)
 				goto out_err;
 
@@ -1554,11 +1557,13 @@ static int __init dynamic_debug_init(void)
 	di.num_descs = mod_sites;
 	di.descs = iter_mod_start;
 	di.sites = site_mod_start;
-	ret = __ddebug_add_module(&di, i - mod_sites, modname);
+	ret = __ddebug_add_module(&di, i - mod_sites, modname,
+				  __start___dyndbg_sites, &site_base);
 	if (ret)
 		goto out_err;
 
 	ddebug_init_success = 1;
+
 	vpr_info("%d prdebugs in %d modules, %d KiB in ddebug tables, %d kiB in __dyndbg section\n",
 		 i, mod_ct, (int)((mod_ct * sizeof(struct ddebug_table)) >> 10),
 		 (int)((i * sizeof(struct _ddebug)) >> 10));
