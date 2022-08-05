@@ -1338,7 +1338,7 @@ static int __ddebug_add_module(struct _ddebug_info *di, unsigned int base,
 	struct ddebug_table *dt;
 	int i;
 
-	v3pr_info("add-module: %s.%d sites\n", modname, di->num_descs);
+	v3pr_info("add-module: %s.%d sites, start: %d\n", modname, di->num_descs, base);
 	if (!di->num_descs) {
 		v3pr_info(" skip %s\n", modname);
 		return 0;
@@ -1367,11 +1367,19 @@ static int __ddebug_add_module(struct _ddebug_info *di, unsigned int base,
 		ddebug_attach_module_classes(dt, di->classes, di->num_classes);
 
 	for (i = 0; i < di->num_descs; i++) {
-		di->descs[i]._index = base + i;
-		v3pr_info(" %d %d %s.%s.%d\n", i, base, modname,
-			  di->descs[i].site->_function, di->descs[i].lineno);
-	}
 
+		if (di->descs[i].site->_function != packed_sites[(*packed_base)]._function)
+			memcpy((void *) &packed_sites[++(*packed_base)],
+			       (void *) di->descs[i].site, sizeof(struct _ddebug_site));
+		else
+			di->descs[i].site = &packed_sites[(*packed_base)];
+
+		di->descs[i]._index = i + base;
+		di->descs[i]._map = *packed_base;
+
+		v3pr_info(" %d %d %s.%s.%d - %d\n", i, *packed_base, modname,
+			  di->descs[i].site->_function, di->descs[i].lineno, *packed_base);
+	}
 	mutex_lock(&ddebug_lock);
 	list_add_tail(&dt->link, &ddebug_tables);
 	mutex_unlock(&ddebug_lock);
@@ -1530,7 +1538,7 @@ static int __init dynamic_debug_init(void)
 	iter = iter_mod_start = __start___dyndbg;
 	site = site_mod_start = __start___dyndbg_sites;
 	modname = iter->site->_modname;
-	i = mod_sites = mod_ct = 0;
+	i = mod_sites = mod_ct = site_base = 0;
 
 	for (; iter < __stop___dyndbg; iter++, site++, i++, mod_sites++) {
 
