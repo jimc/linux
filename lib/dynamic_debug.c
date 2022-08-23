@@ -1338,7 +1338,7 @@ static int __ddebug_add_module(struct _ddebug_info *di, unsigned int base,
 	struct ddebug_table *dt;
 	int i;
 
-	v3pr_info("add-module: %s.%d sites, start: %d\n", modname, di->num_descs, base);
+	v3pr_info("add-module: %s %d/%d sites, start: %d\n", modname, di->num_descs, di->num_sites, base);
 	if (!di->num_descs) {
 		v3pr_info(" skip %s\n", modname);
 		return 0;
@@ -1366,19 +1366,20 @@ static int __ddebug_add_module(struct _ddebug_info *di, unsigned int base,
 	if (di->classes && di->num_classes)
 		ddebug_attach_module_classes(dt, di->classes, di->num_classes);
 
+	//BUG_ON(di->num_descs != di->num_sites);
+
 	for (i = 0; i < di->num_descs; i++) {
 
-		if (di->descs[i].site->_function != packed_sites[(*packed_base)]._function)
+		if (di->sites[i]._function != packed_sites[(*packed_base)]._function)
+
 			memcpy((void *) &packed_sites[++(*packed_base)],
-			       (void *) di->descs[i].site, sizeof(struct _ddebug_site));
-		else
-			di->descs[i].site = &packed_sites[(*packed_base)];
+			       (void *) &di->sites[i], sizeof(struct _ddebug_site));
 
 		di->descs[i]._index = i + base;
 		di->descs[i]._map = *packed_base;
 
-		v3pr_info(" %d %d %s.%s.%d - %d\n", i, *packed_base, modname,
-			  di->descs[i].site->_function, di->descs[i].lineno, *packed_base);
+		v3pr_info(" %d %d %s.%s.%d\n", i, *packed_base, modname,
+			  packed_sites[*packed_base]._function, di->descs[i].lineno);
 	}
 	mutex_lock(&ddebug_lock);
 	list_add_tail(&dt->link, &ddebug_tables);
