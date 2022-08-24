@@ -171,7 +171,7 @@ struct _ddebug_site_hdr {
  * - ._uplink field, pointing to _ddebug_info (for builtins, loadables)
  * - di->sites[desc._map]
  */
-static inline struct _ddebug_site * _ddebug_map_site(struct _ddebug *desc)
+static inline struct _ddebug_site * _ddebug_map_site(const struct _ddebug *desc)
 {
 	return desc->site;
 }
@@ -235,6 +235,32 @@ void __dynamic_ibdev_dbg(struct _ddebug *descriptor,
 
 #define DEFINE_DYNAMIC_DEBUG_METADATA(name, fmt)		\
 	DEFINE_DYNAMIC_DEBUG_METADATA_CLS(name, _DPRINTK_CLASS_DFLT, fmt)
+
+/*
+ * DEFINE_DYNAMIC_DEBUG_TABLE(): This is a special version of
+ * DEFINE_DYNAMIC_DEBUG_METADATA().  It creates a single pair of
+ * header records, which the linker scripts place in front of their
+ * respective sections.
+ *
+ * To allow for a robust runtime test in dynamic_debug_init(), the
+ * pair of records is hardwired into a self-reference loop which can
+ * be validated before the field is altered to support _ddebug_map_site()
+ */
+#define DEFINE_DYNAMIC_DEBUG_TABLE()					\
+	/* forward decl, allowing loopback pointer */			\
+	struct _ddebug_hdr __used __aligned(8)				\
+		__section(".gnu.linkonce.dyndbg")			\
+		_LINKONCE_dyndbg_header;				\
+	struct _ddebug_site_hdr __used __aligned(8)			\
+		__section(".gnu.linkonce.dyndbg_site")			\
+		_LINKONCE_dyndbg_site_header = {			\
+		._uplink = (void *) &_LINKONCE_dyndbg_header		\
+	};								\
+	struct _ddebug_hdr __used __aligned(8)				\
+		__section(".gnu.linkonce.dyndbg")			\
+		_LINKONCE_dyndbg_header = {				\
+		._uplink = (void *) &_LINKONCE_dyndbg_site_header	\
+	}
 
 #ifdef CONFIG_JUMP_LABEL
 
@@ -405,5 +431,13 @@ static inline int param_get_dyndbg_classes(char *buffer, const struct kernel_par
 #endif /* !CONFIG_DYNAMIC_DEBUG_CORE */
 
 extern const struct kernel_param_ops param_ops_dyndbg_classes;
+
+#if ((defined(CONFIG_DYNAMIC_DEBUG) ||					\
+      (defined(CONFIG_DYNAMIC_DEBUG_CORE) && defined(DYNAMIC_DEBUG_MODULE))) \
+     && defined(KBUILD_MODNAME) && !defined(NO_DYNAMIC_DEBUG_TABLE))
+
+/* transparently invoked, except when -DNO_DYNAMIC_DEBUG_TABLE */
+DEFINE_DYNAMIC_DEBUG_TABLE();
+#endif
 
 #endif
