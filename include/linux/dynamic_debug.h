@@ -145,9 +145,20 @@ struct ddebug_class_param {
 	const struct ddebug_class_map *map;
 };
 
-#define _desc_field(desc, _fld)	(desc \
-				 ? (desc->site ? desc->site->_fld : "_na_") \
-				 : "_nope_")
+/*
+ * mapping from desc to site is multi-step:
+ * - _index back to &descs[0]
+ * - container-of to get header struct (missing yet)
+ * - ._uplink field, pointing to _ddebug_info (for builtins, loadables)
+ * - di->sites[desc._map]
+ */
+static inline struct _ddebug_site * _ddebug_map_site(struct _ddebug *desc)
+{
+	return desc->site;
+}
+
+#define _desc_field(desc, _fld)	(_ddebug_map_site(desc)->_fld)
+
 #define desc_modname(desc)	_desc_field(desc, _modname)
 #define desc_function(desc)	_desc_field(desc, _function)
 #define desc_filename(desc)	_desc_field(desc, _filename)
