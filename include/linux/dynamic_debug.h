@@ -127,8 +127,18 @@ struct ddebug_class_map {
 #define NUM_TYPE_ARGS(eltype, ...)				\
         (sizeof((eltype[]){__VA_ARGS__}) / sizeof(eltype))
 
+struct _ddebug_hdr {
+	union {
+		struct _ddebug __;  /* force sizeof this */
+		struct {
+			struct _ddebug_info * _uplink; // = POISON?
+		};
+	};
+};
+
 /* encapsulate linker provided built-in (or module) dyndbg data */
 struct _ddebug_info {
+	struct _ddebug_hdr *hdr;
 	struct _ddebug *descs;
 	struct _ddebug_site *sites;
 	struct ddebug_class_map *classes;
@@ -143,6 +153,15 @@ struct ddebug_class_param {
 	};
 	char flags[8];
 	const struct ddebug_class_map *map;
+};
+
+struct _ddebug_site_hdr {
+	union {
+		struct _ddebug_site __;  /* force sizeof this */
+		struct {
+			struct _ddebug_info  * _uplink;  // not needed, kept for symmetry
+		};
+	};
 };
 
 /*

@@ -49,6 +49,9 @@ extern struct _ddebug_site __stop___dyndbg_sites[];
 extern struct ddebug_class_map __start___dyndbg_classes[];
 extern struct ddebug_class_map __stop___dyndbg_classes[];
 
+extern struct _ddebug_hdr __dyndbg_header[];
+extern struct _ddebug_site_hdr __dyndbg_site_header[];
+
 struct ddebug_table {
 	struct list_head link, maps;
 	const char *mod_name;
@@ -1336,7 +1339,7 @@ static int __ddebug_add_module(struct _ddebug_info *di, unsigned int base,
 			       unsigned int *packed_base)
 {
 	struct ddebug_table *dt;
-	int i;
+	int i, num_funcs = 0;
 
 	v3pr_info("add-module: %s %d/%d sites, start: %d\n", modname, di->num_descs, di->num_sites, base);
 	if (!di->num_descs) {
@@ -1369,12 +1372,11 @@ static int __ddebug_add_module(struct _ddebug_info *di, unsigned int base,
 	//BUG_ON(di->num_descs != di->num_sites);
 
 	for (i = 0; i < di->num_descs; i++) {
-
-		if (di->sites[i]._function != packed_sites[(*packed_base)]._function)
-
+		if (di->sites[i]._function != packed_sites[(*packed_base)]._function) {
+			num_funcs++;
 			memcpy((void *) &packed_sites[++(*packed_base)],
 			       (void *) &di->sites[i], sizeof(struct _ddebug_site));
-
+		}
 		di->descs[i]._index = i + base;
 		di->descs[i]._map = *packed_base;
 
@@ -1385,7 +1387,7 @@ static int __ddebug_add_module(struct _ddebug_info *di, unsigned int base,
 	list_add_tail(&dt->link, &ddebug_tables);
 	mutex_unlock(&ddebug_lock);
 
-	vpr_info("%3u debug prints in module %s\n", di->num_descs, modname);
+	vpr_info("%3u debug prints in %d functions, in module %s\n", di->num_descs, num_funcs, modname);
 	return 0;
 }
 
@@ -1514,6 +1516,7 @@ static int __init dynamic_debug_init(void)
 	char *cmdline;
 
 	struct _ddebug_info di = {
+		.hdr = __dyndbg_header,
 		.descs = __start___dyndbg,
 		.sites = __start___dyndbg_sites,
 		.classes = __start___dyndbg_classes,
@@ -1537,6 +1540,11 @@ static int __init dynamic_debug_init(void)
 		pr_err("unequal vectors: descs/sites %d/%d\n", di.num_descs, di.num_sites);
 		return 1;
 	}
+
+	/* these 2 print the same, until _TABLE is added */
+	v2pr_info("%px %px \n", __dyndbg_header, __dyndbg_site_header);
+	v2pr_info("%px %px \n", di.descs, di.sites);
+
 	iter = iter_mod_start = __start___dyndbg;
 	site = site_mod_start = __start___dyndbg_sites;
 	modname = site->_modname;
