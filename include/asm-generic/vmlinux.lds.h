@@ -348,9 +348,13 @@
 	__start___dyndbg_classes = .;					\
 	KEEP(*(__dyndbg_classes))					\
 	__stop___dyndbg_classes = .;					\
+	__dyndbg_header = .;						\
+	KEEP(*(.gnu.linkonce.dyndbg))					\
 	__start___dyndbg = .;						\
 	KEEP(*(__dyndbg))						\
 	__stop___dyndbg = .;						\
+	__dyndbg_site_header = .;					\
+	KEEP(*(.gnu.linkonce.dyndbg_sites))				\
 	__start___dyndbg_sites = .;					\
 	KEEP(*(__dyndbg_sites))						\
 	__stop___dyndbg_sites = .;					\
