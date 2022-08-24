@@ -1539,7 +1539,7 @@ static int __init dynamic_debug_init(void)
 	}
 	iter = iter_mod_start = __start___dyndbg;
 	site = site_mod_start = __start___dyndbg_sites;
-	modname = iter->site->_modname;
+	modname = site->_modname;
 	i = mod_sites = mod_ct = site_base = 0;
 
 	for (; iter < __stop___dyndbg; iter++, site++, i++, mod_sites++) {
