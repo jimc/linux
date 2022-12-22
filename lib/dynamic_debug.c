@@ -43,6 +43,8 @@ extern struct _ddebug __start___dyndbg[];
 extern struct _ddebug __stop___dyndbg[];
 extern struct ddebug_class_map __start___dyndbg_classes[];
 extern struct ddebug_class_map __stop___dyndbg_classes[];
+extern struct ddebug_class_user __start___dyndbg_class_users[];
+extern struct ddebug_class_user __stop___dyndbg_class_users[];
 
 struct ddebug_table {
 	struct list_head link;
@@ -167,23 +169,28 @@ static void vpr_info_dq(const struct ddebug_query *query, const char *msg)
 		  _dt->info.users.len);					\
 	})
 
-#define __outvar /* filled by callee */
-static struct ddebug_class_map *ddebug_find_valid_class(struct ddebug_table const *dt,
-							const char *class_string,
-							__outvar int *class_id)
+static int ddebug_find_valid_class(struct ddebug_table const *dt, const char *class_string)
 {
 	struct ddebug_class_map *map;
+	struct ddebug_class_user *cli;
 	int i, idx;
 
 	for_subvec(i, map, &dt->info, maps) {
 		idx = match_string(map->class_names, map->length, class_string);
 		if (idx >= 0) {
-			*class_id = idx + map->base;
-			return map;
+			vpr_dt_info(dt, "good-class: %s.%s ", map->mod_name, class_string);
+			return idx + map->base;
 		}
 	}
-	*class_id = -ENOENT;
-	return NULL;
+	for_subvec(i, cli, &dt->info, users) {
+		idx = match_string(cli->map->class_names, cli->map->length, class_string);
+		if (idx >= 0) {
+			vpr_dt_info(dt, "class-ref: %s -> %s.%s ",
+				    cli->mod_name, cli->map->mod_name, class_string);
+			return idx + cli->map->base;
+		}
+	}
+	return -ENOENT;
 }
 
 /*
@@ -192,16 +199,14 @@ static struct ddebug_class_map *ddebug_find_valid_class(struct ddebug_table cons
  * callsites, normally the same as number of changes.  If verbose,
  * logs the changes.  Takes ddebug_lock.
  */
-static int ddebug_change(const struct ddebug_query *query,
-			 struct flag_settings *modifiers)
+static int ddebug_change(const struct ddebug_query *query, struct flag_settings *modifiers)
 {
 	int i;
 	struct ddebug_table *dt;
 	unsigned int newflags;
 	unsigned int nfound = 0;
 	struct flagsbuf fbuf, nbuf;
-	struct ddebug_class_map *map = NULL;
-	int __outvar valid_class;
+	int valid_class;
 
 	/* search for matching ddebugs */
 	mutex_lock(&ddebug_lock);
@@ -213,8 +218,8 @@ static int ddebug_change(const struct ddebug_query *query,
 			continue;
 
 		if (query->class_string) {
-			map = ddebug_find_valid_class(dt, query->class_string, &valid_class);
-			if (!map)
+			valid_class = ddebug_find_valid_class(dt, query->class_string);
+			if (valid_class < 0)
 				continue;
 		} else {
 			/* constrain query, do not touch class'd callsites */
@@ -578,7 +583,7 @@ static int ddebug_exec_query(char *query_string, const char *modname)
 
 /* handle multiple queries in query string, continue on error, return
    last error or number of matching callsites.  Module name is either
-   in param (for boot arg) or perhaps in query string.
+   in the modname arg (for boot args) or perhaps in query string.
 */
 static int ddebug_exec_queries(char *query, const char *modname)
 {
@@ -707,12 +712,12 @@ static int param_set_dyndbg_module_classes(const char *instr,
 }
 
 /**
- * param_set_dyndbg_classes - class FOO >control
+ * param_set_dyndbg_classes - set all classes in a classmap
  * @instr: string echo>d to sysfs, input depends on map_type
- * @kp:    kp->arg has state: bits/lvl, map, map_type
+ * @kp:    kp->arg has state: bits/lvl, classmap, map_type
  *
- * Enable/disable prdbgs by their class, as given in the arguments to
- * DECLARE_DYNDBG_CLASSMAP.  For LEVEL map-types, enforce relative
+ * For all classes in the classmap, enable/disable them per the input
+ * (depending on map_type).  For LEVEL map-types, enforce relative
  * levels by bitpos.
  *
  * Returns: 0 or <0 if error.
@@ -1057,11 +1062,16 @@ static void *ddebug_proc_next(struct seq_file *m, void *p, loff_t *pos)
 static const char *ddebug_class_name(struct ddebug_table *dt, struct _ddebug *dp)
 {
 	struct ddebug_class_map *map;
+	struct ddebug_class_user *cli;
 	int i;
 
 	for_subvec(i, map, &dt->info, maps)
 		if (class_in_range(dp->class_id, map))
 			return map->class_names[dp->class_id - map->base];
+
+	for_subvec(i, cli, &dt->info, users)
+		if (class_in_range(dp->class_id, cli->map))
+			return cli->map->class_names[dp->class_id - cli->map->base];
 
 	return NULL;
 }
@@ -1143,26 +1153,114 @@ static const struct proc_ops proc_fops = {
 	.proc_write = ddebug_proc_write
 };
 
-static void ddebug_attach_module_classes(struct ddebug_table *dt, struct _ddebug_info *di)
-{
-	struct ddebug_class_map *cm;
-	int i, nc = 0;
+#define vpr_cm_info(cm_p, msg_fmt, ...) ({				\
+	struct ddebug_class_map const *_cm = cm_p;			\
+	v2pr_info(msg_fmt " %s [%d..%d] %s..%s\n", ##__VA_ARGS__,	\
+		  _cm->mod_name, _cm->base, _cm->base + _cm->length,	\
+		  _cm->class_names[0], _cm->class_names[_cm->length - 1]); \
+	})
 
-	for_subvec(i, cm, di, maps) {
-		if (!strcmp(cm->mod_name, dt->mod_name)) {
-			//vpr_cm_info(cm, "classes[%d]:", i);
-			if (!nc++)
-				dt->info.maps.start = cm;
-		}
+static void ddebug_sync_classbits(const struct kernel_param *kp, const char *modname)
+{
+	const struct ddebug_class_param *dcp = kp->arg;
+
+	/* clamp initial bitvec, mask off hi-bits */
+	if (*dcp->bits & ~CLASSMAP_BITMASK(dcp->map->length)) {
+		*dcp->bits &= CLASSMAP_BITMASK(dcp->map->length);
+		v2pr_info("preset classbits: %lx\n", *dcp->bits);
 	}
-	if (!nc)
+	/* force class'd prdbgs (in USEr module) to match (DEFINEr module) class-param */
+	ddebug_apply_class_bitmap(dcp, dcp->bits, ~0, modname);
+	ddebug_apply_class_bitmap(dcp, dcp->bits, 0, modname);
+}
+
+static void ddebug_match_apply_kparam(const struct kernel_param *kp,
+				      const struct ddebug_class_map *map,
+				      const char *modnm)
+{
+	struct ddebug_class_param *dcp;
+
+	if (kp->ops != &param_ops_dyndbg_classes)
 		return;
 
-	vpr_info("module:%s attached %d classes\n", dt->mod_name, nc);
-	dt->info.maps.len = nc;
+	dcp = (struct ddebug_class_param *)kp->arg;
 
-	//for_subvec(i, cm, &dt->info, maps)
-	//ddebug_apply_params(cm, cm->mod_name);
+	if (map == dcp->map) {
+		v2pr_info(" kp:%s.%s =0x%lx", modnm, kp->name, *dcp->bits);
+		vpr_cm_info(map, " %s mapped to: ", modnm);
+		ddebug_sync_classbits(kp, modnm);
+	}
+}
+
+static void ddebug_apply_params(const struct ddebug_class_map *cm, const char *modnm)
+{
+	const struct kernel_param *kp;
+#if IS_ENABLED(CONFIG_MODULES)
+	int i;
+
+	if (cm->mod) {
+		vpr_cm_info(cm, "loaded classmap: %s", modnm);
+		/* ifdef protects the cm->mod->kp deref */
+		for (i = 0, kp = cm->mod->kp; i < cm->mod->num_kp; i++, kp++)
+			ddebug_match_apply_kparam(kp, cm, modnm);
+	}
+#endif
+	if (!cm->mod) {
+		vpr_cm_info(cm, "builtin classmap: %s", modnm);
+		for (kp = __start___param; kp < __stop___param; kp++)
+			ddebug_match_apply_kparam(kp, cm, modnm);
+	}
+}
+
+/*
+ * scan the named array: @_vec, ref'd from inside @_box, for the
+ * start,len of the sub-array of elements matching on ->mod_name;
+ * remember them in _dst.  Macro depends upon the fields being in both
+ * _box and _dst.
+ * @_i:   caller provided counter var.
+ * @_sp:  cursor into @_vec.
+ * @_box: ptr to a struct with @_vec, num__##@_vec, mod_name fields.
+ * @_vec: name of ref into array[T] of builtin/modular __section data.
+ * @_dst: ptr to struct with @_vec and num__##@_vec fields, both updated.
+ */
+#define dd_mark_vector_subrange(_i, _dst, _sp, _box, _vec) ({	\
+	int nc = 0;							\
+	for_subvec(_i, _sp, _box, _vec) {				\
+		if (!strcmp((_sp)->mod_name, (_dst)->mod_name)) {	\
+			if (!nc++)					\
+				(_dst)->info._vec.start = (_sp);	\
+		} else {						\
+			if (nc)						\
+				break; /* end of consecutive matches */ \
+		}							\
+	}								\
+	(_dst)->info._vec.len = nc;					\
+})
+
+static int ddebug_module_apply_class_maps(struct ddebug_table *dt,
+					  u64 *reserved_ids)
+{
+	struct ddebug_class_map *cm;
+	int i;
+
+	for_subvec(i, cm, &dt->info, maps)
+		ddebug_apply_params(cm, cm->mod_name);
+
+	vpr_info("module:%s attached %d classmaps\n", dt->mod_name, dt->info.maps.len);
+	return 0;
+}
+
+static int ddebug_module_apply_class_users(struct ddebug_table *dt,
+					   u64 *reserved_ids)
+{
+	struct ddebug_class_user *cli;
+	int i;
+
+	for_subvec(i, cli, &dt->info, users)
+		ddebug_apply_params(cli->map, cli->mod_name);
+
+	vpr_info("module:%s attached %d classmap uses\n", dt->mod_name, dt->info.users.len);
+	return 0;
 }
 
 /*
@@ -1172,6 +1270,10 @@ static void ddebug_attach_module_classes(struct ddebug_table *dt, struct _ddebug
 static int ddebug_add_module(struct _ddebug_info *di, const char *modname)
 {
 	struct ddebug_table *dt;
+	struct ddebug_class_map *cm;
+	struct ddebug_class_user *cli;
+	u64 reserved_ids = 0;
+	int i;
 
 	if (!di->descs.len)
 		return 0;
@@ -1193,13 +1295,24 @@ static int ddebug_add_module(struct _ddebug_info *di, const char *modname)
 	dt->info = *di;
 
 	INIT_LIST_HEAD(&dt->link);
+	/*
+	 * for builtin modules, ddebug_init() insures that the di
+	 * cursor marks just the module's descriptors, but it doesn't
+	 * do so for the builtin class _maps & _users.  find the
+	 * start,len of the vectors by mod_name, save to dt.
+	 */
+	dd_mark_vector_subrange(i, dt, cm, di, maps);
+	dd_mark_vector_subrange(i, dt, cli, di, users);
 
 	if (di->maps.len)
-		ddebug_attach_module_classes(dt, di);
+		ddebug_module_apply_class_maps(dt, &reserved_ids);
 
 	mutex_lock(&ddebug_lock);
 	list_add_tail(&dt->link, &ddebug_tables);
 	mutex_unlock(&ddebug_lock);
+
+	if (di->users.len)
+		ddebug_module_apply_class_users(dt, &reserved_ids);
 
 	vpr_info("%3u debug prints in module %s\n", di->descs.len, modname);
 	return 0;
@@ -1349,9 +1462,11 @@ static int __init dynamic_debug_init(void)
 
 	struct _ddebug_info di = {
 		.descs.start = __start___dyndbg,
-		.maps.start = __start___dyndbg_classes,
+		.maps.start  = __start___dyndbg_classes,
+		.users.start = __start___dyndbg_class_users,
 		.descs.len = __stop___dyndbg - __start___dyndbg,
-		.maps.len = __stop___dyndbg_classes - __start___dyndbg_classes,
+		.maps.len  = __stop___dyndbg_classes - __start___dyndbg_classes,
+		.users.len = __stop___dyndbg_class_users - __start___dyndbg_class_users,
 	};
 
 #ifdef CONFIG_MODULES
