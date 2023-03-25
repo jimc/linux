@@ -581,7 +581,20 @@ config DEBUG_FORCE_WEAK_PER_CPU
 	  To ensure that generic code follows the above rules, this
 	  option forces all percpu variables to be defined as weak.
 
-endmenu # "Compiler options"
+config TEST_MAP_H
+	tristate "module to test include/linux/map.h"
+	depends on DYNAMIC_DEBUG_CORE
+	default m
+	help
+	  Adding include/linux/map.h requires proof that it works.
+
+	  This adds test_map_h.ko, with BUILD_BUG_ON/compile-time
+	  tests for MAP_LIST(__stringify, ...).  Other macro_fn()s
+	  are deemed equivalent.
+
+	  Default m to see more compilers/cpps via @robots
+
+endmenu # "Compile-time checks and compiler options"
 
 menu "Generic Kernel Debugging Instruments"
 
