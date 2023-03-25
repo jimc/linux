@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-only
-menu "Kernel hacking"
+menu "Kernel debugging / hacking"
 
 menu "printk and dmesg options"
 
@@ -3039,4 +3039,4 @@ config RUST_KERNEL_DOCTESTS
 
 endmenu # "Rust"
 
-endmenu # Kernel hacking
+endmenu # Kernel debugging / hacking
