@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * test include/linux/map.h macros: MAP_LIST & MAP
+ * test include/linux/map.h macros: MAP_LIST & MAP_FN
  *
  * Authors:
  *      Jim Cromie	<jim.cromie@gmail.com>
@@ -9,15 +9,15 @@
 #include <linux/map.h>
 #include <linux/module.h>
 
-/* compile-time test MAP */
-static int sum = MAP( +, 1, 2, 3);
-static char* caten = MAP(__stringify, YES, NO, MAYBE);
+/* compile-time test MAP_FN */
+static int sum = MAP_FN( +, 1, 2, 3);
+static char* caten = MAP_FN(__stringify, YES, NO, MAYBE);
 
 /* client/user defines enum NAMES as source of truth */
 enum client_categories { DRMx_CORE, DRMx_DRIVER, DRMx_KMS };
 
 /* test MAP_LIST(__stringify, ...). others deemed equivalent */
-#define STRVEC_FROM_ENUM_VALS_(_vec_, ...)			\
+#define STRVEC_FROM_ENUM_VALS_(_vec_, ...)				\
 	const char *_vec_##_names[] = {					\
 		MAP_LIST(__stringify, ##__VA_ARGS__) }
 

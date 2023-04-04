@@ -13,12 +13,12 @@
 #ifndef MAP_H_INCLUDED
 #define MAP_H_INCLUDED
 
-#define EVAL0(...) __VA_ARGS__
-#define EVAL1(...) EVAL0(EVAL0(EVAL0(__VA_ARGS__)))
-#define EVAL2(...) EVAL1(EVAL1(EVAL1(__VA_ARGS__)))
-#define EVAL3(...) EVAL2(EVAL2(EVAL2(__VA_ARGS__)))
-#define EVAL4(...) EVAL3(EVAL3(EVAL3(__VA_ARGS__)))
-#define EVAL(...)  EVAL4(EVAL4(EVAL4(__VA_ARGS__)))
+#define __EVAL0(...) __VA_ARGS__
+#define __EVAL1(...) __EVAL0(__EVAL0(__EVAL0(__VA_ARGS__)))
+#define __EVAL2(...) __EVAL1(__EVAL1(__EVAL1(__VA_ARGS__)))
+#define __EVAL3(...) __EVAL2(__EVAL2(__EVAL2(__VA_ARGS__)))
+#define __EVAL4(...) __EVAL3(__EVAL3(__EVAL3(__VA_ARGS__)))
+#define __EVAL(...)  __EVAL4(__EVAL4(__EVAL4(__VA_ARGS__)))
 
 #define MAP_END(...)
 #define MAP_OUT
@@ -43,12 +43,12 @@
 /**
  * Applies the function macro `f` to each of the remaining parameters.
  */
-#define MAP(f, ...) EVAL(MAP1(f, __VA_ARGS__, ()()(), ()()(), ()()(), 0))
+#define MAP_FN(f, ...) __EVAL(MAP1(f, __VA_ARGS__, ()()(), ()()(), ()()(), 0))
 
 /**
  * Applies the function macro `f` to each of the remaining parameters and
  * inserts commas between the results.
  */
-#define MAP_LIST(f, ...) EVAL(MAP_LIST1(f, __VA_ARGS__, ()()(), ()()(), ()()(), 0))
+#define MAP_LIST(f, ...) __EVAL(MAP_LIST1(f, __VA_ARGS__, ()()(), ()()(), ()()(), 0))
 
 #endif

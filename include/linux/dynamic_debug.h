@@ -7,6 +7,7 @@
 #endif
 
 #include <linux/build_bug.h>
+#include <linux/map.h>
 
 /*
  * An instance of this structure is created in a special
