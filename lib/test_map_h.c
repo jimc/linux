@@ -23,12 +23,8 @@ enum client_categories { DRMx_CORE, DRMx_DRIVER, DRMx_KMS };
 
 static STRVEC_FROM_ENUM_VALS_(debug_cats, DRMx_CORE, DRMx_DRIVER, DRMx_KMS);
 
-#if !defined(__i386__)
 #define BUILD_BUG_STREQ(_var, ref)					\
 	BUILD_BUG_ON(__builtin_memcmp(_var, ref, __builtin_strlen(ref)))
-#else
-#define BUILD_BUG_STREQ(_var, ref)	 BUILD_BUG_ON(0)
-#endif
 #define BUILD_BUG_STREQ_VI(_vec_, idx, ref)		\
 	BUILD_BUG_STREQ(_vec_##_names[idx], ref)
 
