@@ -583,7 +583,6 @@ config DEBUG_FORCE_WEAK_PER_CPU
 
 config TEST_MAP_H
 	tristate "module to test include/linux/map.h"
-	depends on DYNAMIC_DEBUG_CORE
 	default m
 	help
 	  Adding include/linux/map.h requires proof that it works.
