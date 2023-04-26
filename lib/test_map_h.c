@@ -29,7 +29,7 @@ static STRVEC_FROM_ENUM_VALS_(debug_cats, DRMx_CORE, DRMx_DRIVER, DRMx_KMS);
 	BUILD_BUG_STREQ(_vec_##_names[idx], ref)
 
 /* force compile, even if its not called */
-static void __used MAPH_BUILD_BUG(void)
+static void MAPH_BUILD_BUG(void)
 {
 	BUILD_BUG_ON(sum != 6);
 	BUILD_BUG_STREQ(caten, "YESNOMAYBE");
