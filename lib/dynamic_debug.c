@@ -25,6 +25,9 @@
 #include <linux/sysctl.h>
 #include <linux/ctype.h>
 #include <linux/string.h>
+
+#include <linux/maple_tree.h>
+
 #include <linux/parser.h>
 #include <linux/string_helpers.h>
 #include <linux/uaccess.h>
@@ -82,6 +85,32 @@ module_param(verbose, int, 0644);
 MODULE_PARM_DESC(verbose, " dynamic_debug/control processing "
 		 "( 0 = off (default), 1 = module add/rm, 2 = >control summary, 3 = parsing, 4 = per-site changes)");
 
+/* fill from __dyndbg_sites */
+static DEFINE_MTREE(mt_funcs);
+static DEFINE_MTREE(mt_files);
+static DEFINE_MTREE(mt_mods);
+
+static void ddebug_mt_scan(struct maple_tree *mt, const char *kind);
+static int param_set_do_scan(const char *instr, const struct kernel_param *kp)
+{
+	ddebug_mt_scan(&mt_funcs, "funcs");
+	ddebug_mt_scan(&mt_files, "files");
+	ddebug_mt_scan(&mt_mods, "mods");
+	return 0;
+}
+static int param_get_do_scan(char *buffer, const struct kernel_param *kp)
+{
+	ddebug_mt_scan(&mt_funcs, "funcs");
+	ddebug_mt_scan(&mt_files, "files");
+	ddebug_mt_scan(&mt_mods, "mods");
+	return scnprintf(buffer, PAGE_SIZE, "did do_scan\n");
+}
+static const struct kernel_param_ops param_ops_do_scan = {
+	.set = param_set_do_scan,
+	.get = param_get_do_scan,
+};
+module_param_cb(do_scan, &param_ops_do_scan, NULL, 0600);
+
 /* Return the path relative to source root */
 static inline const char *trim_prefix(const char *path)
 {
@@ -131,6 +160,7 @@ do {								\
 #define v2pr_info(fmt, ...)	vnpr_info(2, fmt, ##__VA_ARGS__)
 #define v3pr_info(fmt, ...)	vnpr_info(3, fmt, ##__VA_ARGS__)
 #define v4pr_info(fmt, ...)	vnpr_info(4, fmt, ##__VA_ARGS__)
+#define v5pr_info(fmt, ...)	vnpr_info(5, fmt, ##__VA_ARGS__)
 
 static void vpr_info_dq(const struct ddebug_query *query, const char *msg)
 {
@@ -186,6 +216,45 @@ static int ddebug_find_valid_class(struct ddebug_table const *dt, const char *cl
 #define desc_modname(d)		((d)->site->_modname)
 #define desc_filename(d)	((d)->site->_filename)
 #define desc_function(d)	((d)->site->_function)
+__used
+static const char * __desc_function(struct _ddebug const *dp)
+{
+	struct maple_tree *mt = &mt_funcs;
+
+	void *ret = mtree_load(mt, (unsigned long)dp);
+
+	if (ret != desc_function(dp))
+		pr_err("mt-load func %lx got %s want %s\n",
+		       (unsigned long)dp, (char*)ret, desc_function(dp));
+
+	return ret;
+}
+__used
+static const char * __desc_filename(struct _ddebug const *dp)
+{
+	struct maple_tree *mt = &mt_files;
+
+	void *ret = mtree_load(mt, (unsigned long)dp);
+
+	if (ret != desc_filename(dp))
+		pr_err("mt-load file %lx got %s want %s\n",
+		       (unsigned long)dp, (char*)ret, desc_filename(dp));
+
+	return ret;
+}
+__used
+static const char * __desc_modname(struct _ddebug const *dp)
+{
+	struct maple_tree *mt = &mt_mods;
+
+	void *ret = mtree_load(mt, (unsigned long)dp);
+
+	if (ret != desc_modname(dp))
+		pr_err("mt-load mod %lx got %s want %s\n",
+		       (unsigned long)dp, (char*)ret, desc_modname(dp));
+
+	return ret;
+}
 
 /*
  * Search the tables for _ddebug's which match the given `query' and
@@ -1330,6 +1399,69 @@ static int ddebug_attach_user_module_classes(struct ddebug_table *dt,
 	return 0;
 }
 
+static void ddebug_mt_scan(struct maple_tree *mt, const char *kind)
+{
+	long unsigned int idx = 0;
+	void * ent;
+	int ct = 0;
+
+	mt_for_each(mt, ent, idx, ULONG_MAX) {
+		v3pr_info("  %d: %lx %s\n", ct, idx, (char*)ent);
+		ct++;
+	}
+	v2pr_info("mt-%s has %d entries\n", kind, ct);
+}
+
+static void ddebug_store_range(struct maple_tree *mt, const struct _ddebug *start,
+			   const struct _ddebug *next, const char *kind, const char *name)
+{
+	unsigned long first = (unsigned long)start;
+	unsigned long last = (unsigned long)(next - 1); /* cast after decrement */
+	int rc, reps = next - start;
+	char *val;
+
+	v3pr_info("%3d debugs %lx-%lx  %s: %s\n", reps, first, last, kind, name);
+	rc = mtree_insert_range(mt, first, last, (void*)name, GFP_KERNEL);
+	if (rc)
+		pr_err("%s:%s range store failed: %d\n", kind, name, rc);
+	else
+		v4pr_info("  OK %s: %s, %d debugs %lx-%lx\n", kind, name, reps, first, last);
+
+	val = (char*) mtree_load(mt, first);
+	if (!val)
+		pr_err("%s:%s find on range store failed\n", kind, name);
+	else
+		v4pr_info("  ok %s at %lx\n", val, first);
+}
+
+static void ddebug_condense_sites(struct _ddebug_info *di)
+{
+	struct _ddebug *cur, *funcp, *filep, *modp;
+	int i;
+
+	cur = funcp = filep = modp = di->descs;
+	for (i = 0; i < di->num_descs; i++, cur++) {
+
+		if (!strcmp(desc_function(cur), desc_function(funcp)))
+			continue;
+		ddebug_store_range(&mt_funcs, funcp, cur, "func", desc_function(funcp));
+		funcp = cur;
+
+		if (!strcmp(desc_filename(cur), desc_filename(filep)))
+			continue;
+		ddebug_store_range(&mt_files, filep, cur, "file", desc_filename(filep));
+		filep = cur;
+
+		if (!strcmp(desc_modname(cur), desc_modname(modp)))
+			continue;
+		ddebug_store_range(&mt_mods, modp, cur, "mod", desc_modname(modp));
+		modp = cur;
+	}
+	ddebug_store_range(&mt_funcs, funcp, cur, "func", desc_function(funcp));
+	ddebug_store_range(&mt_files, filep, cur, "file", desc_filename(filep));
+	ddebug_store_range(&mt_mods, modp, cur, "mod", desc_modname(modp));
+}
+
 /*
  * Allocate a new ddebug_table for the given module
  * and add it to the global list.
@@ -1362,6 +1494,7 @@ static int ddebug_add_module(struct _ddebug_info *di, const char *modname)
 	dt->ddebugs = di->descs;
 	dt->num_ddebugs = di->num_descs;
 
+	ddebug_condense_sites(di);
 	INIT_LIST_HEAD(&dt->link);
 	/*
 	 * for builtin modules, the di cursor marks just the module's
