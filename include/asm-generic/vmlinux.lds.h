@@ -386,6 +386,8 @@
 	/* implement dynamic printk debug */				\
 	. = ALIGN(8);							\
 	BOUNDED_SECTION_BY(__dyndbg_descriptors, ___dyndbg_descs)	\
+	. = ALIGN(8);							\
+	BOUNDED_SECTION_BY(__dyndbg_sites, ___dyndbg_sites)		\
 	BOUNDED_SECTION_BY(__dyndbg_class_maps, ___dyndbg_class_maps)	\
 	BOUNDED_SECTION_BY(__dyndbg_class_users, ___dyndbg_class_users)	\
 	CODETAG_SECTIONS()						\
