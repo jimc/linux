@@ -42,6 +42,8 @@
 
 extern struct _ddebug __start___dyndbg_descs[];
 extern struct _ddebug __stop___dyndbg_descs[];
+extern struct _ddebug_site __start___dyndbg_sites[];
+extern struct _ddebug_site __stop___dyndbg_sites[];
 extern struct _ddebug_class_map __start___dyndbg_class_maps[];
 extern struct _ddebug_class_map __stop___dyndbg_class_maps[];
 extern struct _ddebug_class_user __start___dyndbg_class_users[];
@@ -179,9 +181,9 @@ static void vpr_info_dq(const struct ddebug_query *query, const char *msg)
 		  _di->users.len);					\
 	})
 
-#define desc_modname(d)  ((d)->_modname)
-#define desc_filename(d) ((d)->_filename)
-#define desc_function(d) ((d)->_function)
+#define desc_modname(d)  ((d)->site->_modname)
+#define desc_filename(d) ((d)->site->_filename)
+#define desc_function(d) ((d)->site->_function)
 
 static struct _ddebug_class_map *
 ddebug_find_valid_class(struct _ddebug_info const *di, const char *query_class, int *class_id)
@@ -1626,9 +1628,11 @@ static int __init dynamic_debug_init(void)
 
 	struct _ddebug_info di = {
 		.descs.start = __start___dyndbg_descs,
+		.sites.start = __start___dyndbg_sites,
 		.maps.start  = __start___dyndbg_class_maps,
 		.users.start = __start___dyndbg_class_users,
 		.descs.len = __stop___dyndbg_descs - __start___dyndbg_descs,
+		.sites.len = __stop___dyndbg_sites - __start___dyndbg_sites,
 		.maps.len  = __stop___dyndbg_class_maps - __start___dyndbg_class_maps,
 		.users.len = __stop___dyndbg_class_users - __start___dyndbg_class_users,
 	};
@@ -1679,9 +1683,10 @@ static int __init dynamic_debug_init(void)
 		goto out_err;
 
 	ddebug_init_success = 1;
-	vpr_info("%d prdebugs in %d modules, %d KiB in ddebug tables, %d kiB in __dyndbg section\n",
+	vpr_info("%d prdebugs in %d modules, %d KiB in ddebug tables, %d+%d kiB in __dyndbg+_sites sections\n",
 		 i, mod_ct, (int)((mod_ct * sizeof(struct ddebug_table)) >> 10),
-		 (int)((i * sizeof(struct _ddebug)) >> 10));
+		 (int)((i * sizeof(struct _ddebug)) >> 10),
+		 (int)((i * sizeof(struct _ddebug_site)) >> 10));
 
 	if (di.maps.len)
 		v2pr_info("  %d builtin ddebug class-maps\n", di.maps.len);
