@@ -9,21 +9,25 @@
 #include <linux/build_bug.h>
 
 /*
- * An instance of this structure is created in a special
- * ELF section at every dynamic debug callsite.  At runtime,
- * the special section is treated as an array of these.
+ * A pair of these structs are created into 2 special ELF sections for
+ * each pr_debug callsite.  At runtime, the special sections are
+ * treated as arrays.
  */
+struct _ddebug;
+struct _ddebug_site {
+	/*
+	 * These fields are used to:
+	 * - display callsites in the control file
+	 * - query/select callsites by the code's organization
+	 * - prefix/decorate pr_debug messages per user choices
+	 */
+	const char *_modname;
+	const char *_function;
+	const char *_filename;
+};
 
 struct _ddebug {
-	/*
-	 * These fields are used to drive the user interface
-	 * for selecting and displaying debug callsites.
-	 */
-	struct /* _ddebug_site */ {
-		const char *_modname;
-		const char *_function;
-		const char *_filename;
-	};
+	struct _ddebug_site *site;
 	const char *format;
 	unsigned int lineno:18;
 #define CLS_BITS 6
@@ -62,10 +66,6 @@ struct _ddebug {
 	} key;
 #endif
 } __attribute__((aligned(8)));
-
-#define desc_modname(d)		((d)->_modname)
-#define desc_filename(d)	((d)->_filename)
-#define desc_function(d)	((d)->_function)
 
 enum ddebug_class_map_type {
 	DD_CLASS_TYPE_DISJOINT_BITS,
@@ -156,9 +156,11 @@ struct ddebug_class_user {
 /* encapsulate linker provided built-in (or module) dyndbg data */
 struct _ddebug_info {
 	struct _ddebug *descs;
+	struct _ddebug_site *sites;
 	struct ddebug_class_map *classes;
 	struct ddebug_class_user *class_users;
 	unsigned int num_descs;
+	unsigned int num_sites;
 	unsigned int num_classes;
 	unsigned int num_class_users;
 };
@@ -240,11 +242,15 @@ void __dynamic_ibdev_dbg(struct _ddebug *descriptor,
 #define DYNAMIC_DEBUG_SITE_INIT()			\
 
 #define DEFINE_DYNAMIC_DEBUG_METADATA_CLS(name, cls, fmt)	\
-	static struct _ddebug  __aligned(8)			\
-	__section("__dyndbg") name = {				\
+	static struct _ddebug_site  __aligned(8)		\
+	__section("__dyndbg_sites") name ##_site = {		\
 		._modname = KBUILD_MODNAME,			\
 		._function = __func__,				\
 		._filename = __FILE__,				\
+	};							\
+	static struct _ddebug  __aligned(8)			\
+	__section("__dyndbg") name = {				\
+		.site = &(name ##_site),			\
 		.format = (fmt),				\
 		.lineno = __LINE__,				\
 		.flags = _DPRINTK_FLAGS_DEFAULT,		\
