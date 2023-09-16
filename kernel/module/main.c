@@ -2234,6 +2234,9 @@ static int find_module_sections(struct module *mod, struct load_info *info)
 	mod->dyndbg_info.descs = section_objs(info, "__dyndbg",
 					      sizeof(*mod->dyndbg_info.descs),
 					      &mod->dyndbg_info.num_descs);
+	mod->dyndbg_info.sites = section_objs(info, "__dyndbg_sites",
+					      sizeof(*mod->dyndbg_info.sites),
+					      &mod->dyndbg_info.num_sites);
 	mod->dyndbg_info.classes = section_objs(info, "__dyndbg_classes",
 						sizeof(*mod->dyndbg_info.classes),
 						&mod->dyndbg_info.num_classes);

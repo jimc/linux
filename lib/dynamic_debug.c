@@ -41,6 +41,8 @@
 
 extern struct _ddebug __start___dyndbg[];
 extern struct _ddebug __stop___dyndbg[];
+extern struct _ddebug_site __start___dyndbg_sites[];
+extern struct _ddebug_site __stop___dyndbg_sites[];
 extern struct ddebug_class_map __start___dyndbg_classes[];
 extern struct ddebug_class_map __stop___dyndbg_classes[];
 extern struct ddebug_class_user __start___dyndbg_class_users[];
@@ -180,6 +182,10 @@ static int ddebug_find_valid_class(struct ddebug_table const *dt, const char *cl
 	}
 	return -ENOENT;
 }
+
+#define desc_modname(d)		((d)->site->_modname)
+#define desc_filename(d)	((d)->site->_filename)
+#define desc_function(d)	((d)->site->_function)
 
 /*
  * Search the tables for _ddebug's which match the given `query' and
