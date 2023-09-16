@@ -346,6 +346,7 @@
 	STRUCT_ALIGN();							\
 	*(__tracepoints)						\
 	DYNDBG_SECTIONS()						\
+	DYNDBG_RO_SECTIONS()						\
 	CODETAG_SECTIONS()						\
 	LIKELY_PROFILE()		       				\
 	BRANCH_PROFILE()						\
