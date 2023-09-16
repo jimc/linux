@@ -228,16 +228,16 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 
 			/* match against the source filename */
 			if (query->filename &&
-			    !match_wildcard(query->filename, dp->filename) &&
+			    !match_wildcard(query->filename, desc_filename(dp)) &&
 			    !match_wildcard(query->filename,
-					   kbasename(dp->filename)) &&
+					    kbasename(desc_filename(dp))) &&
 			    !match_wildcard(query->filename,
-					   trim_prefix(dp->filename)))
+					    trim_prefix(desc_filename(dp))))
 				continue;
 
 			/* match against the function */
 			if (query->function &&
-			    !match_wildcard(query->function, dp->function))
+			    !match_wildcard(query->function, desc_function(dp)))
 				continue;
 
 			/* match against the format */
@@ -274,8 +274,8 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 			}
 #endif
 			v4pr_info("changed %s:%d [%s]%s %s => %s\n",
-				  trim_prefix(dp->filename), dp->lineno,
-				  dt->mod_name, dp->function,
+				  trim_prefix(desc_filename(dp)), dp->lineno,
+				  dt->mod_name, desc_function(dp),
 				  ddebug_describe_flags(dp->flags, &fbuf),
 				  ddebug_describe_flags(newflags, &nbuf));
 			dp->flags = newflags;
@@ -790,20 +790,16 @@ static int __dynamic_emit_lookup(const struct _ddebug *desc, char *buf, int pos)
 
 	if (desc->flags & _DPRINTK_FLAGS_INCL_MODNAME)
 		pos += snprintf(buf + pos, remaining(pos), "%s:",
-				desc->modname);
+				desc_modname(desc));
 	if (desc->flags & _DPRINTK_FLAGS_INCL_FUNCNAME)
 		pos += snprintf(buf + pos, remaining(pos), "%s:",
-				desc->function);
+				desc_function(desc));
 	if (desc->flags & _DPRINTK_FLAGS_INCL_SOURCENAME)
 		pos += snprintf(buf + pos, remaining(pos), "%s:",
-				trim_prefix(desc->filename));
+				trim_prefix(desc_filename(desc)));
 	if (desc->flags & _DPRINTK_FLAGS_INCL_LINENO)
 		pos += snprintf(buf + pos, remaining(pos), "%d:",
 				desc->lineno);
-
-	/* we have a non-empty prefix, add trailing space */
-	if (remaining(pos))
-		buf[pos++] = ' ';
 
 	return pos;
 }
@@ -1120,8 +1116,8 @@ static int ddebug_proc_show(struct seq_file *m, void *p)
 	}
 
 	seq_printf(m, "%s:%u [%s]%s =%s \"",
-		   trim_prefix(dp->filename), dp->lineno,
-		   iter->table->mod_name, dp->function,
+		   trim_prefix(desc_filename(dp)), dp->lineno,
+		   iter->table->mod_name, desc_function(dp),
 		   ddebug_describe_flags(dp->flags, &flags));
 	seq_escape_str(m, dp->format, ESCAPE_SPACE, "\t\r\n\"");
 	seq_puts(m, "\"");
@@ -1568,12 +1564,12 @@ static int __init dynamic_debug_init(void)
 	}
 
 	iter = iter_mod_start = __start___dyndbg;
-	modname = iter->modname;
+	modname = desc_modname(iter);
 	i = mod_sites = mod_ct = 0;
 
 	for (; iter < __stop___dyndbg; iter++, i++, mod_sites++) {
 
-		if (strcmp(modname, iter->modname)) {
+		if (strcmp(modname, desc_modname(iter))) {
 			mod_ct++;
 			di.num_descs = mod_sites;
 			di.descs = iter_mod_start;
@@ -1582,7 +1578,7 @@ static int __init dynamic_debug_init(void)
 				goto out_err;
 
 			mod_sites = 0;
-			modname = iter->modname;
+			modname = desc_modname(iter);
 			iter_mod_start = iter;
 		}
 	}
