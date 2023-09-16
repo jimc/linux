@@ -22,21 +22,25 @@
 #endif
 
 /*
- * An instance of this structure is created in a special
- * ELF section at every dynamic debug callsite.  At runtime,
- * the special section is treated as an array of these.
+ * A pair of these structs are created into 2 special ELF sections for
+ * each pr_debug callsite.  At runtime, the special sections are
+ * treated as arrays.
  */
+struct _ddebug;
+struct _ddebug_site {
+	/*
+	 * These fields are used to:
+	 * - display callsites in the control file
+	 * - query/select callsites by the code's organization
+	 * - prefix/decorate pr_debug messages per user choices
+	 */
+	const char *_modname;
+	const char *_function;
+	const char *_filename;
+};
 
 struct _ddebug {
-	/*
-	 * These fields are used to drive the user interface
-	 * for selecting and displaying debug callsites.
-	 */
-	struct /* _ddebug_site */ {
-		const char *_modname;
-		const char *_function;
-		const char *_filename;
-	};
+	const struct _ddebug_site *site;
 	const char *format;
 
 #define LINENO_BITS 15
@@ -132,6 +136,11 @@ struct _ddebug_descs {
 	unsigned int len;
 };
 
+struct _ddebug_sites {
+	const struct _ddebug_site *start;
+	int len;
+};
+
 struct _ddebug_class_maps {
 	struct _ddebug_class_map *start;
 	unsigned int len;
@@ -145,6 +154,7 @@ struct _ddebug_class_users {
 struct _ddebug_info {
 	const char *mod_name;
 	struct _ddebug_descs descs;
+	struct _ddebug_sites sites;
 	struct _ddebug_class_maps maps;
 	struct _ddebug_class_users users;
 };
@@ -376,11 +386,15 @@ void __dynamic_ibdev_dbg(struct _ddebug *descriptor,
 }
 
 #define DEFINE_DYNAMIC_DEBUG_METADATA_CLS(name, cls, fmt, ...)	\
-	static struct _ddebug  __aligned(8)			\
-	__section("__dyndbg_descs") name = {			\
+	static const struct _ddebug_site  __aligned(8)		\
+	__section("__dyndbg_sites") name ##_site = {		\
 		._modname = DDEBUG_MODNAME,			\
 		._function = __func__,				\
 		._filename = __FILE__,				\
+	};							\
+	static struct _ddebug  __aligned(8)			\
+	__section("__dyndbg_descs") name = {			\
+		.site = &(name ##_site),			\
 		.format = (fmt),				\
 		.lineno = (__LINE__ > DDEBUG_LINE_MAX ? DDEBUG_LINE_MAX : __LINE__), \
 		.flags = _DPRINTK_FLAGS_DEFAULT,		\
