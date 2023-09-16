@@ -13,14 +13,17 @@
  * ELF section at every dynamic debug callsite.  At runtime,
  * the special section is treated as an array of these.
  */
+
 struct _ddebug {
 	/*
 	 * These fields are used to drive the user interface
 	 * for selecting and displaying debug callsites.
 	 */
-	const char *modname;
-	const char *function;
-	const char *filename;
+	struct /* _ddebug_site */ {
+		const char *_modname;
+		const char *_function;
+		const char *_filename;
+	};
 	const char *format;
 	unsigned int lineno:18;
 #define CLS_BITS 6
@@ -342,9 +345,9 @@ void __dynamic_ibdev_dbg(struct _ddebug *descriptor,
 #define DEFINE_DYNAMIC_DEBUG_METADATA_CLS(name, cls, fmt)	\
 	static struct _ddebug  __aligned(8)			\
 	__section("__dyndbg_descriptors") name = {		\
-		.modname = KBUILD_MODNAME,			\
-		.function = __func__,				\
-		.filename = __FILE__,				\
+		._modname = KBUILD_MODNAME,			\
+		._function = __func__,				\
+		._filename = __FILE__,				\
 		.format = (fmt),				\
 		.lineno = __LINE__,				\
 		.flags = _DPRINTK_FLAGS_DEFAULT,		\
