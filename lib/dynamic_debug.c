@@ -1548,6 +1548,7 @@ static int __init dynamic_debug_init_control(void)
 
 static int __init dynamic_debug_init(void)
 {
+	struct _ddebug_site *site, *site_mod_start;
 	struct _ddebug *iter, *iter_mod_start;
 	int ret, i, mod_sites, mod_ct;
 	const char *modname;
@@ -1555,12 +1556,15 @@ static int __init dynamic_debug_init(void)
 
 	struct _ddebug_info di = {
 		.descs.start = __start___dyndbg,
+		.sites.start = __start___dyndbg_sites,
 		.maps.start = __start___dyndbg_classes,
 		.users.start = __start___dyndbg_class_users,
 		.descs.len = __stop___dyndbg - __start___dyndbg,
+		.sites.len = __stop___dyndbg_sites - __start___dyndbg_sites,
 		.maps.len = __stop___dyndbg_classes - __start___dyndbg_classes,
 		.users.len = __stop___dyndbg_class_users - __start___dyndbg_class_users,
 	};
+	BUG_ON(di.descs.len != di.sites.len);
 
 #ifdef CONFIG_MODULES
 	ret = register_module_notifier(&ddebug_module_nb);
@@ -1580,16 +1584,21 @@ static int __init dynamic_debug_init(void)
 		return 0;
 	}
 
-	iter = iter_mod_start = __start___dyndbg;
+	site = site_mod_start = di.sites.start;
+	iter = iter_mod_start = di.descs.start;
 	modname = desc_modname(iter);
 	i = mod_sites = mod_ct = 0;
 
-	for (; iter < __stop___dyndbg; iter++, i++, mod_sites++) {
+	for (; iter < __stop___dyndbg; iter++, site++, i++, mod_sites++) {
+
+		BUG_ON(site != iter->site);
 
 		if (strcmp(modname, desc_modname(iter))) {
 			mod_ct++;
-			di.descs.len = mod_sites;
 			di.descs.start = iter_mod_start;
+			di.sites.start = site_mod_start;
+			di.descs.len = mod_sites;
+			di.sites.len = mod_sites;
 			ret = ddebug_add_module(&di, modname);
 			if (ret)
 				goto out_err;
@@ -1597,10 +1606,13 @@ static int __init dynamic_debug_init(void)
 			mod_sites = 0;
 			modname = desc_modname(iter);
 			iter_mod_start = iter;
+			site_mod_start = site;
 		}
 	}
-	di.descs.len = mod_sites;
 	di.descs.start = iter_mod_start;
+	di.sites.start = site_mod_start;
+	di.descs.len = mod_sites;
+	di.sites.len = mod_sites;
 	ret = ddebug_add_module(&di, modname);
 	if (ret)
 		goto out_err;
