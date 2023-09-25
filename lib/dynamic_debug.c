@@ -1537,6 +1537,7 @@ static int __init dynamic_debug_init_control(void)
 
 static int __init dynamic_debug_init(void)
 {
+	struct _ddebug_site *site, *site_mod_start;
 	struct _ddebug *iter, *iter_mod_start;
 	int ret, i, mod_sites, mod_ct;
 	const char *modname;
@@ -1544,12 +1545,15 @@ static int __init dynamic_debug_init(void)
 
 	struct _ddebug_info di = {
 		.descs = __start___dyndbg,
+		.sites = __start___dyndbg_sites,
 		.classes = __start___dyndbg_classes,
 		.class_users = __start___dyndbg_class_users,
 		.num_descs = __stop___dyndbg - __start___dyndbg,
+		.num_sites = __stop___dyndbg_sites - __start___dyndbg_sites,
 		.num_classes = __stop___dyndbg_classes - __start___dyndbg_classes,
 		.num_class_users = __stop___dyndbg_class_users - __start___dyndbg_class_users,
 	};
+	BUG_ON(di.num_descs != di.num_sites);
 
 #ifdef CONFIG_MODULES
 	ret = register_module_notifier(&ddebug_module_nb);
@@ -1569,16 +1573,21 @@ static int __init dynamic_debug_init(void)
 		return 0;
 	}
 
+	site = site_mod_start = di.sites;
 	iter = iter_mod_start = __start___dyndbg;
 	modname = desc_modname(iter);
 	i = mod_sites = mod_ct = 0;
 
-	for (; iter < __stop___dyndbg; iter++, i++, mod_sites++) {
+	for (; iter < __stop___dyndbg; iter++, site++, i++, mod_sites++) {
+
+		BUG_ON(site != iter->site);
 
 		if (strcmp(modname, desc_modname(iter))) {
 			mod_ct++;
 			di.num_descs = mod_sites;
+			di.num_sites = mod_sites;
 			di.descs = iter_mod_start;
+			di.sites = site_mod_start;
 			ret = ddebug_add_module(&di, modname);
 			if (ret)
 				goto out_err;
@@ -1586,10 +1595,13 @@ static int __init dynamic_debug_init(void)
 			mod_sites = 0;
 			modname = desc_modname(iter);
 			iter_mod_start = iter;
+			site_mod_start = site;
 		}
 	}
 	di.num_descs = mod_sites;
+	di.num_sites = mod_sites;
 	di.descs = iter_mod_start;
+	di.sites = site_mod_start;
 	ret = ddebug_add_module(&di, modname);
 	if (ret)
 		goto out_err;
