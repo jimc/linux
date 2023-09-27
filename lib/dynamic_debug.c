@@ -1413,7 +1413,7 @@ static void ddebug_mt_scan(struct maple_tree *mt, const char *kind)
 }
 
 static void ddebug_store_range(struct maple_tree *mt, const struct _ddebug *start,
-			   const struct _ddebug *next, const char *kind, const char *name)
+			       const struct _ddebug *next, const char *kind, const char *name)
 {
 	unsigned long first = (unsigned long)start;
 	unsigned long last = (unsigned long)(next - 1); /* cast after decrement */
@@ -1425,32 +1425,39 @@ static void ddebug_store_range(struct maple_tree *mt, const struct _ddebug *star
 		pr_err("%s:%s range store failed: %d\n", kind, name, rc);
 }
 
+
 static void ddebug_condense_sites(struct _ddebug_info *di)
 {
-	struct _ddebug *cur, *funcp, *filep, *modp;
+	struct _ddebug_site *cur_ds, *func_ds, *file_ds, *mod_ds;
+	struct _ddebug      *cur_dd, *func_dd, *file_dd, *mod_dd;
 	int i;
 
-	cur = funcp = filep = modp = di->descs;
-	for (i = 0; i < di->num_descs; i++, cur++) {
+	cur_dd = func_dd = file_dd = mod_dd = di->descs;
+	cur_ds = func_ds = file_ds = mod_ds = di->sites;
+	i = 0;
+	for (; i < di->num_descs; i++, cur_dd++, cur_ds++) {
 
-		if (!strcmp(desc_function(cur), desc_function(funcp)))
+		if (!strcmp(desc_function(cur_dd), desc_function(func_dd)))
 			continue;
-		ddebug_store_range(&mt_funcs, funcp, cur, "func", desc_function(funcp));
-		funcp = cur;
+		ddebug_store_range(&mt_funcs, func_dd, cur_dd, "func", desc_function(func_dd));
+		func_dd = cur_dd;
+		func_ds = cur_ds;
 
-		if (!strcmp(desc_filename(cur), desc_filename(filep)))
+		if (!strcmp(desc_filename(cur_dd), desc_filename(file_dd)))
 			continue;
-		ddebug_store_range(&mt_files, filep, cur, "file", desc_filename(filep));
-		filep = cur;
+		ddebug_store_range(&mt_files, file_dd, cur_dd, "file", desc_filename(file_dd));
+		file_dd = cur_dd;
+		file_ds = cur_ds;
 
-		if (!strcmp(desc_modname(cur), desc_modname(modp)))
+		if (!strcmp(desc_modname(cur_dd), desc_modname(mod_dd)))
 			continue;
-		ddebug_store_range(&mt_mods, modp, cur, "mod", desc_modname(modp));
-		modp = cur;
+		ddebug_store_range(&mt_mods, mod_dd, cur_dd, "mod", desc_modname(mod_dd));
+		mod_dd = cur_dd;
+		mod_ds = cur_ds;
 	}
-	ddebug_store_range(&mt_funcs, funcp, cur, "func", desc_function(funcp));
-	ddebug_store_range(&mt_files, filep, cur, "file", desc_filename(filep));
-	ddebug_store_range(&mt_mods, modp, cur, "mod", desc_modname(modp));
+	ddebug_store_range(&mt_funcs, func_dd, cur_dd, "func", desc_function(func_dd));
+	ddebug_store_range(&mt_files, file_dd, cur_dd, "file", desc_filename(file_dd));
+	ddebug_store_range(&mt_mods, mod_dd, cur_dd, "mod", desc_modname(mod_dd));
 }
 
 /*
