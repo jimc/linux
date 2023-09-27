@@ -1425,6 +1425,9 @@ static void ddebug_store_range(struct maple_tree *mt, const struct _ddebug *star
 		pr_err("%s:%s range store failed: %d\n", kind, name, rc);
 }
 
+#define site_function(s)	((s)->_function)
+#define site_filename(s)	((s)->_filename)
+#define site_modname(s)		((s)->_modname)
 
 static void ddebug_condense_sites(struct _ddebug_info *di)
 {
@@ -1437,27 +1440,27 @@ static void ddebug_condense_sites(struct _ddebug_info *di)
 	i = 0;
 	for (; i < di->num_descs; i++, cur_dd++, cur_ds++) {
 
-		if (!strcmp(desc_function(cur_dd), desc_function(func_dd)))
+		if (!strcmp(site_function(cur_ds), site_function(func_ds)))
 			continue;
-		ddebug_store_range(&mt_funcs, func_dd, cur_dd, "func", desc_function(func_dd));
+		ddebug_store_range(&mt_funcs, func_dd, cur_dd, "func", site_function(func_ds));
 		func_dd = cur_dd;
 		func_ds = cur_ds;
 
-		if (!strcmp(desc_filename(cur_dd), desc_filename(file_dd)))
+		if (!strcmp(site_filename(cur_ds), site_filename(file_ds)))
 			continue;
-		ddebug_store_range(&mt_files, file_dd, cur_dd, "file", desc_filename(file_dd));
+		ddebug_store_range(&mt_files, file_dd, cur_dd, "file", site_filename(file_ds));
 		file_dd = cur_dd;
 		file_ds = cur_ds;
 
-		if (!strcmp(desc_modname(cur_dd), desc_modname(mod_dd)))
+		if (!strcmp(site_modname(cur_ds), site_modname(mod_ds)))
 			continue;
-		ddebug_store_range(&mt_mods, mod_dd, cur_dd, "mod", desc_modname(mod_dd));
+		ddebug_store_range(&mt_mods, mod_dd, cur_dd, "mod", site_modname(mod_ds));
 		mod_dd = cur_dd;
 		mod_ds = cur_ds;
 	}
-	ddebug_store_range(&mt_funcs, func_dd, cur_dd, "func", desc_function(func_dd));
-	ddebug_store_range(&mt_files, file_dd, cur_dd, "file", desc_filename(file_dd));
-	ddebug_store_range(&mt_mods, mod_dd, cur_dd, "mod", desc_modname(mod_dd));
+	ddebug_store_range(&mt_funcs, func_dd, cur_dd, "func", site_function(func_ds));
+	ddebug_store_range(&mt_files, file_dd, cur_dd, "file", site_filename(file_ds));
+	ddebug_store_range(&mt_mods, mod_dd, cur_dd, "mod", site_modname(mod_ds));
 }
 
 /*
@@ -1705,15 +1708,15 @@ static int __init dynamic_debug_init(void)
 	}
 
 	site = site_mod_start = di.sites;
-	iter = iter_mod_start = __start___dyndbg;
-	modname = desc_modname(iter);
+	iter = iter_mod_start = di.descs;
+	modname = site_modname(site);
 	i = mod_sites = mod_ct = 0;
 
 	for (; iter < __stop___dyndbg; iter++, site++, i++, mod_sites++) {
 
 		BUG_ON(site != iter->site);
 
-		if (strcmp(modname, desc_modname(iter))) {
+		if (strcmp(modname, site_modname(site))) {
 			mod_ct++;
 			di.num_descs = mod_sites;
 			di.num_sites = mod_sites;
@@ -1724,7 +1727,7 @@ static int __init dynamic_debug_init(void)
 				goto out_err;
 
 			mod_sites = 0;
-			modname = desc_modname(iter);
+			modname = site_modname(site);
 			iter_mod_start = iter;
 			site_mod_start = site;
 		}
