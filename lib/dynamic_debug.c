@@ -1712,8 +1712,6 @@ static int __init dynamic_debug_init(void)
 
 	for (; iter < __stop___dyndbg; iter++, site++, i++, mod_sites++) {
 
-		BUG_ON(site != iter->site);
-
 		if (strcmp(modname, site_modname(site))) {
 			mod_ct++;
 			di.descs.start = iter_mod_start;
