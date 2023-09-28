@@ -27,7 +27,6 @@ struct _ddebug_site {
 };
 
 struct _ddebug {
-	struct _ddebug_site *site;
 	const char *format;
 	unsigned int lineno:18;
 #define CLS_BITS 6
@@ -268,15 +267,14 @@ void __dynamic_ibdev_dbg(struct _ddebug *descriptor,
 #define DYNAMIC_DEBUG_SITE_INIT()			\
 
 #define DEFINE_DYNAMIC_DEBUG_METADATA_CLS(name, cls, fmt)	\
-	static struct _ddebug_site  __aligned(8)		\
+	static struct _ddebug_site __used __aligned(8)		\
 	__section("__dyndbg_sites") name ##_site = {		\
 		._modname = KBUILD_MODNAME,			\
 		._function = __func__,				\
 		._filename = __FILE__,				\
 	};							\
-	static struct _ddebug  __aligned(8)			\
+	static struct _ddebug  __used __aligned(8)		\
 	__section("__dyndbg") name = {				\
-		.site = &(name ##_site),			\
 		.format = (fmt),				\
 		.lineno = __LINE__,				\
 		.flags = _DPRINTK_FLAGS_DEFAULT,		\
