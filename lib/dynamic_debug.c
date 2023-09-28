@@ -192,47 +192,19 @@ static int ddebug_find_valid_class(struct ddebug_table const *dt, const char *cl
 	return -ENOENT;
 }
 
-#define desc_modname(d)		((d)->site->_modname)
-#define desc_filename(d)	((d)->site->_filename)
-#define desc_function(d)	((d)->site->_function)
-__used
-static const char * __desc_function(struct _ddebug const *dp)
+static const char *desc_function(struct _ddebug const *dp)
 {
-	struct maple_tree *mt = &mt_funcs;
-
-	void *ret = mtree_load(mt, (unsigned long)dp);
-
-	if (ret != desc_function(dp))
-		pr_err("mt-load func %lx got %s want %s\n",
-		       (unsigned long)dp, (char*)ret, desc_function(dp));
-
-	return ret;
+	return (char *) mtree_load(&mt_funcs, (unsigned long)dp);
 }
-__used
-static const char * __desc_filename(struct _ddebug const *dp)
+
+static const char *desc_filename(struct _ddebug const *dp)
 {
-	struct maple_tree *mt = &mt_files;
-
-	void *ret = mtree_load(mt, (unsigned long)dp);
-
-	if (ret != desc_filename(dp))
-		pr_err("mt-load file %lx got %s want %s\n",
-		       (unsigned long)dp, (char*)ret, desc_filename(dp));
-
-	return ret;
+	return (char *) mtree_load(&mt_files, (unsigned long)dp);
 }
-__used
-static const char * __desc_modname(struct _ddebug const *dp)
+
+static const char *desc_modname(struct _ddebug const *dp)
 {
-	struct maple_tree *mt = &mt_mods;
-
-	void *ret = mtree_load(mt, (unsigned long)dp);
-
-	if (ret != desc_modname(dp))
-		pr_err("mt-load mod %lx got %s want %s\n",
-		       (unsigned long)dp, (char*)ret, desc_modname(dp));
-
-	return ret;
+	return (char *) mtree_load(&mt_mods, (unsigned long)dp);
 }
 
 /*
