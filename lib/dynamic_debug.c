@@ -34,6 +34,7 @@
 #include <linux/dynamic_debug.h>
 
 #include <linux/debugfs.h>
+#include <linux/maple_tree.h>
 #include <linux/slab.h>
 #include <linux/jump_label.h>
 #include <linux/hardirq.h>
@@ -92,6 +93,14 @@ MODULE_PARM_DESC(verbose, " dynamic_debug/control processing "
 static DEFINE_MTREE(dd_func_map);
 static DEFINE_MTREE(dd_file_map);
 static DEFINE_MTREE(dd_mod_map);
+
+/* cache of composed prefixes for enabled and invoked pr_debugs */
+static DEFINE_MTREE(pr_prefixes);
+static DEFINE_SPINLOCK(pr_prefixes_lock);
+
+static unsigned long ddebug_prefix_key(const struct _ddebug *desc);
+static void ddebug_drop_cached_prefix(const struct _ddebug *dp);
+#define prefix_flags(flags)  (flags & _DPRINTK_FLAGS_INCL_LOOKUP)
 
 /* Return the path relative to source root */
 static inline const char *trim_prefix(const char *path)
@@ -401,6 +410,10 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 			newflags = (dp->flags & modifiers->mask) | modifiers->flags;
 			if (newflags == dp->flags)
 				continue;
+
+			if (prefix_flags(dp->flags) != prefix_flags(newflags))
+				ddebug_drop_cached_prefix(dp);
+
 #ifdef CONFIG_JUMP_LABEL
 			if (dp->flags & _DPRINTK_FLAGS_PRINT) {
 				if (!(newflags & _DPRINTK_FLAGS_PRINT))
@@ -923,8 +936,32 @@ static int remaining(int wrote)
 	return 0;
 }
 
-static int __dynamic_emit_lookup(const struct _ddebug *desc, char *buf, int pos)
+static int __dynamic_emit_lookup(const struct _ddebug *desc, char *buf, int start)
 {
+	char *prefix, *new_prefix;
+	int pos = start;
+	unsigned long key;
+	unsigned long flags;
+
+	if (!(desc->flags & _DPRINTK_FLAGS_INCL_LOOKUP))
+		return pos;
+
+	key = ddebug_prefix_key(desc);
+
+	/* guard against other pr_debugs and prefix drops */
+	rcu_read_lock();
+	prefix = mtree_load(&pr_prefixes, key);
+	rcu_read_unlock();
+
+	if (prefix) {
+		pos += snprintf(buf + pos, remaining(pos), "%s", prefix);
+		v4pr_info("using cached prefix: %s\n", prefix);
+		return pos;
+	}
+	/*
+	 * Cache miss. Generate the prefix string into the on-stack buffer,
+	 * then allocate a string to store it in the cache.
+	 */
 	if (desc->flags & _DPRINTK_FLAGS_INCL_MODNAME)
 		pos += snprintf(buf + pos, remaining(pos), "%s:",
 				desc_modname(desc));
@@ -937,11 +974,29 @@ static int __dynamic_emit_lookup(const struct _ddebug *desc, char *buf, int pos)
 	if (desc->flags & _DPRINTK_FLAGS_INCL_LINENO)
 		pos += snprintf(buf + pos, remaining(pos), "%d:",
 				desc->lineno);
-
-	/* we have a non-empty prefix, add trailing space */
-	if (remaining(pos))
+	if (remaining(pos)) {
 		buf[pos++] = ' ';
+		buf[pos] = '\0';
+	}
+	new_prefix = kstrdup(buf + start, GFP_ATOMIC);
+	if (!new_prefix)
+		/* alloc failed, just use prefix, re-try later */
+		return pos;
 
+	/* Re-check for race while we were allocating */
+	spin_lock_irqsave(&pr_prefixes_lock, flags);
+	prefix = mtree_load(&pr_prefixes, key);
+	if (prefix) {
+		/* Another thread won. Use theirs, free ours. */
+		spin_unlock_irqrestore(&pr_prefixes_lock, flags);
+		kfree(new_prefix);
+	} else {
+		/* We are first. Store our new prefix. */
+		mtree_store_range(&pr_prefixes, key, key,
+				  (void *)new_prefix, GFP_ATOMIC);
+		spin_unlock_irqrestore(&pr_prefixes_lock, flags);
+		v3pr_info("filled prefix cache: %s\n", new_prefix);
+	}
 	return pos;
 }
 
@@ -968,7 +1023,7 @@ static char *__dynamic_emit_prefix(const struct _ddebug *desc, char *buf)
 
 static inline char *dynamic_emit_prefix(struct _ddebug *desc, char *buf)
 {
-	if (desc->flags & _DPRINTK_FLAGS_INCL_ANY)
+	if (unlikely(desc->flags & _DPRINTK_FLAGS_INCL_ANY))
 		return __dynamic_emit_prefix(desc, buf);
 	return buf;
 }
@@ -1690,6 +1745,7 @@ static void ddebug_table_free(struct ddebug_table *dt)
 	kfree(dt);
 }
 
+
 #ifdef CONFIG_MODULES
 
 /*
@@ -1708,6 +1764,12 @@ static int ddebug_remove_module(const char *mod_name)
 		 * incorrect.  Linker gives us this one.
 		 */
 		if (dt->info.mod_name == mod_name) {
+			int i;
+			struct _ddebug *dp;
+
+			for_subvec(i, dp, &dt->info, descs)
+				ddebug_drop_cached_prefix(dp);
+
 			ddebug_table_free(dt);
 			ret = 0;
 			break;
@@ -1757,6 +1819,30 @@ static void ddebug_remove_all_tables(void)
 		ddebug_table_free(dt);
 	}
 	mutex_unlock(&ddebug_lock);
+}
+
+#define DDEBUG_PREFIX_KEY_FLAGS_SHIFT 56
+#define DDEBUG_PREFIX_KEY_ADDR_MASK ((1UL << DDEBUG_PREFIX_KEY_FLAGS_SHIFT) - 1)
+
+static unsigned long ddebug_prefix_key(const struct _ddebug *desc)
+{
+	return ((unsigned long)desc & DDEBUG_PREFIX_KEY_ADDR_MASK) |
+		((unsigned long)prefix_flags(desc->flags) << DDEBUG_PREFIX_KEY_FLAGS_SHIFT);
+}
+
+static void ddebug_drop_cached_prefix(const struct _ddebug *dp)
+{
+	char *prefix;
+	unsigned long key = ddebug_prefix_key(dp);
+	unsigned long lock_flags;
+
+	spin_lock_irqsave(&pr_prefixes_lock, lock_flags);
+	prefix = mtree_erase(&pr_prefixes, key);
+	spin_unlock_irqrestore(&pr_prefixes_lock, lock_flags);
+	if (prefix) {
+		kfree(prefix);
+		v3pr_info("drop cached prefix: %s\n", prefix);
+	}
 }
 
 static __initdata int ddebug_init_success;
