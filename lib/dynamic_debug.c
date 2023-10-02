@@ -1401,7 +1401,7 @@ static int ddebug_attach_user_module_classes(struct ddebug_table *dt,
 
 static void ddebug_mt_scan(struct maple_tree *mt, const char *kind)
 {
-	long unsigned int idx = 0;
+	unsigned long int idx = 0;
 	void * ent;
 	int ct = 0;
 
@@ -1423,6 +1423,28 @@ static void ddebug_store_range(struct maple_tree *mt, const struct _ddebug *star
 	rc = mtree_store_range(mt, first, last, (void*)name, GFP_KERNEL);
 	if (rc)
 		pr_err("%s:%s range store failed: %d\n", kind, name, rc);
+}
+
+static void ddebug_clear_range(const struct _ddebug *_start, const int len)
+{
+	void *ret;
+	unsigned long start = (unsigned long) _start;
+	MA_STATE(file_mas, &mt_files, start, start);
+	MA_STATE(func_mas, &mt_funcs, start, start);
+
+	v2pr_info("clearing %3d debugs %px\n", len, _start);
+	ret = mtree_erase(&mt_mods, start);
+	v2pr_info("mods:  %px %s\n", ret, (char*)ret);
+
+	mas_lock(&file_mas);
+	for (; mas_erase(&file_mas); file_mas.index = file_mas.last + 1)
+		;
+	mas_unlock(&file_mas);
+
+	mas_lock(&func_mas);
+	for (; mas_erase(&func_mas); func_mas.index = func_mas.last + 1)
+		;
+	mas_unlock(&func_mas);
 }
 
 #define site_function(s)	((s)->_function)
@@ -1589,6 +1611,7 @@ static int ddebug_remove_module(const char *mod_name)
 	mutex_lock(&ddebug_lock);
 	list_for_each_entry_safe(dt, nextdt, &ddebug_tables, link) {
 		if (dt->mod_name == mod_name) {
+			ddebug_clear_range(dt->ddebugs, dt->num_ddebugs);
 			ddebug_table_free(dt);
 			ret = 0;
 			break;
