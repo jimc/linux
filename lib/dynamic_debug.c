@@ -1776,6 +1776,35 @@ static void ddebug_table_free(struct ddebug_table *dt)
 #ifdef CONFIG_MODULES
 
 /*
+ * clear the 3 maple trees containing __dyndbg_sites info of their
+ * contents for a module being rmmod'd.
+ */
+static void ddebug_module_sites_clear(const struct _ddebug_info *di)
+{
+	unsigned long start = (unsigned long) di->descs.start;
+	unsigned long end = (unsigned long) &di->descs.start[di->descs.len - 1];
+
+	MA_STATE(mod_mas, &dd_mod_map, start, end);
+	MA_STATE(file_mas, &dd_file_map, start, end);
+	MA_STATE(func_mas, &dd_func_map, start, end);
+
+	v2pr_info("clearing %3d debugs of removed module %s\n",
+		  di->descs.len, di->mod_name);
+
+	mas_lock(&mod_mas);
+	mas_erase(&mod_mas);
+	mas_unlock(&mod_mas);
+
+	mas_lock(&file_mas);
+	mas_erase(&file_mas);
+	mas_unlock(&file_mas);
+
+	mas_lock(&func_mas);
+	mas_erase(&func_mas);
+	mas_unlock(&func_mas);
+}
+
+/*
  * Called in response to a module being unloaded.  Removes
  * any ddebug_table's which point at the module.
  */
@@ -1791,6 +1820,7 @@ static int ddebug_remove_module(const char *mod_name)
 		 * incorrect.  Linker gives us this one.
 		 */
 		if (dt->info.mod_name == mod_name) {
+			ddebug_module_sites_clear(&dt->info);
 			ddebug_table_free(dt);
 			ret = 0;
 			break;
