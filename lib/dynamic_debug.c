@@ -1490,6 +1490,29 @@ static void ddebug_store_range(struct maple_tree *mt, const struct _ddebug *star
 		pr_err("%s:%s range store failed: %d\n", kind, name, rc);
 }
 
+__maybe_unused
+static void ddebug_clear_range(const struct _ddebug *_start, const int len)
+{
+	unsigned long start = (unsigned long)_start;
+	unsigned long end = (unsigned long)(_start + len - 1);
+	MA_STATE(mod_mas, &dd_mod_map, start, end);
+	MA_STATE(file_mas, &dd_file_map, start, end);
+	MA_STATE(func_mas, &dd_func_map, start, end);
+
+	v2pr_info("clearing %3d debugs %px\n", len, _start);
+
+	mas_lock(&mod_mas);
+	mas_erase(&mod_mas);
+	mas_unlock(&mod_mas);
+
+	mas_lock(&file_mas);
+	mas_erase(&file_mas);
+	mas_unlock(&file_mas);
+
+	mas_lock(&func_mas);
+	mas_erase(&func_mas);
+	mas_unlock(&func_mas);
+}
 
 #define DYNDBG_SITE_GETTER(name)				      \
 static inline const char *ddebug_get_##name(const struct _ddebug *dp) \
