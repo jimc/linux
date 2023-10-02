@@ -31,6 +31,7 @@
 #include <linux/dynamic_debug.h>
 
 #include <linux/debugfs.h>
+#include <linux/maple_tree.h>
 #include <linux/slab.h>
 #include <linux/jump_label.h>
 #include <linux/hardirq.h>
@@ -77,6 +78,11 @@ static int verbose;
 module_param(verbose, int, 0644);
 MODULE_PARM_DESC(verbose, " dynamic_debug/control processing "
 		 "( 0 = off (default), 1 = module add/rm, 2 = >control summary, 3 = parsing, 4 = per-site changes)");
+
+/* cache of composed prefixes for enabled and invoked pr_debugs */
+static DEFINE_MTREE(pr_prefixes);
+static void ddebug_drop_cached_prefix(struct _ddebug *dp);
+#define prefix_flags(flags)  (flags & _DPRINTK_FLAGS_INCL_LOOKUP)
 
 /* Return the path relative to source root */
 static inline const char *trim_prefix(const char *path)
@@ -366,6 +372,10 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 			newflags = (dp->flags & modifiers->mask) | modifiers->flags;
 			if (newflags == dp->flags)
 				continue;
+
+			if (prefix_flags(dp->flags) != prefix_flags(newflags))
+				ddebug_drop_cached_prefix(dp);
+
 #ifdef CONFIG_JUMP_LABEL
 			if (dp->flags & _DPRINTK_FLAGS_PRINT) {
 				if (!(newflags & _DPRINTK_FLAGS_PRINT))
@@ -887,24 +897,59 @@ static int remaining(int wrote)
 	return 0;
 }
 
-static int __dynamic_emit_lookup(const struct _ddebug *desc, char *buf, int pos)
+static int __dynamic_emit_lookup(struct _ddebug *desc, char *buf, int pos)
 {
+	char *prefix;
+	int len;
+
+	if (desc->flags & _DPRINTK_FLAGS_PREFIX_CACHED) {
+		prefix = (char *) mtree_load(&pr_prefixes, (unsigned long)desc);
+		if (prefix) {
+			pos += snprintf(buf + pos, remaining(pos), "%s", prefix);
+			v4pr_info("using prefix cache:%px %s\n", buf, prefix);
+			return pos;
+		}
+	}
+	if (!(desc->flags & _DPRINTK_FLAGS_INCL_LOOKUP))
+		return pos;
+
+	prefix = kmalloc(PREFIX_SIZE, GFP_KERNEL);
+	if (!prefix)
+		return pos;
+
+	len = 0;
 	if (desc->flags & _DPRINTK_FLAGS_INCL_MODNAME)
-		pos += snprintf(buf + pos, remaining(pos), "%s:",
+		len += snprintf(prefix + len, PREFIX_SIZE - len, "%s:",
 				desc->modname);
 	if (desc->flags & _DPRINTK_FLAGS_INCL_FUNCNAME)
-		pos += snprintf(buf + pos, remaining(pos), "%s:",
+		len += snprintf(prefix + len, PREFIX_SIZE - len, "%s:",
 				desc->function);
 	if (desc->flags & _DPRINTK_FLAGS_INCL_SOURCENAME)
-		pos += snprintf(buf + pos, remaining(pos), "%s:",
+		len += snprintf(prefix + len, PREFIX_SIZE - len, "%s:",
 				trim_prefix(desc->filename));
 	if (desc->flags & _DPRINTK_FLAGS_INCL_LINENO)
-		pos += snprintf(buf + pos, remaining(pos), "%d:",
+		len += snprintf(prefix + len, PREFIX_SIZE - len, "%d:",
 				desc->lineno);
+	if (PREFIX_SIZE - len > 0) {
+		prefix[len++] = ' ';
+		prefix[len] = '\0';
+	}
 
-	/* we have a non-empty prefix, add trailing space */
-	if (remaining(pos))
-		buf[pos++] = ' ';
+	/* shrink the prefix to smaller slab? */
+	char *cpy = krealloc(prefix, len + 1, GFP_KERNEL);
+	if (!cpy) {
+		/* krealloc failed, original `prefix` is still valid */
+		pos += snprintf(buf + pos, remaining(pos), "%s", prefix);
+		kfree(prefix);
+		return pos;
+	}
+	/* save the dynamic prefix to cache */
+	mtree_store(&pr_prefixes, (unsigned long)desc, (void *)cpy, GFP_KERNEL);
+	desc->flags |= _DPRINTK_FLAGS_PREFIX_CACHED;
+	v3pr_info("filling prefix cache:%px %s", desc, cpy);
+
+	/* copy the newly created prefix to the original stack buffer */
+	pos += snprintf(buf + pos, remaining(pos), "%s", cpy);
 
 	return pos;
 }
@@ -1532,6 +1577,21 @@ static void ddebug_table_free(struct ddebug_table *dt)
 	kfree(dt);
 }
 
+#define prefix_is_cached(dp) (dp->flags & _DPRINTK_FLAGS_PREFIX_CACHED)
+
+static void ddebug_drop_cached_prefix(struct _ddebug *dp)
+{
+	char *prefix;
+
+	if (!prefix_is_cached(dp))
+		return;
+	prefix = mtree_erase(&pr_prefixes, (unsigned long)dp);
+	if (prefix) {
+		kfree(prefix);
+		dp->flags &= ~_DPRINTK_FLAGS_PREFIX_CACHED;
+	}
+}
+
 #ifdef CONFIG_MODULES
 
 /*
@@ -1546,6 +1606,12 @@ static int ddebug_remove_module(const char *mod_name)
 	mutex_lock(&ddebug_lock);
 	list_for_each_entry_safe(dt, nextdt, &ddebug_tables, link) {
 		if (dt->info.mod_name == mod_name) {
+			int i;
+			struct _ddebug *dp;
+
+			for_subvec(i, dp, &dt->info, descs)
+				ddebug_drop_cached_prefix(dp);
+
 			ddebug_table_free(dt);
 			ret = 0;
 			break;
