@@ -90,6 +90,14 @@ static DEFINE_MTREE(mt_funcs);
 static DEFINE_MTREE(mt_files);
 static DEFINE_MTREE(mt_mods);
 
+/* cache of composed prefixes for enabled pr_debugs */
+static DEFINE_MTREE(pr_prefixes);
+
+static void ddebug_clear_prefix_cache(const struct _ddebug *dp)
+{
+	mtree_erase(&pr_prefixes, (unsigned long)dp);
+}
+
 /* Return the path relative to source root */
 static inline const char *trim_prefix(const char *path)
 {
@@ -291,6 +299,7 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 			newflags = (dp->flags & modifiers->mask) | modifiers->flags;
 			if (newflags == dp->flags)
 				continue;
+			ddebug_clear_prefix_cache(dp);
 #ifdef CONFIG_JUMP_LABEL
 			if (dp->flags & _DPRINTK_FLAGS_PRINT) {
 				if (!(newflags & _DPRINTK_FLAGS_PRINT))
@@ -809,8 +818,18 @@ static int remaining(int wrote)
 	return 0;
 }
 
-static int __dynamic_emit_lookup(const struct _ddebug *desc, char *buf, int pos)
+static int __dynamic_emit_lookup(struct _ddebug *desc, char *buf, int pos)
 {
+	char *prefix, *cpy;
+
+	if (desc->flags & _DPRINTK_FLAGS_PREFIX_CACHED) {
+		prefix = (char *) mtree_load(&pr_prefixes, (unsigned long)desc);
+		if (prefix) {
+			pos += snprintf(buf + pos, remaining(pos), "%s", prefix);
+			v4pr_info("using prefix cache:%px %s", buf, buf + pos);
+			return pos;
+		}
+	}
 	if (!(desc->flags & _DPRINTK_FLAGS_INCL_LOOKUP))
 		return pos;
 
@@ -826,6 +845,12 @@ static int __dynamic_emit_lookup(const struct _ddebug *desc, char *buf, int pos)
 	if (desc->flags & _DPRINTK_FLAGS_INCL_LINENO)
 		pos += snprintf(buf + pos, remaining(pos), "%d:",
 				desc->lineno);
+
+	/* save dup of buf to cache */
+	cpy = kstrdup(buf + pos, GFP_KERNEL);
+	mtree_store(&pr_prefixes, (unsigned long)desc, (void *)cpy, GFP_KERNEL);
+	desc->flags |= _DPRINTK_FLAGS_PREFIX_CACHED;
+	v3pr_info("filling prefix cache:%px %s", desc, cpy);
 
 	return pos;
 }
