@@ -71,12 +71,20 @@ struct flag_settings {
 	unsigned int mask;
 };
 
+/* cache of composed prefixes for enabled pr_debugs */
+static DEFINE_MTREE(pr_prefixes);
+
 static DEFINE_MUTEX(ddebug_lock);
 static LIST_HEAD(ddebug_tables);
 static int verbose;
 module_param(verbose, int, 0644);
 MODULE_PARM_DESC(verbose, " dynamic_debug/control processing "
 		 "( 0 = off (default), 1 = module add/rm, 2 = >control summary, 3 = parsing, 4 = per-site changes)");
+
+static void ddebug_clear_prefix_cache(const struct _ddebug *dp)
+{
+	mtree_erase(&pr_prefixes, (unsigned long)dp);
+}
 
 /* Return the path relative to source root */
 static inline const char *trim_prefix(const char *path)
@@ -303,6 +311,7 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 			newflags = (dp->flags & modifiers->mask) | modifiers->flags;
 			if (newflags == dp->flags)
 				continue;
+			ddebug_clear_prefix_cache(dp);
 #ifdef CONFIG_JUMP_LABEL
 			if (dp->flags & _DPRINTK_FLAGS_PRINT) {
 				if (!(newflags & _DPRINTK_FLAGS_PRINT))
@@ -824,8 +833,19 @@ static int remaining(int wrote)
 	return 0;
 }
 
-static int __dynamic_emit_lookup(const struct _ddebug *desc, char *buf, int pos)
+
+static int __dynamic_emit_lookup(struct _ddebug *desc, char *buf, int pos)
 {
+	char *prefix, *cpy;
+
+	if (desc->flags & _DPRINTK_FLAGS_PREFIX_CACHED) {
+		prefix = (char *) mtree_load(&pr_prefixes, (unsigned long)desc);
+		if (prefix) {
+			pos += snprintf(buf + pos, remaining(pos), "%s", prefix);
+			v4pr_info("using prefix cache:%px %s", buf, buf + pos);
+			return pos;
+		}
+	}
 	if (desc->flags & _DPRINTK_FLAGS_INCL_MODNAME)
 		pos += snprintf(buf + pos, remaining(pos), "%s:",
 				desc->modname);
@@ -842,6 +862,12 @@ static int __dynamic_emit_lookup(const struct _ddebug *desc, char *buf, int pos)
 	/* cuz LOOKUP, we've emitted, so add trailing space if room */
 	if (remaining(pos))
 		buf[pos++] = ' ';
+
+	/* save dup of buf to cache */
+	cpy = kstrdup(buf + pos, GFP_KERNEL);
+	mtree_store(&pr_prefixes, (unsigned long)desc, (void *)cpy, GFP_KERNEL);
+	desc->flags |= _DPRINTK_FLAGS_PREFIX_CACHED;
+	v3pr_info("filling prefix cache for pr-dbg:%px %s", desc, cpy);
 
 	return pos;
 }
