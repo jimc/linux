@@ -1308,6 +1308,24 @@ static void ddebug_attach_user_module_classes(struct ddebug_table *dt,
 	vpr_dt_info(dt, "attach-client-module: ");
 }
 
+static void ddebug_check_classes(const char* kind, const struct _ddebug_info *di)
+{
+	struct ddebug_class_map *map;
+	struct ddebug_class_user *cli;
+	int i;
+
+	v3pr_info("%s: num_descs:%d num_classes:%d num_class_users:%d\n",
+		  kind, di->num_descs, di->num_classes, di->num_class_users);
+
+	for_each_boxed_vector(di, classes, num_classes, i, map) {
+		vpr_cm_info(map, "%s: classes[%d]:", kind, i);
+	}
+	for_each_boxed_vector(di, class_users, num_class_users, i, cli) {
+		v3pr_info(" cli:%px map:%px module:%px base:%d len:%d type:s\n",
+			  cli, cli->map, cli->map->mod_name, cli->map->base, cli->map->length);
+	}
+}
+
 /*
  * Allocate a new ddebug_table for the given module
  * and add it to the global list.
@@ -1338,7 +1356,6 @@ static int ddebug_add_module(struct _ddebug_info *di, const char *modname)
 	dt->mod_name = modname;
 	dt->ddebugs = di->descs;
 	dt->num_ddebugs = di->num_descs;
-
 	INIT_LIST_HEAD(&dt->link);
 
 	for_each_boxed_vector(di, descs, num_descs, i, iter)
@@ -1509,6 +1526,7 @@ static int __init dynamic_debug_init(void)
 		.num_classes = __stop___dyndbg_classes - __start___dyndbg_classes,
 		.num_class_users = __stop___dyndbg_class_users - __start___dyndbg_class_users,
 	};
+	ddebug_check_classes("builtins", &di);
 
 #ifdef CONFIG_MODULES
 	ret = register_module_notifier(&ddebug_module_nb);
