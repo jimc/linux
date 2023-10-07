@@ -1284,9 +1284,11 @@ static void ddebug_attach_user_module_classes(struct ddebug_table *dt,
 	 */
 	for_each_boxed_vector(di, class_users, num_class_users, i, cli) {
 
-		if (WARN_ON(!cli || !cli->map || !cli->user_mod_name))
-			continue;
-
+		BUG_ON(!cli || !cli->map);
+		if (!cli->user_mod_name) {
+			pr_warn("class_ref[%d] !user-mod-name looking for %s\n", i, dt->mod_name);
+			return;
+		}
 		if (!strcmp(cli->user_mod_name, dt->mod_name)) {
 
 			vpr_cm_info(cli->map, "class_ref[%d] %s -> %s", i,
