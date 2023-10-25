@@ -1401,14 +1401,17 @@ static int ddebug_attach_user_module_classes(struct ddebug_table *dt,
 
 static void ddebug_mt_scan(struct maple_tree *mt, const char *kind)
 {
-	unsigned long int idx = 0;
-	void * ent;
+	MA_STATE(mas, mt, 0, ULONG_MAX);
+	void *ent;
 	int ct = 0;
 
-	mt_for_each(mt, ent, idx, ULONG_MAX) {
-		v3pr_info("  %d: %lx %s\n", ct, idx, (char*)ent);
+	mas_lock(&mas);
+	mas_for_each(&mas, ent, ULONG_MAX) {
+		v3pr_info("  %d: %lx-%lx %px\n", ct, mas.index, mas.last, ent);
+		v4pr_info("  %d: %lx-%lx %s\n", ct, mas.index, mas.last, (char*)ent);
 		ct++;
 	}
+	mas_unlock(&mas);
 	v2pr_info("mt-%s has %d entries\n", kind, ct);
 }
 
