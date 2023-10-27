@@ -1418,20 +1418,11 @@ static void ddebug_store_range(struct maple_tree *mt, const struct _ddebug *star
 	unsigned long first = (unsigned long)start;
 	unsigned long last = (unsigned long)(next - 1); /* cast after decrement */
 	int rc, reps = next - start;
-	char *val;
 
 	v3pr_info("%3d debugs %lx-%lx  %s: %s\n", reps, first, last, kind, name);
-	rc = mtree_insert_range(mt, first, last, (void*)name, GFP_KERNEL);
+	rc = mtree_store_range(mt, first, last, (void*)name, GFP_KERNEL);
 	if (rc)
 		pr_err("%s:%s range store failed: %d\n", kind, name, rc);
-	else
-		v4pr_info("  OK %s: %s, %d debugs %lx-%lx\n", kind, name, reps, first, last);
-
-	val = (char*) mtree_load(mt, first);
-	if (!val)
-		pr_err("%s:%s find on range store failed\n", kind, name);
-	else
-		v4pr_info("  ok %s at %lx\n", val, first);
 }
 
 static void ddebug_condense_sites(struct _ddebug_info *di)
