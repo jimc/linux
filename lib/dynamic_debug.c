@@ -91,27 +91,6 @@ static DEFINE_MTREE(mt_funcs);
 static DEFINE_MTREE(mt_files);
 static DEFINE_MTREE(mt_mods);
 
-static void ddebug_mt_scan(struct maple_tree *mt, const char *kind);
-static int param_set_do_scan(const char *instr, const struct kernel_param *kp)
-{
-	ddebug_mt_scan(&mt_funcs, "funcs");
-	ddebug_mt_scan(&mt_files, "files");
-	ddebug_mt_scan(&mt_mods, "mods");
-	return 0;
-}
-static int param_get_do_scan(char *buffer, const struct kernel_param *kp)
-{
-	ddebug_mt_scan(&mt_funcs, "funcs");
-	ddebug_mt_scan(&mt_files, "files");
-	ddebug_mt_scan(&mt_mods, "mods");
-	return scnprintf(buffer, PAGE_SIZE, "did do_scan\n");
-}
-static const struct kernel_param_ops param_ops_do_scan = {
-	.set = param_set_do_scan,
-	.get = param_get_do_scan,
-};
-module_param_cb(do_scan, &param_ops_do_scan, NULL, 0600);
-
 /* Return the path relative to source root */
 static inline const char *trim_prefix(const char *path)
 {
@@ -1390,22 +1369,6 @@ static void ddebug_attach_user_module_classes(struct ddebug_table *dt,
 		ddebug_apply_params(cli->map, cli->user_mod_name);
 
 	vpr_dt_info(dt, "attach-client-module: ");
-}
-
-static void ddebug_mt_scan(struct maple_tree *mt, const char *kind)
-{
-	MA_STATE(mas, mt, 0, ULONG_MAX);
-	void *ent;
-	int ct = 0;
-
-	mas_lock(&mas);
-	mas_for_each(&mas, ent, ULONG_MAX) {
-		v3pr_info("  %d: %lx-%lx %px\n", ct, mas.index, mas.last, ent);
-		v4pr_info("  %d: %lx-%lx %s\n", ct, mas.index, mas.last, (char*)ent);
-		ct++;
-	}
-	mas_unlock(&mas);
-	v2pr_info("mt-%s has %d entries\n", kind, ct);
 }
 
 static void ddebug_store_range(struct maple_tree *mt, const struct _ddebug *start,
