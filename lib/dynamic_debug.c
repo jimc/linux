@@ -647,6 +647,10 @@ static int ddebug_tokenize(char *buf, char *words[], int maxwords)
 			break;	/* oh, it was trailing whitespace */
 		if (*buf == '#')
 			break;	/* token starts comment, skip rest of line */
+		if (*buf == ',') {
+			buf++;
+			continue;
+		}
 
 		/* find `end' of word, whitespace separated or quoted */
 		if (*buf == '"' || *buf == '\'') {
@@ -658,7 +662,7 @@ static int ddebug_tokenize(char *buf, char *words[], int maxwords)
 				return -EINVAL;	/* unclosed quote */
 			}
 		} else {
-			for (end = buf; *end && !isspace(*end); end++)
+			for (end = buf; *end && !isspace(*end) && *end != ','; end++)
 				;
 			if (end == buf) {
 				pr_err("parse err after word:%d=%s\n", nwords,
