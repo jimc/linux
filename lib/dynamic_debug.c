@@ -584,10 +584,10 @@ static int ddebug_exec_queries(char *query, const char *modname)
 	int i, errs = 0, exitcode = 0, rc, nfound = 0;
 
 	for (i = 0; query; query = split) {
-		split = strpbrk(query, ";\n");
-		if (split)
+		split = strpbrk(query, "%;\n");
+		if (split) {
 			*split++ = '\0';
-
+		}
 		query = skip_spaces(query);
 		if (!query || !*query || *query == '#')
 			continue;
