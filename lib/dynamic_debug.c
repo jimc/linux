@@ -952,7 +952,7 @@ static int ddebug_exec_query(char *query_string, const char *modname)
 		return ddebug_parse_cmd(words, nwords-1);
 
 	if (ddebug_parse_query(words, nwords-1, &query, modname)) {
-		pr_err("query parse failed\n");
+		pr_err("selector parse failed\n");
 		return -EINVAL;
 	}
 
