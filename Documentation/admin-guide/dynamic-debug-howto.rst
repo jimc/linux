@@ -254,6 +254,27 @@ If ``foo`` module is not built-in, ``foo.dyndbg`` will still be processed at
 boot time, without effect, but will be reprocessed when module is
 loaded later. Bare ``dyndbg=`` is only processed at boot.
 
+virtme-ng example
+=================
+
+  vng -v --user root -p 4 \
+      -a dynamic_debug.verbose=3 \
+      -a \*.dyndbg=class,DRM_UT_CORE,+fmltT:drm_core_dbg%class,DRM_UT_KMS,+fmlT:drm_kms_dbg
+
+That last line adds boot-time presets to enable (+T:name) private
+trace-instances, for 2 of DRM's debug classes/categories.  The ``\*.``
+module wildcard insures that the setting/command is applied to all
+modules as they're loaded, and those that USE the DRM_UT_* classes
+will get the setting.
+
+The example above requires that private tracebufs can be auto-opened,
+otherwize the dyndbg=value would need additional terms or a 2nd
+boot-option:
+
+  vng -v --user root -p 4 \
+      -a dynamic_debug.verbose=3 \
+      -a dyndbg=open,drm_core_dbg%open,drm_kms_dbg
+      -a \*.dyndbg=class,DRM_UT_CORE,+fmltT:drm_core_dbg%class,DRM_UT_KMS,+fmlT:drm_kms_dbg
 
 Debug Messages at Module Initialization Time
 ============================================
