@@ -172,7 +172,7 @@ char *read_T_args(const char *str, struct flag_settings *modifiers)
 	}
 
 	str += 2;
-	end = strchr(str, ',');
+	end = strchr(str, '.');
 	if (end && *(end + 1) == '\0')
 		return NULL;
 
@@ -264,7 +264,7 @@ static char *ddebug_describe_ctrl(struct dd_ctrl *ctrl, struct ctrlbuf *cb)
 	for (i = 0; i < ARRAY_SIZE(opt_array); ++i)
 		if (ctrl->flags & opt_array[i].flag) {
 			if (show_args)
-				*p++ = ',';
+				*p++ = '.';
 			*p++ = opt_array[i].opt_char;
 			show_args = opt_array[i].show_args;
 			if (show_args)
