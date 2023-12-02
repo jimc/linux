@@ -1388,6 +1388,7 @@ void _print_hex_dump(struct _ddebug *descriptor, const char *level,
 		}
 	}
 }
+EXPORT_SYMBOL(_print_hex_dump);
 
 void __dynamic_pr_debug(struct _ddebug *descriptor, const char *fmt, ...)
 {
