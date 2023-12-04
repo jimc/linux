@@ -537,6 +537,8 @@ static int ddebug_change(const struct ddebug_query *query,
 	struct ddebug_class_map *map = NULL;
 	int __outvar valid_class;
 
+	mutex_lock(&ddebug_lock);
+
 	/* search for matching ddebugs */
 	list_for_each_entry(dt, &ddebug_tables, link) {
 
@@ -625,6 +627,7 @@ static int ddebug_change(const struct ddebug_query *query,
 	if (nfound)
 		update_tr_default_dst(modifiers);
 
+	mutex_unlock(&ddebug_lock);
 	return nfound;
 }
 
@@ -932,23 +935,17 @@ static int ddebug_exec_query(char *query_string, const char *modname)
 		return -EINVAL;
 	}
 
-	mutex_lock(&ddebug_lock);
-
 	/* check flags 1st (last arg) so query is pairs of spec,val */
 	if (ddebug_parse_flags(words[nwords-1], &modifiers)) {
 		pr_err("flags parse failed\n");
-		goto err;
+		return -EINVAL;
 	}
 
 	/* actually go and implement the change */
 	nfound = ddebug_change(&query, &modifiers);
 
-	mutex_unlock(&ddebug_lock);
 	vpr_info_dq(&query, nfound ? "applied" : "no-match");
 	return nfound;
-err:
-	mutex_unlock(&ddebug_lock);
-	return -EINVAL;
 }
 
 /* handle multiple queries in query string, continue on error, return
