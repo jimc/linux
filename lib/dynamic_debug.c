@@ -1202,7 +1202,7 @@ static char *dynamic_emit_prefix(struct _ddebug *desc, char *buf)
 	if (likely(!(flags & _DPRINTK_FLAGS_INCL_ANY)))
 		return buf;
 
-	if (get_flags(desc) & _DPRINTK_FLAGS_INCL_TID) {
+	if (flags & _DPRINTK_FLAGS_INCL_TID) {
 		if (in_interrupt())
 			pos += snprintf(buf + pos, remaining(pos), "<intr> ");
 		else
@@ -1211,10 +1211,10 @@ static char *dynamic_emit_prefix(struct _ddebug *desc, char *buf)
 	}
 	pos_after_tid = pos;
 
-	if (unlikely(get_flags(desc) & _DPRINTK_FLAGS_INCL_LOOKUP))
+	if (unlikely(flags & _DPRINTK_FLAGS_INCL_LOOKUP))
 		pos += dynamic_prefix_lookup(desc, buf + pos);
 
-	if (get_flags(desc) & _DPRINTK_FLAGS_INCL_LINENO)
+	if (flags & _DPRINTK_FLAGS_INCL_LINENO)
 		pos += snprintf(buf + pos, remaining(pos), "%d:",
 				desc->lineno);
 	if (pos - pos_after_tid)
