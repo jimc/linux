@@ -102,6 +102,9 @@ DYNDBG_CLASSMAP_DEFINE(map_level_num, DD_CLASS_TYPE_LEVEL_NUM,
 DYNDBG_CLASSMAP_PARAM(p_disjoint_bits,	map_disjoint_bits, p);
 DYNDBG_CLASSMAP_PARAM(p_level_num,	map_level_num, p);
 
+DYNDBG_CLASSMAP_PARAM(T_disjoint_bits,	map_disjoint_bits, T);
+DYNDBG_CLASSMAP_PARAM(T_level_num,	map_level_num, T);
+
 #else /* TEST_DYNAMIC_DEBUG_SUBMOD */
 /*
  * the +1 members of a multi-module group refer to the classmap
