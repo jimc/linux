@@ -1246,8 +1246,8 @@ static DEFINE_PER_CPU(struct ddebug_trace_bufs, ddebug_trace_bufs);
 static DEFINE_PER_CPU(int, ddebug_trace_reserve);
 
 __printf(3, 0)
-static void ddebug_trace(struct _ddebug *desc, const struct device *dev,
-			 const char *fmt, va_list args)
+static void ddebug_trace_event(struct _ddebug *desc, const struct device *dev,
+			       const char *fmt, va_list args)
 {
 	struct ddebug_trace_buf *buf;
 	int bufidx;
@@ -1278,6 +1278,18 @@ out:
 	preempt_enable_notrace();
 }
 
+__printf(2, 0)
+static void ddebug_trace_instance(struct _ddebug *desc, const char *fmt,
+				  va_list * args)
+{
+	struct va_format vaf = { .fmt = fmt, .va = args};
+	struct trace_array *arr = trc_tbl.buf[get_trace_dst(desc)].arr;
+
+	WARN_ON_ONCE(!arr);
+
+	trace_array_printk(arr, 0, "%pV", &vaf);
+}
+
 __printf(2, 3)
 static void ddebug_printk(struct _ddebug *desc, const char *fmt, ...)
 {
@@ -1290,7 +1302,12 @@ static void ddebug_printk(struct _ddebug *desc, const char *fmt, ...)
 		 * All callers include the KERN_DEBUG prefix to keep the
 		 * vprintk case simple; strip it out for tracing.
 		 */
-		ddebug_trace(desc, NULL, fmt + strlen(KERN_DEBUG), args);
+		if (!get_trace_dst(desc))
+			ddebug_trace_event(desc, NULL,
+					   fmt + strlen(KERN_DEBUG), args);
+		else
+			ddebug_trace_instance(desc, fmt + strlen(KERN_DEBUG),
+					      &args);
 		va_end(args);
 	}
 
@@ -1312,7 +1329,10 @@ static void ddebug_dev_printk(struct _ddebug *desc, const struct device *dev,
 		va_list args;
 
 		va_start(args, fmt);
-		ddebug_trace(desc, dev, fmt, args);
+		if (!get_trace_dst(desc))
+			ddebug_trace_event(desc, dev, fmt, args);
+		else
+			ddebug_trace_instance(desc, fmt, &args);
 		va_end(args);
 	}
 
