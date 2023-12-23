@@ -986,7 +986,7 @@ static int ddebug_exec_query(char *query_string, const char *modname)
 
 	/* check flags 1st (last arg) so query is pairs of spec,val */
 	if (ddebug_parse_flags(words[nwords-1], &modifiers)) {
-		pr_err("flags parse failed\n");
+		pr_err("flags parse failed on word-%d: %s\n", nwords-1, words[nwords-1]);
 		goto err;
 	}
 
