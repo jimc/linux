@@ -198,8 +198,7 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 {
 	int i;
 	struct ddebug_table *dt;
-	unsigned int newflags;
-	unsigned int nfound = 0;
+	unsigned int newflags, nfound = 0;
 	struct flagsbuf fbuf, nbuf;
 	int valid_class;
 
@@ -271,7 +270,7 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 			if (dp->flags & _DPRINTK_FLAGS_ENABLED) {
 				if (!(newflags & _DPRINTK_FLAGS_ENABLED))
 					static_branch_disable(&dp->key.dd_key_true);
-			} else if (newflags & _DPRINTK_FLAGS_ENABLED) {
+			} else if (dp->flags & _DPRINTK_FLAGS_ENABLED) {
 				static_branch_enable(&dp->key.dd_key_true);
 			}
 #endif
