@@ -958,7 +958,7 @@ static int ddebug_exec_query(char *query_string, const char *modname,
 	struct flag_settings modifiers = { .trace_dst = DST_NOT_SET };
 	struct ddebug_query query = {};
 #define MAXWORDS 9
-	int nwords;
+	int nwords, nfound;
 	char *words[MAXWORDS];
 
 	nwords = ddebug_tokenize(query_string, words, MAXWORDS);
