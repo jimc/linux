@@ -7460,6 +7460,7 @@ F:	include/linux/dynamic_debug.h
 F:	include/trace/events/dyndbg.h
 F:	lib/dynamic_debug.c
 F:	lib/test_dynamic_debug.c
+F:	tools/testing/selftest/dynamic_debug/dyndbg_selftest.sh
 
 DYNAMIC INTERRUPT MODERATION
 M:	Tal Gilboa <talgi@nvidia.com>
