@@ -24,7 +24,7 @@ DECLARE_EVENT_CLASS(dyndbg_template,
 	    ),
 
 	TP_fast_assign(
-		__assign_str(s, msg);
+		__assign_str(s); //, msg);
 	    ),
 
 	TP_printk("%s", __get_str_strip_nl(s))
