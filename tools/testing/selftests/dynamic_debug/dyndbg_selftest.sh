@@ -185,12 +185,12 @@ EOF
 function comma_terminator_tests {
     echo -e "${GREEN}# COMMA_TERMINATOR_TESTS ${NC}"
     # try combos of space & comma
-    check_match_ct mm_init 5
-    ddcmd module,mm_init,=_		# commas as spaces
-    ddcmd module,mm_init,+mpf		# turn on non-classed
-    check_match_ct =pmf 5
-    ddcmd ,module ,, ,  mm_init, -p	# extra commas & spaces
-    check_match_ct =mf 5
+    check_match_ct '\[params\]' 4
+    ddcmd module,params,=_		# commas as spaces
+    ddcmd module,params,+mpf		# turn on non-classed
+    check_match_ct =pmf 4
+    ddcmd ,module ,, ,  params, -p	# extra commas & spaces
+    check_match_ct =mf 4
     ddcmd =_
 }
 
