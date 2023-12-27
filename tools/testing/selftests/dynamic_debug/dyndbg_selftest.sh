@@ -6,8 +6,13 @@
 
 RED="\033[0;31m"
 GREEN="\033[0;32m"
+YELLOW="\033[0;33m"
+BLUE="\033[0;34m"
+MAGENTA="\033[0;35m"
+CYAN="\033[0;36m"
 NC="\033[0;0m"
 error_msg=""
+v_search_trace=1
 
 function vx () {
     echo $1 > /sys/module/dynamic_debug/parameters/verbose
@@ -132,23 +137,31 @@ function ifrmmod {
 
 # $1 - text to search for
 function search_trace() {
-	line=$(tail -1 /sys/kernel/tracing/trace | sed -e 's/^[[:space:]]*//')
-	output=$(echo $line | grep "$1")
-	if [ "$output" = "" ]; then
-            echo -e "${RED}: $BASH_SOURCE:$BASH_LINENO search for '$1' failed in line '$line'"
-	    exit
-        fi
+    search_trace_name 0 1 $1
 }
 
-# $1 - trace instance name
+# $1 - trace instance name, 0 for global event trace
 # $2 - line number counting from the bottom
 # $3 - text to search for
-function search_trace_instance() {
-	line=$(tail -$2 /sys/kernel/debug/tracing/instances/$1/trace | head -1 | sed -e 's/^[[:space:]]*//')
-	output=$(echo $line | grep "$3")
+function search_trace_name() {
+	if [ "$1" = "0" ]; then
+	    buf=$(cat /sys/kernel/debug/tracing/trace)
+	    line=$(tail -$2 /sys/kernel/debug/tracing/trace | head -1 | sed -e 's/^[[:space:]]*//')
+	else
+	    buf=$(cat /sys/kernel/debug/tracing/instances/$1/trace)
+	    line=$(tail -$2 /sys/kernel/debug/tracing/instances/$1/trace | head -1 | sed -e 's/^[[:space:]]*//')
+	fi
+	if [ $2 = 0 ]; then
+	    # whole-buf check
+	    output=$(echo ${YELLOW}$buf | grep "$3")
+	else
+	    output=$(echo $line | grep "$3")
+	fi
 	if [ "$output" = "" ]; then
             echo -e "${RED}: $BASH_SOURCE:$BASH_LINENO search for '$3' failed in line '$line'"
 	    exit
+	elif [ $v_search_trace = 1 ]; then
+	    echo -e "${MAGENTA}: search_trace_name in $1 found: \n$output \nin:${BLUE} $buf ${NC}"
         fi
 }
 
@@ -202,12 +215,12 @@ function test_percent_splitting {
     check_match_ct =pf 1
     check_match_ct =pt 1
     check_match_ct =pm 1
-    check_match_ct test_dynamic_debug 32 # -v
+    check_match_ct test_dynamic_debug 23 -v
     ddcmd class,D2_CORE,+mf%class,D2_KMS,+lt%class,D2_ATOMIC,+ml "# add some prefixes"
     check_match_ct =pmf 1
     check_match_ct =plt 1
     check_match_ct =pml 1
-    check_match_ct test_dynamic_debug 32 # -v
+    check_match_ct test_dynamic_debug 23 # -v
     ifrmmod test_dynamic_debug
 }
 
@@ -219,6 +232,7 @@ function test_actual_trace {
     echo 1 >/sys/kernel/tracing/events/dyndbg/enable
     modprobe test_dynamic_debug dyndbg=class,D2_CORE,+T:0
     search_trace "D2_CORE msg"
+    search_trace_name 0 1 "D2_CORE msg"
     check_match_ct =T:0 1
     tmark "here comes the WARN"
     search_trace "here comes the WARN"
@@ -233,7 +247,7 @@ function self_start {
     check_trace_instance_dir selftest 1
     is_trace_instance_opened selftest
     modprobe test_dynamic_debug dyndbg=+T:selftest.mf
-    check_match_ct =T:selftest.mf 5
+    check_match_ct =T:selftest.mf 6
 }
 
 function self_end_normal {
@@ -363,8 +377,8 @@ function test_private_trace_2 {
     ddcmd close bar fail
     check_err_msg "No such file or directory"
     ifrmmod test_dynamic_debug
-    search_trace_instance foo 2 "D2_CORE msg"
-    search_trace_instance foo 1 "D2_KMS msg"
+    search_trace_name foo 2 "D2_CORE msg"
+    search_trace_name foo 1 "D2_KMS msg"
     del_trace_instance_dir foo 1
     check_trace_instance_dir foo 0
 }
@@ -395,8 +409,8 @@ function test_private_trace_3 {
     ddcmd "close bar;close foo"
     is_trace_instance_closed bar
     is_trace_instance_closed foo
-    search_trace_instance foo 2 "D2_CORE msg"
-    search_trace_instance foo 1 "D2_KMS msg"
+    search_trace_name foo 2 "D2_CORE msg"
+    search_trace_name foo 1 "D2_KMS msg"
     del_trace_instance_dir foo 1
     check_trace_instance_dir foo 0
     search_trace "test_private_trace_2 about to do_prints"
@@ -419,8 +433,8 @@ function test_private_trace_4 {
     echo 1 >/sys/kernel/tracing/events/dyndbg/enable
     tmark should be ready
     doprints
-    search_trace_instance foo 2 "D2_CORE msg"
-    search_trace_instance foo 1 "D2_KMS msg"
+    search_trace_name foo 2 "D2_CORE msg"
+    search_trace_name foo 1 "D2_KMS msg"
     del_trace_instance_dir foo 0
     check_trace_instance_dir foo 1
     ifrmmod test_dynamic_debug
@@ -434,54 +448,54 @@ function test_private_trace_4 {
 function test_private_trace_5 {
     echo -e "${GREEN}# TEST_PRIVATE_TRACE_5 ${NC}"
     ddcmd =_
-    ddcmd module,params,+T:usb fail
+    ddcmd module,params,+T:unopened fail
     check_err_msg "Invalid argument"
-    is_trace_instance_closed usb
-    check_trace_instance_dir usb 0
-    ddcmd open usb
-    is_trace_instance_opened usb
-    check_trace_instance_dir usb 1
+    is_trace_instance_closed unopened
+    check_trace_instance_dir unopened 0
+    ddcmd open bupkus
+    is_trace_instance_opened bupkus
+    check_trace_instance_dir bupkus 1
     modprobe test_dynamic_debug
-    ddcmd "module params =T:usb1" fail
+    ddcmd "module params =T:bupkus1" fail
     check_err_msg "Invalid argument"
-    ddcmd "module params =T:usb." fail
+    ddcmd "module params =T:bupkus." fail
     check_err_msg "Invalid argument"
-    ddcmd "module usbcore =Tu:sb" fail
+    ddcmd "module bupkuscore =Tu:sb" fail
     check_err_msg "Invalid argument"
-    ddcmd "module usbcore =mlfT:usb." fail
+    ddcmd "module usbcore =mlfT:bupkus." fail
     check_err_msg "Invalid argument"
-    ddcmd "module test_dynamic_debug =T:usb"
-    check_match_ct =T:usb 6
+    ddcmd "module test_dynamic_debug =T:bupkus"
+    check_match_ct =T:bupkus 6
     doprints
-    ddcmd close,usb fail
+    ddcmd close,bupkus fail
     check_err_msg "Device or resource busy"
     ddcmd "module * -T"
-    ddcmd close,usb
-    is_trace_instance_closed usb
-    search_trace_instance usb 2 "test_dd: doing categories"
-    search_trace_instance usb 1 "test_dd: doing levels"
-    ddcmd open usb
-    is_trace_instance_opened usb
-    check_trace_instance_dir usb 1
-    ddcmd "module test_dynamic_debug =T:usb"
-    check_match_ct =T:usb 5
+    ddcmd close,bupkus
+    is_trace_instance_closed bupkus
+    search_trace_name bupkus 2 "test_dd: doing categories"
+    search_trace_name bupkus 1 "test_dd: doing levels"
+    ddcmd open bupkus
+    is_trace_instance_opened bupkus
+    check_trace_instance_dir bupkus 1
+    ddcmd "module test_dynamic_debug =T:bupkus"
+    check_match_ct =T:bupkus 6
     doprints
-    search_trace_instance usb 4 "test_dd: doing categories"
-    search_trace_instance usb 3 "test_dd: doing levels""
-    search_trace_instance usb 2 "test_dd: doing categories"
-    search_trace_instance usb 1 "test_dd: doing levels""
-    ddcmd close,usb fail
+    search_trace_name bupkus 0 "test_dd: doing categories"
+    search_trace_name bupkus 0 "test_dd: doing levels""
+    search_trace_name bupkus 2 "test_dd: doing categories"
+    search_trace_name bupkus 1 "test_dd: doing levels""
+    ddcmd close,bupkus fail
     check_err_msg "Device or resource busy"
-    del_trace_instance_dir usb 0
+    del_trace_instance_dir bupkus 0
     check_err_msg "Device or resource busy"
-    check_trace_instance_dir usb 1
-    is_trace_instance_opened usb
-    check_trace_instance_dir usb 1
+    check_trace_instance_dir bupkus 1
+    is_trace_instance_opened bupkus
+    check_trace_instance_dir bupkus 1
     ddcmd "module * -T"
-    ddcmd close,usb
-    is_trace_instance_closed usb
-    del_trace_instance_dir usb 1
-    check_trace_instance_dir usb 0
+    ddcmd close,bupkus
+    is_trace_instance_closed bupkus
+    del_trace_instance_dir bupkus 1
+    check_trace_instance_dir bupkus 0
     ifrmmod test_dynamic_debug
 }
 
@@ -492,7 +506,8 @@ function test_private_trace_6 {
     ddcmd open $name
     is_trace_instance_opened $name
     check_trace_instance_dir $name 1
-    ddcmd "module module =T:$name.l" -v
+    ddcmd "module module =T:$name.l"
+    ddgrep =T:A_bit_lengthy_trace
     check_match_ct =T:A_bit_lengthy_trace....l 164
     ddcmd "module * -T"
     ddcmd close,$name
