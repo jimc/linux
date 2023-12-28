@@ -12,7 +12,7 @@ MAGENTA="\033[0;35m"
 CYAN="\033[0;36m"
 NC="\033[0;0m"
 error_msg=""
-v_search_trace=1
+v_search_trace=0	# 1 to enable verbose search-trace
 
 function vx () {
     echo $1 > /sys/module/dynamic_debug/parameters/verbose
@@ -153,14 +153,15 @@ function search_trace_name() {
 	fi
 	if [ $2 = 0 ]; then
 	    # whole-buf check
-	    output=$(echo ${YELLOW}$buf | grep "$3")
+	    output=$(echo $buf | grep "$3")
 	else
 	    output=$(echo $line | grep "$3")
 	fi
 	if [ "$output" = "" ]; then
-            echo -e "${RED}: $BASH_SOURCE:$BASH_LINENO search for '$3' failed in line '$line'"
+            echo -e "${RED}: $BASH_SOURCE:$BASH_LINENO search for '$3' failed in line '$line' or '$buf'"
 	    exit
-	elif [ $v_search_trace = 1 ]; then
+	fi
+	if [ $v_search_trace = 1 ]; then
 	    echo -e "${MAGENTA}: search_trace_name in $1 found: \n$output \nin:${BLUE} $buf ${NC}"
         fi
 }
@@ -215,12 +216,12 @@ function test_percent_splitting {
     check_match_ct =pf 1
     check_match_ct =pt 1
     check_match_ct =pm 1
-    check_match_ct test_dynamic_debug 23 -v
+    check_match_ct test_dynamic_debug 32 -v
     ddcmd class,D2_CORE,+mf%class,D2_KMS,+lt%class,D2_ATOMIC,+ml "# add some prefixes"
     check_match_ct =pmf 1
     check_match_ct =plt 1
     check_match_ct =pml 1
-    check_match_ct test_dynamic_debug 23 # -v
+    check_match_ct test_dynamic_debug 32
     ifrmmod test_dynamic_debug
 }
 
@@ -247,13 +248,13 @@ function self_start {
     check_trace_instance_dir selftest 1
     is_trace_instance_opened selftest
     modprobe test_dynamic_debug dyndbg=+T:selftest.mf
-    check_match_ct =T:selftest.mf 6
+    check_match_ct =T:selftest.mf 5
 }
 
 function self_end_normal {
     echo \# disable -T:selftest, rmmod, close
     ddcmd module test_dynamic_debug -T:selftest # leave mf
-    check_match_ct =mf 6 -v
+    check_match_ct =mf 5 -v
     ddcmd close selftest
     is_trace_instance_closed selftest
     ifrmmod test_dynamic_debug
@@ -262,7 +263,7 @@ function self_end_normal {
 function self_end_disable_anon {
     echo \# disable, close, rmmod
     ddcmd module test_dynamic_debug -T
-    check_match_ct =mf 6
+    check_match_ct =mf 5
     ddcmd close selftest
     is_trace_instance_closed selftest
     ifrmmod test_dynamic_debug
@@ -271,7 +272,7 @@ function self_end_disable_anon {
 function self_end_disable_anon_mf {
     echo \# disable, close, rmmod
     ddcmd module test_dynamic_debug -Tf
-    check_match_ct =m 6
+    check_match_ct =m 5
     ddcmd close selftest
     is_trace_instance_closed selftest
     ifrmmod test_dynamic_debug
@@ -281,7 +282,7 @@ function self_end_nodisable {
     echo \# SKIPPING: ddcmd module test_dynamic_debug -T:selftest
     ddcmd close selftest fail # close fails because selftest is still being used
     check_err_msg "Device or resource busy"
-    check_match_ct =T:selftest.mf 6
+    check_match_ct =T:selftest.mf 5
     rmmod test_dynamic_debug
     ddcmd close selftest # now selftest can be closed because rmmod removed all callsites which were using it
     is_trace_instance_closed selftest
@@ -291,7 +292,7 @@ function self_end_delete_directory {
     del_trace_instance_dir selftest 0
     check_err_msg "Device or resource busy"
     ddcmd module test_dynamic_debug -mT:selftest
-    check_match_ct =f 6
+    check_match_ct =f 5
     del_trace_instance_dir selftest 0
     check_err_msg "Device or resource busy"
     ddcmd close selftest
@@ -331,7 +332,7 @@ function cycle_not_best_practices {
 }
 
 # proper life cycle - open, enable:named, disable:named, close
-function test_private_trace_1 {
+function test_private_trace_simple_proper {
     echo -e "${GREEN}# TEST_PRIVATE_TRACE_1 ${NC}"
     # ddcmd close kparm_stream
     ddcmd open kparm_stream
@@ -358,15 +359,21 @@ function test_private_trace_2 {
     ddcmd open foo
     is_trace_instance_opened foo
     check_trace_instance_dir foo 1
+
     modprobe test_dynamic_debug
     ddcmd class,D2_CORE,+T:foo.l,%class,D2_KMS,+fT:foo.ml
     check_match_ct =T:foo.l 1
     check_match_ct =T:foo.mfl 1
+
+    # purpose ?
     echo 1 >/sys/kernel/tracing/tracing_on
     echo 1 >/sys/kernel/tracing/events/dyndbg/enable
+
     tmark test_private_trace about to do_prints
-    doprints
     search_trace "test_private_trace about to do_prints"
+    search_trace_name "0" 1 "test_private_trace about to do_prints"
+
+    doprints
     ddcmd class,D2_CORE,-T:foo
     ddcmd close foo fail
     check_err_msg "Device or resource busy"
@@ -424,66 +431,111 @@ function test_private_trace_4 {
     echo > /sys/kernel/tracing/trace
     echo 1 >/sys/kernel/tracing/tracing_on
     echo 1 >/sys/kernel/tracing/events/dyndbg/enable
+
     ddcmd open foo
     modprobe test_dynamic_debug dyndbg=class,D2_CORE,+T:foo%class,D2_KMS,+T:foo
     check_match_ct =Tl 0
     check_match_ct =Tmf 0
     check_match_ct =T 2
+
+    # are these 2 doing anything ?
     echo 1 >/sys/kernel/tracing/tracing_on
     echo 1 >/sys/kernel/tracing/events/dyndbg/enable
+
     tmark should be ready
+    search_trace_name "0" 0 "should be ready"	# in global trace
+
     doprints
-    search_trace_name foo 2 "D2_CORE msg"
+    search_trace_name foo 2 "D2_CORE msg"	# in private buf
     search_trace_name foo 1 "D2_KMS msg"
+
+    # premature delete
     del_trace_instance_dir foo 0
-    check_trace_instance_dir foo 1
+    check_trace_instance_dir foo 1	# doesnt delete
     ifrmmod test_dynamic_debug
+
     ddcmd "close foo"
     is_trace_instance_closed foo
-    del_trace_instance_dir foo 1
+    del_trace_instance_dir foo 1	# delete works now
+
     check_trace_instance_dir foo 0
     search_trace "should be ready"
 }
 
-function test_private_trace_5 {
+function test_private_trace_mixed_class {
     echo -e "${GREEN}# TEST_PRIVATE_TRACE_5 ${NC}"
     ddcmd =_
     ddcmd module,params,+T:unopened fail
     check_err_msg "Invalid argument"
     is_trace_instance_closed unopened
     check_trace_instance_dir unopened 0
+
     ddcmd open bupkus
     is_trace_instance_opened bupkus
     check_trace_instance_dir bupkus 1
-    modprobe test_dynamic_debug
-    ddcmd "module params =T:bupkus1" fail
+    modprobe test_dynamic_debug \
+	     dyndbg=class,D2_CORE,+T:bupkus.mf%class,D2_KMS,+T:bupkus.mf%class,V3,+T:bupkus.mf
+
+    # test various name misses
+    ddcmd "module params =T:bupkus1" fail	# miss on name
     check_err_msg "Invalid argument"
-    ddcmd "module params =T:bupkus." fail
+    ddcmd "module params =T:bupkus." fail	# extra dot wo trailing flags ?
     check_err_msg "Invalid argument"
-    ddcmd "module bupkuscore =Tu:sb" fail
+    ddcmd "module params =T:unopened" fail	# unopened
     check_err_msg "Invalid argument"
-    ddcmd "module usbcore =mlfT:bupkus." fail
+    ddcmd "module params =mlfT:bupkus." fail
     check_err_msg "Invalid argument"
-    ddcmd "module test_dynamic_debug =T:bupkus"
-    check_match_ct =T:bupkus 6
+
+    check_match_ct =T:bupkus.mf 3		# the 3 classes enabled above
+    # enable the 5 non-class'd pr_debug()s
+    ddcmd "module test_dynamic_debug =T:bupkus" 
+    check_match_ct =T:bupkus 8			# 8=5+3
+
     doprints
     ddcmd close,bupkus fail
     check_err_msg "Device or resource busy"
-    ddcmd "module * -T"
-    ddcmd close,bupkus
+    ddcmd "module * -T"				# misses class'd ones
+    ddcmd close,bupkus fail
+
+    ddcmd class,D2_CORE,-T%class,D2_KMS,-T%class,V3,-T		# turn off class'd
+    ddcmd close,bupkus 
     is_trace_instance_closed bupkus
-    search_trace_name bupkus 2 "test_dd: doing categories"
-    search_trace_name bupkus 1 "test_dd: doing levels"
+
+    # check results
+    eyeball_ref=<<EOD
+        modprobe-1173    [001] .....     7.781008: 0: test_dynamic_debug:do_cats: test_dd: D2_CORE msg
+        modprobe-1173    [001] .....     7.781010: 0: test_dynamic_debug:do_cats: test_dd: D2_KMS msg
+        modprobe-1173    [001] .....     7.781010: 0: test_dynamic_debug:do_levels: test_dd: V3 msg
+             cat-1214    [001] .....     7.905494: 0: test_dd: doing categories
+             cat-1214    [001] .....     7.905495: 0: test_dynamic_debug:do_cats: test_dd: D2_CORE msg
+             cat-1214    [001] .....     7.905496: 0: test_dynamic_debug:do_cats: test_dd: D2_KMS msg
+             cat-1214    [001] .....     7.905497: 0: test_dd: doing levels
+             cat-1214    [001] .....     7.905498: 0: test_dynamic_debug:do_levels: test_dd: V3 msg
+: tools/testing/selftests/dynamic_debug/dyndbg_selftest.sh:489 search for 'test_dd: doing levels' failed in line
+EOD
+
+    # validate the 3 enabled class'd sites, with mf prefix
+    search_trace_name bupkus 0 "test_dynamic_debug:do_cats: test_dd: D2_CORE msg"
+    search_trace_name bupkus 0 "test_dynamic_debug:do_cats: test_dd: D2_KMS msg"
+    search_trace_name bupkus 0 "test_dynamic_debug:do_levels: test_dd: V3 msg"
+
+    search_trace_name bupkus 0 "test_dd: doing levels"
+    search_trace_name bupkus 0 "test_dd: doing categories"
+
+    # reopen wo error
     ddcmd open bupkus
     is_trace_instance_opened bupkus
     check_trace_instance_dir bupkus 1
-    ddcmd "module test_dynamic_debug =T:bupkus"
-    check_match_ct =T:bupkus 6
-    doprints
+
+    ddcmd "module test_dynamic_debug =T:bupkus"	# rearm the 5 plain-old prdbgs
+    check_match_ct =T:bupkus 5
+
+    doprints # 2nd time
     search_trace_name bupkus 0 "test_dd: doing categories"
     search_trace_name bupkus 0 "test_dd: doing levels""
     search_trace_name bupkus 2 "test_dd: doing categories"
     search_trace_name bupkus 1 "test_dd: doing levels""
+
     ddcmd close,bupkus fail
     check_err_msg "Device or resource busy"
     del_trace_instance_dir bupkus 0
@@ -491,6 +543,8 @@ function test_private_trace_5 {
     check_trace_instance_dir bupkus 1
     is_trace_instance_opened bupkus
     check_trace_instance_dir bupkus 1
+
+    # drop last users, now delete works
     ddcmd "module * -T"
     ddcmd close,bupkus
     is_trace_instance_closed bupkus
@@ -499,25 +553,29 @@ function test_private_trace_5 {
     ifrmmod test_dynamic_debug
 }
 
-function test_private_trace_6 {
-    echo -e "${GREEN}# TEST_PRIVATE_TRACE_6 ${NC}"
+function test_private_trace_overlong_name {
+    echo -e "${GREEN}# TEST_PRIVATE_TRACE_overlong_name ${NC}"
     ddcmd =_
     name="A_bit_lengthy_trace_instance_name"
     ddcmd open $name
     is_trace_instance_opened $name
     check_trace_instance_dir $name 1
-    ddcmd "module module =T:$name.l"
-    ddgrep =T:A_bit_lengthy_trace
-    check_match_ct =T:A_bit_lengthy_trace....l 164
+
+    ddcmd "file kernel/module/main.c +T:$name.mf "
+    check_match_ct =T:A_bit_lengthy_trace....mf 14
+
     ddcmd "module * -T"
+    check_match_ct =:A_bit_lengthy_trace....mf 0	# no :trc_name
+    check_match_ct kernel/module/main.c 14		# to be certain
+
     ddcmd close,$name
     is_trace_instance_closed $name
     del_trace_instance_dir $name 1
     check_trace_instance_dir $name 0
 }
 
-function test_private_trace_7 {
-    echo -e "${GREEN}# TEST_PRIVATE_TRACE_7 ${NC}"
+function test_private_trace_fill_trace_index {
+    echo -e "${GREEN}# TEST_PRIVATE_TRACE_fill_trace_index ${NC}"
     ddcmd =_
     name="trace_instance_"
     for i in {1..63}
@@ -526,11 +584,14 @@ function test_private_trace_7 {
 	is_trace_instance_opened $name$i
         check_trace_instance_dir $name$i 1
     done
-    ddcmd "open usb" fail
+    # catch the 1-too-many err
+    ddcmd "open too_many" fail
     check_err_msg "No space left on device"
-    ddcmd "module usbcore =T:trace_instance_63.m"
-    check_match_ct =T:trace_instance_63.m 164
-      for i in {1..62}
+
+    ddcmd 'file kernel/module/main.c =T:trace_instance_63.m'
+    check_match_ct =T:trace_instance_63.m 14
+
+    for i in {1..62}
     do
         ddcmd close $name$i
         is_trace_instance_closed $name$i
@@ -543,6 +604,7 @@ function test_private_trace_7 {
     del_trace_instance_dir trace_instance_63 1
     check_trace_instance_dir trace_instance_63 0
 }
+
 tests_list=(
     basic_tests
     comma_terminator_tests
@@ -551,15 +613,20 @@ tests_list=(
     cycle_tests_normal
     cycle_not_best_practices
     test_private_trace_1
+    test_private_trace_simple_proper
     test_private_trace_2
     test_private_trace_3
     test_private_trace_4
-    test_private_trace_5
-    test_private_trace_6
-    test_private_trace_7
+    test_private_trace_mixed_class
+    test_private_trace_mixed_class  # again, to test pre,post conditions
+
+    test_private_trace_overlong_name
+
+    # works, takes 30 sec
+    test_private_trace_fill_trace_index
 )
+
 # Run tests
-# vx 3
 
 for test in "${tests_list[@]}"
 do
