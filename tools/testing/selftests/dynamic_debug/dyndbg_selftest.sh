@@ -55,7 +55,7 @@ function handle_exit_code() {
 function check_match_ct {
     let cnt=$(ddgrep $1 | wc -l)
     exp_cnt=0
-    [ "$3" == "-v" ] && ddgrep $1
+    [ "$3" == "-v" ] && echo -ne "${BLUE}" && ddgrep $1 && echo -ne "${NC}"
     [ $# -gt 1 ] && exp_cnt=$2
     if [ $cnt -ne $exp_cnt ]; then
         echo -e "${RED}: $BASH_SOURCE:$BASH_LINENO check failed expected $exp_cnt on $1, got $cnt"
