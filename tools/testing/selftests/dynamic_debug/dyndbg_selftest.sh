@@ -23,7 +23,10 @@ function ddgrep () {
 }
 
 function doprints () {
-    cat /sys/module/test_dynamic_debug/parameters/do_prints
+    doprint_mod test_dynamic_debug
+}
+function doprint_mod () {
+    cat /sys/module/$1/parameters/do_prints
 }
 
 function ddcmd () {
@@ -464,8 +467,40 @@ function test_private_trace_4 {
 }
 
 function test_private_trace_mixed_class {
-    local modname="test_dynamic_debug"
     echo -e "${GREEN}# TEST_PRIVATE_TRACE_mixed_class ${NC}"
+
+    test_private_trace_mixed_class_module_start test_dynamic_debug
+    {
+	# validate the 3 enabled class'd sites, with mf prefix
+	search_trace_name bupkus 0 "test_dynamic_debug:do_cats: test_dd: D2_CORE msg"
+	search_trace_name bupkus 0 "test_dynamic_debug:do_cats: test_dd: D2_KMS msg"
+	search_trace_name bupkus 0 "test_dynamic_debug:do_levels: test_dd: V3 msg"
+
+	search_trace_name bupkus 0 "test_dd: doing levels"
+	search_trace_name bupkus 0 "test_dd: doing categories"
+    }
+    test_private_trace_mixed_class_module_finish test_dynamic_debug
+
+    test_private_trace_mixed_class_module_start test_dynamic_debug_submod
+    {
+	# validate the 3 enabled class'd sites, with mf prefix
+	search_trace_name bupkus 0 "test_dynamic_debug_submod:do_cats: test_dd_submod: D2_CORE msg"
+	search_trace_name bupkus 0 "test_dynamic_debug_submod:do_cats: test_dd_submod: D2_KMS msg"
+	search_trace_name bupkus 0 "test_dynamic_debug_submod:do_levels: test_dd_submod: V3 msg"
+
+	search_trace_name bupkus 0 "test_dd_submod: doing levels"
+	search_trace_name bupkus 0 "test_dd_submod: doing categories"
+    }
+    test_private_trace_mixed_class_module_finish test_dynamic_debug_submod
+}
+
+function test_private_trace_mixed_class_module_start {
+    local modname=$1;
+    echo -e "${GREEN}# TEST_PRIVATE_TRACE_mixed_class_module ${YELLOW} $1 $2 ${NC}"
+
+    ifrmmod test_dynamic_debug_submod
+    ifrmmod test_dynamic_debug
+
     ddcmd =_
     ddcmd module,params,+T:unopened fail
     check_err_msg "Invalid argument"
@@ -475,6 +510,13 @@ function test_private_trace_mixed_class {
     ddcmd open bupkus
     is_trace_instance_opened bupkus
     check_trace_instance_dir bupkus 1
+
+    ddcmd "module params +T:bupkus.sl"
+    check_match_ct =T:bupkus.sl 4
+
+    # ddcmd "file kernel/module/main.c =T:bupkus.ts"
+    # check_match_ct =T:bupkus.st 14
+
     modprobe $modname \
 	     dyndbg=class,D2_CORE,+T:bupkus.mf%class,D2_KMS,+T:bupkus.mf%class,V3,+T:bupkus.mf
 
@@ -488,54 +530,38 @@ function test_private_trace_mixed_class {
     ddcmd "module params =mlfT:bupkus." fail
     check_err_msg "Invalid argument"
 
-    check_match_ct =T:bupkus.mf 3		# the 3 classes enabled above
-    ddcmd "module $modname =T:bupkus"		# enable the 5 non-class'd pr_debug()s
-    check_match_ct =T:bupkus 9			# 9 == 6 + 3
+    check_match_ct =T:bupkus.mf 3	# the 3 classes enabled in modprobe above
+    ddcmd "module $modname =T:bupkus"	# enable the plain-old prdbgs
 
-    doprints
+    # check_match_ct =T:bupkus.st 14	# file kernel/module/main.c
+    check_match_ct =T:bupkus.sl 4	# module params
+    check_match_ct =T:bupkus 13		# 9 == 6 + 3
+
+    doprint_mod $modname
+
     ddcmd close,bupkus fail
     check_err_msg "Device or resource busy"
     ddcmd "module * -T"				# misses class'd ones
     ddcmd close,bupkus fail
 
-    ddcmd class,D2_CORE,-T%class,D2_KMS,-T%class,V3,-T		# turn off class'd
+    ddcmd class,D2_CORE,-T%class,D2_KMS,-T%class,V3,-T		# turn off class'd prdbgs
     ddcmd close,bupkus 
     is_trace_instance_closed bupkus
-
-    # check results
-    eyeball_ref=<<EOD
-        modprobe-1173    [001] .....     7.781008: 0: test_dynamic_debug:do_cats: test_dd: D2_CORE msg
-        modprobe-1173    [001] .....     7.781010: 0: test_dynamic_debug:do_cats: test_dd: D2_KMS msg
-        modprobe-1173    [001] .....     7.781010: 0: test_dynamic_debug:do_levels: test_dd: V3 msg
-             cat-1214    [001] .....     7.905494: 0: test_dd: doing categories
-             cat-1214    [001] .....     7.905495: 0: test_dynamic_debug:do_cats: test_dd: D2_CORE msg
-             cat-1214    [001] .....     7.905496: 0: test_dynamic_debug:do_cats: test_dd: D2_KMS msg
-             cat-1214    [001] .....     7.905497: 0: test_dd: doing levels
-             cat-1214    [001] .....     7.905498: 0: test_dynamic_debug:do_levels: test_dd: V3 msg
-: tools/testing/selftests/dynamic_debug/dyndbg_selftest.sh:489 search for 'test_dd: doing levels' failed in line
-EOD
-
-    # validate the 3 enabled class'd sites, with mf prefix
-    search_trace_name bupkus 0 "test_dynamic_debug:do_cats: test_dd: D2_CORE msg"
-    search_trace_name bupkus 0 "test_dynamic_debug:do_cats: test_dd: D2_KMS msg"
-    search_trace_name bupkus 0 "test_dynamic_debug:do_levels: test_dd: V3 msg"
-
-    search_trace_name bupkus 0 "test_dd: doing levels"
-    search_trace_name bupkus 0 "test_dd: doing categories"
 
     # reopen wo error
     ddcmd open bupkus
     is_trace_instance_opened bupkus
     check_trace_instance_dir bupkus 1
+}
 
-    ddcmd "module test_dynamic_debug =T:bupkus"	# rearm the 5 plain-old prdbgs
+function test_private_trace_mixed_class_module_finish {
+    local mod=$1;
+
+    ddcmd "module $mod =T:bupkus"	# rearm the plain-old prdbgs
     check_match_ct =T:bupkus 6
 
-    doprints # 2nd time
-    search_trace_name bupkus 0 "test_dd: doing categories"
-    search_trace_name bupkus 0 "test_dd: doing levels""
-    search_trace_name bupkus 2 "test_dd: doing categories"
-    search_trace_name bupkus 1 "test_dd: doing levels""
+    doprint_mod $mod
+    doprint_mod $mod
 
     ddcmd close,bupkus fail
     check_err_msg "Device or resource busy"
@@ -551,6 +577,8 @@ EOD
     is_trace_instance_closed bupkus
     del_trace_instance_dir bupkus 1
     check_trace_instance_dir bupkus 0
+
+    ifrmmod test_dynamic_debug_submod
     ifrmmod test_dynamic_debug
 }
 
@@ -623,7 +651,7 @@ tests_list=(
 
     test_private_trace_overlong_name
 
-    # works, takes 30 sec
+    # works, takes ~50 sec
     test_private_trace_fill_trace_index
 )
 
