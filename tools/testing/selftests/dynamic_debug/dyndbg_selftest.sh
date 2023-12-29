@@ -464,7 +464,8 @@ function test_private_trace_4 {
 }
 
 function test_private_trace_mixed_class {
-    echo -e "${GREEN}# TEST_PRIVATE_TRACE_5 ${NC}"
+    local modname="test_dynamic_debug"
+    echo -e "${GREEN}# TEST_PRIVATE_TRACE_mixed_class ${NC}"
     ddcmd =_
     ddcmd module,params,+T:unopened fail
     check_err_msg "Invalid argument"
@@ -474,7 +475,7 @@ function test_private_trace_mixed_class {
     ddcmd open bupkus
     is_trace_instance_opened bupkus
     check_trace_instance_dir bupkus 1
-    modprobe test_dynamic_debug \
+    modprobe $modname \
 	     dyndbg=class,D2_CORE,+T:bupkus.mf%class,D2_KMS,+T:bupkus.mf%class,V3,+T:bupkus.mf
 
     # test various name misses
@@ -488,8 +489,7 @@ function test_private_trace_mixed_class {
     check_err_msg "Invalid argument"
 
     check_match_ct =T:bupkus.mf 3		# the 3 classes enabled above
-    # enable the 5 non-class'd pr_debug()s
-    ddcmd "module test_dynamic_debug =T:bupkus" 
+    ddcmd "module $modname =T:bupkus"		# enable the 5 non-class'd pr_debug()s
     check_match_ct =T:bupkus 8			# 8=5+3
 
     doprints
