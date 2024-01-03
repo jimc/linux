@@ -16,8 +16,8 @@ Dynamic debug provides:
  * a Catalog of all *prdbgs* in your kernel.
    ``cat /proc/dynamic_debug/control`` to see them.
 
- * a Simple query/command language to alter *prdbgs* by selecting on
-   any combination of 0 or 1 of:
+ * a Simple query/command language to alter groups (or singles) of
+   *prdbgs* by selecting on any combination of 0 or 1 of:
 
    - source filename
    - function name
@@ -25,6 +25,7 @@ Dynamic debug provides:
    - module name
    - format string
    - class name (as known/declared by each module)
+   - trace_name <destination>
 
 Viewing Dynamic Debug Behaviour
 ===============================
@@ -85,7 +86,7 @@ commands can be written together, separated by ``%``, ``;`` or ``\n``::
 
   :#> ddcmd func foo +p % func bar +p
   :#> ddcmd func foo +p \; func bar +p
-  :#> ddcmd <<"EOC"
+  :#> ddcmd <<EOC
   func pnpacpi_get_resources +p
   func pnp_assign_mem +p
   EOC
@@ -177,11 +178,11 @@ format
 	format "nfsd: SETATTR"  // a neater way to match a format with whitespace
 	format 'nfsd: SETATTR'  // yet another way to match a format with whitespace
 
-class
-    The given class_name is validated against each module, which may
-    have declared a list of known class_names.  If the class_name is
-    found for a module, callsite & class matching and adjustment
-    proceeds.  Examples::
+class <c_name>
+    The c_name is validated against each module, which may have
+    declared a list of class_names it knows.  If the c_name is known
+    by a module, site matching and site flags adjustment proceeds.
+    Examples::
 
 	class DRM_UT_KMS	# a DRM.debug category
 	class JUNK		# silent non-match
@@ -201,33 +202,119 @@ line
 	line -1605          // the 1605 lines from line 1 to line 1605
 	line 1600-          // all lines from line 1600 to the end of the file
 
-The flags specification comprises a change operation followed
-by one or more flag characters.  The change operation is one
-of the characters::
+trace_name/label <t_name>
+    This matches the t_name against each callsite's current trace-dest
+    (default is 0).  It lets a user select and enable a previously
+    labelled set of callsites.
 
-  -    remove the given flags
-  +    add the given flags
-  =    set the flags to the given flags
+The flags-spec is a change operation followed by one or more flag
+characters.  The change operation is one of the characters::
 
-The flags are::
+  -    disable these flags
+  +    enable these flags
+  =    set these flags
 
-  p    callsite prints to syslog
-  T    callsite issues a dyndbg:* trace-event
-  _    enables no flags
+The debug-output flags are::
 
-  Decorator flags add to the message-prefix, in order:
-  t    Include thread ID, or <intr>
-  m    Include module name
-  f    Include the function name
-  s    Include the source file name
-  l    Include line number
+  p    print to syslog
+  T    write to tracefs (see below)
+  _    no flags. useful with =_, legal with +_, -_
 
-For ``print_hex_dump_debug()`` and ``print_hex_dump_bytes()``, only
-the ``p`` flag has meaning, other flags are ignored.
+  prefix flags compose each site's dynamic-prefix, in order:
+  t    thread ID, or <intr>
+  m    module name
+  f    the function name
+  s    the source file name
+  l    line number
 
-Note the regexp ``^[-+=][fslmpt_]+$`` matches a flags specification.
-To clear all flags at once, use ``=_`` or ``-fslmpt``.
+The p,T flags can be followed by a named trace-instance, which
+defaults to "0" for the global trace (/sys/kernel/tracing/trace)::
 
+  # because match-spec can be empty, these are legal commands.
+  =T       # enable tracing/trace (implied)
+  =T:0     # enable global tracing/trace (explicit)
+  =pT      # enable syslog and global trace (implied)
+  =T:0.mf  # enable global trace-buf, with "module:function:" prefix
+  =T:foo   # enable tracing/instances/foo, after open-ing it
+  =_       # clear all flags (set them to off)
+  =:foo    # clear all flags, set all trace-dests to foo (if it is open'd)
+  =_:foo   # set all trace-dests to foo (if it is open'd)
+  =:0      # reset all trace-dests to global trace-buf
+
+Debug output to Syslog and/or Tracefs
+=====================================
+
+Dynamic Debug can direct pr_debugs to both syslog and tracefs, using
+the +p, +T flags respectively.  This allows users to migrate away from
+syslog if they see utility in doing so.
+
+By default, =T writes to the global /sys/kernel/tracing/trace buffer,
+and =T:0 does so explicitly, using the buffer's dyndbg-name :0.
+
+Alternatively =T:named_trace.flags writes those pr_debugs to a named
+trace (in tracing/instances/$named_trace) instead of the global
+trace-buf (tracing/trace), iff it was previously opened.
+
+Example 1:
+
+   echo <<CMD_BLK > /proc/dynamic_debug/control
+    class DRM_UT_KMS +T:0		# user wants KMS in global
+    open drm_bulk			# misc bucket
+     class DRM_UT_CORE +T:drm_bulk	# assemble misc contents
+     class DRM_UT_DRIVER +T:drm_bulk
+    open drm_screens			# screen changes
+     class DRM_UT_LEASE +T:drm_screens	# assemble the contents
+     class DRM_UT_DP    +T:drm_screens
+     class DRM_UT_DRMRES +T:drm_screens
+     class DRM_UT_STATE  +T:drm_screens
+    open trash
+     class junk +T:trash
+    open drm_vblank			# isolate hi-rate
+     class DRM_UT_VBL   +T
+    open 0				# restore global default
+   CMD_BLK
+
+With this you can segregate groupings of messages to private buffers,
+for any number of reasons:
+
+ - create a flight-recorder buffer
+ - isolate hi-rate traffic
+ - simplify buffer management and overwrite
+ - assemble "related" sets of prdbgs by +T:name.
+ - select & enable them later, with keyword: trace_name/label
+ - just label some traffic as trash/uninteresting
+ - trace-cmd can merge them for viewing
+ - 63 private buffers are supported + global
+
+Note: This CMD_BLK example uses +T (not =T) to set callsite state;
+this preserves existing p-flags, allowing their independent use for
+syslog stuff.  If you are doing this, note also that the prefix flags
+are shared; they affect messages to both destinations.
+
+Example 2:
+
+If the CMD_BLK above used -T:named instead of +T:named, it would
+disable those trace-messages, but still set the trace-destinations on
+the selected pr_debugs.
+
+This allows a user to compose a "labelled" set of pr_debugs, to
+capture "related" activity (as the user sees it).  Then later,
+they can enable the composed/named/labelled groups at once::
+
+  ddcmd trace_name vblank -T		# turn off hi-rate, save work
+  ddcmd trace_name drm_screens +T	# track plug/unplug events ?
+
+Example 3:
+
+With the set-default-dest-on-open feature, the =T:tname syntax (as
+used in example 1: CMD_BLK) is unnecessary, because each =T
+immediately follows an "open $named", so the tname is implicit.
+
+This plays nicely with the keep-presets feature used in example 2, by
+only updating the site's name to the last open'd one if it is "0".
+
+The last "open 0" cmd in the BLK resets the default trace-dest to the
+global one, so that the next user is not surprised.
 
 Debug messages during Boot Process
 ==================================
@@ -364,6 +451,8 @@ Examples
     dyndbg="file init/* +p #cmt ; func parse_one +p"
     // enable pr_debugs in 2 functions in a module loaded later
     pc87360.dyndbg="func pc87360_init_device +p; func pc87360_find +p"
+    // open private tracing/instances/foo,bar
+    dyndbg=open,foo%open,bar
 
 Kernel Configuration
 ====================
@@ -396,6 +485,12 @@ Otherwise, they are off by default; ``ccflags += -DDEBUG`` or
 If ``CONFIG_DYNAMIC_DEBUG`` is not set, ``print_hex_dump_debug()`` is
 just a shortcut for ``print_hex_dump(KERN_DEBUG)``.
 
+Miscellaneous Notes
+===================
+
 For ``print_hex_dump_debug()``/``print_hex_dump_bytes()``, format string is
 its ``prefix_str`` argument, if it is constant string; or ``hexdump``
 in case ``prefix_str`` is built dynamically.
+
+For ``print_hex_dump_debug()`` and ``print_hex_dump_bytes()``, only
+the ``p`` flag has meaning, other flags are ignored.
