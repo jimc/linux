@@ -463,9 +463,30 @@ function test_private_trace_4 {
     search_trace "should be ready"
 }
 
+# $1 - trace-buf-name (or "0")
+# $2 - reference-buffer
+function search_in_trace_for {
+    bufname=$1; shift;
+    ref=$2;
+    ref2=$(echo $ref | cut -c20-)
+    echo $ref2
+}
+
 function test_private_trace_mixed_class {
     local modname="test_dynamic_debug"
     echo -e "${GREEN}# TEST_PRIVATE_TRACE_mixed_class ${NC}"
+
+    local eyeball_ref=<<'EOD'
+        modprobe-1173    [001] .....     7.781008: 0: test_dynamic_debug:do_cats: test_dd: D2_CORE msg
+        modprobe-1173    [001] .....     7.781010: 0: test_dynamic_debug:do_cats: test_dd: D2_KMS msg
+        modprobe-1173    [001] .....     7.781010: 0: test_dynamic_debug:do_levels: test_dd: V3 msg
+             cat-1214    [001] .....     7.905494: 0: test_dd: doing categories
+             cat-1214    [001] .....     7.905495: 0: test_dynamic_debug:do_cats: test_dd: D2_CORE msg
+             cat-1214    [001] .....     7.905496: 0: test_dynamic_debug:do_cats: test_dd: D2_KMS msg
+             cat-1214    [001] .....     7.905497: 0: test_dd: doing levels
+             cat-1214    [001] .....     7.905498: 0: test_dynamic_debug:do_levels: test_dd: V3 msg
+EOD
+
     ddcmd =_
     ddcmd module,params,+T:unopened fail
     check_err_msg "Invalid argument"
@@ -501,19 +522,6 @@ function test_private_trace_mixed_class {
     ddcmd class,D2_CORE,-T%class,D2_KMS,-T%class,V3,-T		# turn off class'd
     ddcmd close,bupkus 
     is_trace_instance_closed bupkus
-
-    # check results
-    eyeball_ref=<<EOD
-        modprobe-1173    [001] .....     7.781008: 0: test_dynamic_debug:do_cats: test_dd: D2_CORE msg
-        modprobe-1173    [001] .....     7.781010: 0: test_dynamic_debug:do_cats: test_dd: D2_KMS msg
-        modprobe-1173    [001] .....     7.781010: 0: test_dynamic_debug:do_levels: test_dd: V3 msg
-             cat-1214    [001] .....     7.905494: 0: test_dd: doing categories
-             cat-1214    [001] .....     7.905495: 0: test_dynamic_debug:do_cats: test_dd: D2_CORE msg
-             cat-1214    [001] .....     7.905496: 0: test_dynamic_debug:do_cats: test_dd: D2_KMS msg
-             cat-1214    [001] .....     7.905497: 0: test_dd: doing levels
-             cat-1214    [001] .....     7.905498: 0: test_dynamic_debug:do_levels: test_dd: V3 msg
-: tools/testing/selftests/dynamic_debug/dyndbg_selftest.sh:489 search for 'test_dd: doing levels' failed in line
-EOD
 
     # validate the 3 enabled class'd sites, with mf prefix
     search_trace_name bupkus 0 "test_dynamic_debug:do_cats: test_dd: D2_CORE msg"
