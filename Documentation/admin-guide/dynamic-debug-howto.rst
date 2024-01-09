@@ -349,13 +349,23 @@ Labeled Trace Examples
 
 Example 1:
 
+Use 2 private trace instances to trivially segregate interesting debug.
+
+  ddcmd open usbcore_buf	# create or share tracing/instances/usbcore_buf
+  ddcmd module usbcore_buf =T	# enable module usbcore to tracing/instances/usbcore_buf
+
+  ddcmd open tbt		# create or share instances/tbt
+  ddcmd module thunderbolt =T	# enable mod: thunderbolt to instances/tbt
+
+Example 2:
+
 RFC: This is plausible but aggressive conjecture, needs DRM-folk
 review for potential utility.
 
-  echo <<CMD_BLK > /proc/dynamic_debug/control
+  echo <<DRM_CMD_BLK > /proc/dynamic_debug/control
 
     # open 0		# automatically opened anyway
-    open 0		# but resets [#default_dest] to [#last_good_open]_
+    open 0		# but resets [#default_dest]_ to [#last_good_open]_
 
       # for some reason user wants some traffic to global buff
       class DRM_UT_KMS +T:0	# explicit 0 also sets [#default_dest]_
@@ -374,8 +384,9 @@ review for potential utility.
       class DRM_UT_DRMRES +T
       class DRM_UT_STATE  +T
 
-    open trash
-      class junk +T:trash	# RFC could this do >/dev/null ??
+    # mark traffic to ignore
+    open trash			# will remain empty
+      class junk -T:trash	# set :trash and clear T
 
     open drm_vblank		# isolate hi-rate traffic
       class DRM_UT_VBL   +T	# use drm_vblank (implicitly)
@@ -385,29 +396,27 @@ review for potential utility.
 
     open 0	# reset [#default_dest]_ for next user
 
-   CMD_BLK
+   DRM_CMD_BLK
 
-NOTES:
+This example uses +T (not =T) to enable pr_debugs to tracefs.  Doing
+so preserves all other flags, so you can independently use +p for
+syslog, and customize the shared prefix-flags per your personal whim
+(or need), knowing they're not changed later spuriously.
 
-This CMD_BLK example uses +T (not =T) to enable pr_debugs to tracefs.
-Doing so preserves all other flags, so you can independently use +p
-for syslog, and customize the shared prefix-flags per your personal
-whim (or need), knowing they're not changed later by an =_.
+NB: Dyndbg's support for DRM.debug uses ``+p`` & ``-p`` to toggle each
+DRM_UT_* class by name, without altering any prefix customization you
+might favor and apply.
 
-Dyndbg's support for DRM.debug also uses ``+p`` & ``-p`` to toggle
-each DRM_UT_* class by name, without altering any prefix customization
-you might favor.
+This example also does explicit ``+T:<name>`` labeling more than
+strictly needed, because it also mostly follows a repeating "open then
+label" pattern, and could rely upon [#last_good_open] being set.  The
+afterthought provides a counter-example.
 
-This example also does explicit +T:<name> labeling more than strictly
-needed, because it also mostly follows a linear open-then-label
-pattern, and could rely upon [#last_good_open] state maintenance.
-The afterthought provides a counter-example.
+Trash is handled by labelling and disabling certain traffic, so its
+never collected.  This will waste a trace instance, but it will stay
+empty.  NB: the ``-T:trash`` disables the flag, but sets the label.
 
-Conversely, the other pattern is:
-
-  open x; open y; open z # followedby ; +T:x ; +T:y ; +T:z # as needed.
-
-The extra ``open 0`` commands at the start & end of the CMD_BLK
+The extra ``open 0`` commands at the start & end of the DRM_CMD_BLK
 explicitly manipulate the [#last_good_open], since ``open 0`` never
 fails.  This defensive practice prevents surprises when the next user
 reasonably expects the "0" default, enabling to the global trace-buf.
@@ -416,12 +425,11 @@ RFC: the ``open 0`` resets could be done automatically around a
 BLK_CMD (page-write).  This would elminiate a certain "flexibility" or
 magic-at-a-distance (take your pick).
 
-Example 2: labelling 1st, deferred enable.
+Example 3: labelling 1st, deferred enable.
 
-If the CMD_BLK above used +:<label> instead of +T:<label>, the
-selected sites get labelled, but are not yet enabled.  This allows a
-user to compose labels to join "related" activities, as they see it.
-
+If the DRM_CMD_BLK above had used ``-T:<label>`` with ``+:<label>``;
+then the selected sites get labelled, but are disabled.  This style
+lets a user aggregate an arbitrary set of "related" pr_debugs.
 Then those labels can be selected and enabled together:
 
   ddcmd label drm_screens +T	# enable tracing on the user's label
@@ -437,10 +445,22 @@ Also, without ``open foo`` required, theres no [#last_good_open], and
 [#default_dest] must be set by explicit labelling at least once before
 using [#default_dest] in following query-cmds.
 
-Speaking strictly, ``[+-=]:<name>`` all have the same effect: to
-update the callsite's label (user_label) with the new value.  That
-said, ``+:<name>.fmslt`` and ``-:<name>.fmslt`` still set/clear the
-'fmslt' prefix-flags as described previously.
+Example 4:
+
+This example opens interesting instances/labels 1st (perhaps at boot),
+then labels several modules, and enables their pr_debugs to the
+labelled trace-instances.
+
+  echo <<ALT_BLK_STYLE > /proc/dynamic_debug/control
+    open x;
+    open y;
+    open z
+    module X  +T:x
+    module X1 +T	# implicit :x
+    module Y  +T:y
+    module Z  +T:z
+    module Z1 +T	# implicit :z
+  ALT_BLK_STYLE
 
 Debug messages during Boot Process
 ==================================
