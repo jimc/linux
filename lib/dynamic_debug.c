@@ -916,8 +916,11 @@ static int ddebug_parse_flags(const char *str, struct flag_settings *modifiers)
 				read_args = opt_array[i].read_args;
 				if (read_args) {
 					str = read_args(str, modifiers);
-					if (!str)
+					if (!str) {
+						pr_err("err on '%c'\n",
+						       opt_array[i].opt_char);
 						return -EINVAL;
+					}
 				}
 				break;
 			}
