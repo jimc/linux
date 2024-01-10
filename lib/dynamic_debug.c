@@ -239,14 +239,14 @@ static const struct
 	read_flag_args_f read_args;
 	show_flag_args_f show_args;
 } opt_array[] = {
-	{ _DPRINTK_FLAGS_PRINTK, 'p' },
+	{ _DPRINTK_FLAGS_PRINTK, 'p', read_T_args, show_T_args},
 	{ _DPRINTK_FLAGS_TRACE, 'T', read_T_args, show_T_args},
 	{ _DPRINTK_FLAGS_INCL_MODNAME, 'm' },
 	{ _DPRINTK_FLAGS_INCL_FUNCNAME, 'f' },
 	{ _DPRINTK_FLAGS_INCL_SOURCENAME, 's' },
 	{ _DPRINTK_FLAGS_INCL_LINENO, 'l' },
 	{ _DPRINTK_FLAGS_INCL_TID, 't' },
-	{ _DPRINTK_FLAGS_NONE, '_' },
+	{ _DPRINTK_FLAGS_NONE, '_', read_T_args, show_T_args},
 };
 
 struct ctrlbuf { char buf[ARRAY_SIZE(opt_array)+FLAG_T_ARG_LEN+1]; };
