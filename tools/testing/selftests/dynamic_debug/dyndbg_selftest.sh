@@ -191,9 +191,9 @@ function basic_tests {
 EOF
     # the intersection of all those main's is hard to track/count
     # esp when mixed with overlapping greps
-    check_match_ct =mf 27
-    check_match_ct =ml 0
-    check_match_ct =mfl 6
+    check_match_ct =:0.mf 27
+    check_match_ct =:0.ml 0
+    check_match_ct =:0.mfl 6
     ddcmd =_
 }
 
@@ -203,9 +203,9 @@ function comma_terminator_tests {
     check_match_ct '\[params\]' 4
     ddcmd module,params,=_		# commas as spaces
     ddcmd module,params,+mpf		# turn on non-classed
-    check_match_ct =pmf 4
+    check_match_ct =p:0.mf 4
     ddcmd ,module ,, ,  params, -p	# extra commas & spaces
-    check_match_ct =mf 4
+    check_match_ct =:0.mf 4
     ddcmd =_
 }
 
@@ -214,14 +214,14 @@ function test_percent_splitting {
     ifrmmod test_dynamic_debug
     ddcmd =_
     modprobe test_dynamic_debug dyndbg=class,D2_CORE,+pf%class,D2_KMS,+pt%class,D2_ATOMIC,+pm
-    check_match_ct =pf 1
-    check_match_ct =pt 1
-    check_match_ct =pm 1
+    check_match_ct =p:0.f 1
+    check_match_ct =p:0.t 1
+    check_match_ct =p:0.m 1
     check_match_ct test_dynamic_debug 32 -v
     ddcmd class,D2_CORE,+mf%class,D2_KMS,+lt%class,D2_ATOMIC,+ml "# add some prefixes"
-    check_match_ct =pmf 1
-    check_match_ct =plt 1
-    check_match_ct =pml 1
+    check_match_ct =p:0.mf 1
+    check_match_ct =p:0.lt 1
+    check_match_ct =p:0.ml 1
     check_match_ct test_dynamic_debug 32
     ifrmmod test_dynamic_debug
 }
@@ -255,7 +255,8 @@ function self_start {
 function self_end_normal {
     echo \# disable -T:selftest, rmmod, close
     ddcmd module test_dynamic_debug -T:selftest # leave mf
-    check_match_ct =mf 5 -v
+    check_match_ct =:selftest.mf 5 -v
+    ddcmd module test_dynamic_debug +:0
     ddcmd close selftest
     is_trace_instance_closed selftest
     ifrmmod test_dynamic_debug
@@ -264,7 +265,8 @@ function self_end_normal {
 function self_end_disable_anon {
     echo \# disable, close, rmmod
     ddcmd module test_dynamic_debug -T
-    check_match_ct =mf 5
+    check_match_ct =:selftest.mf 5
+    ddcmd module test_dynamic_debug +:0
     ddcmd close selftest
     is_trace_instance_closed selftest
     ifrmmod test_dynamic_debug
@@ -273,7 +275,8 @@ function self_end_disable_anon {
 function self_end_disable_anon_mf {
     echo \# disable, close, rmmod
     ddcmd module test_dynamic_debug -Tf
-    check_match_ct =m 5
+    check_match_ct =:selftest.m 5
+    ddcmd module test_dynamic_debug +:0
     ddcmd close selftest
     is_trace_instance_closed selftest
     ifrmmod test_dynamic_debug
@@ -293,9 +296,10 @@ function self_end_delete_directory {
     del_trace_instance_dir selftest 0
     check_err_msg "Device or resource busy"
     ddcmd module test_dynamic_debug -mT:selftest
-    check_match_ct =f 5
+    check_match_ct =:selftest.f 5
     del_trace_instance_dir selftest 0
     check_err_msg "Device or resource busy"
+    ddcmd module test_dynamic_debug +:0
     ddcmd close selftest
     check_trace_instance_dir selftest 1
     is_trace_instance_closed selftest
@@ -343,6 +347,7 @@ function test_private_trace_simple_proper {
     ddcmd module params -T:kparm_stream.mf
     check_match_ct =T:kparm_stream.mf 0
     is_trace_instance_opened kparm_stream
+    ddcmd module params +:0
     ddcmd close kparm_stream
     is_trace_instance_closed kparm_stream
 
@@ -375,11 +380,11 @@ function test_private_trace_syntax_close_in_use {
     search_trace_name "0" 1 "test_private_trace_syntax_close_in_use about to do_prints"
 
     doprints
-    ddcmd class,D2_CORE,-T:foo
+    ddcmd class,D2_CORE,-T:0
     ddcmd close foo fail	# close fails because foo is still being used
     check_err_msg "Device or resource busy"	# verify error message
 
-    ddcmd class,D2_KMS,-T:foo
+    ddcmd class,D2_KMS,-T:0
     ddcmd close foo	# now close succeeds
     check_trace_instance_dir foo 1	# verify trace instance foo dir exists
     is_trace_instance_closed foo	# verify trace instance foo is closed
@@ -511,12 +516,13 @@ EOD
     # test various name misses
     ddcmd "module params =T:bupkus1" fail	# miss on name
     check_err_msg "Invalid argument"
-    ddcmd "module params =T:bupkus." fail	# extra dot wo trailing flags ?
-    check_err_msg "Invalid argument"
     ddcmd "module params =T:unopened" fail	# unopened
     check_err_msg "Invalid argument"
-    ddcmd "module params =mlfT:bupkus." fail
-    check_err_msg "Invalid argument"
+
+    ddcmd "module params =mlfT:bupkus."		# we allow dot at the end of flags
+    ddcmd "module params =T:bupkus."
+    ddcmd "module params =:bupkus."
+    ddcmd "module params =:0."
 
     check_match_ct =T:bupkus.mf 3		# the 3 classes enabled above
     ddcmd "module $modname =T:bupkus"		# enable the 5 non-class'd pr_debug()s
@@ -525,10 +531,10 @@ EOD
     doprints
     ddcmd close,bupkus fail
     check_err_msg "Device or resource busy"
-    ddcmd "module * -T"				# misses class'd ones
+    ddcmd "module * -T:0"			# misses class'd ones
     ddcmd close,bupkus fail
 
-    ddcmd class,D2_CORE,-T%class,D2_KMS,-T%class,V3,-T		# turn off class'd
+    ddcmd class,D2_CORE,-T:0%class,D2_KMS,-T:0%class,V3,-T:0		# turn off class'd and set dest to 0
     ddcmd close,bupkus 
     is_trace_instance_closed bupkus
 
@@ -563,7 +569,7 @@ EOD
     check_trace_instance_dir bupkus 1
 
     # drop last users, now delete works
-    ddcmd "module * -T"
+    ddcmd "module * -T:0"
     ddcmd close,bupkus
     is_trace_instance_closed bupkus
     del_trace_instance_dir bupkus 1
@@ -580,12 +586,13 @@ function test_private_trace_overlong_name {
     check_trace_instance_dir $name 1
 
     ddcmd "file kernel/module/main.c +T:$name.mf "
-    check_match_ct =T:A_bit_lengthy_trace....mf 14
+    check_match_ct =T:A_bit_lengthy_trace_....mf 14
 
     ddcmd "module * -T"
-    check_match_ct =:A_bit_lengthy_trace....mf 0	# no :trc_name
+    check_match_ct =:A_bit_lengthy_trace_....mf 14
     check_match_ct kernel/module/main.c 14		# to be certain
 
+    ddcmd "module * -T:0"
     ddcmd close,$name
     is_trace_instance_closed $name
     del_trace_instance_dir $name 1
@@ -616,7 +623,7 @@ function test_private_trace_fill_trace_index {
         del_trace_instance_dir $name$i 1
         check_trace_instance_dir $name$i 0
     done
-    ddcmd "module * -T"
+    ddcmd "module * -T:0"
     ddcmd close,trace_instance_63
     is_trace_instance_closed trace_instance_63
     del_trace_instance_dir trace_instance_63 1
