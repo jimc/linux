@@ -842,7 +842,7 @@ function test_labelling {
     ddcmd =_
 
     # trace params processing of the modprobe
-    ddcmd open,param_log%module,params,+T:param_log.tmfsl
+    ddcmd open,param_log%module,params,+T:param_log.tmfs
     check_match_ct =T:param_log 4 -v
 
     # modprobe with params.  This uses the default_dest :param_log
@@ -850,8 +850,8 @@ function test_labelling {
 	     dyndbg=class,D2_CORE,+Tmf%class,D2_KMS,+Tmf%class,D2_ATOMIC,+pmT
 
     # check the trace for params processing during modprobe, with the expected prefixes
-    search_trace_name param_log 5 "params:parse_args:kernel/params.c:175: doing test_dynamic_debug"
-    search_trace_name param_log 4 "params:parse_one:kernel/params.c:153: doing test_dynamic_debug"
+    search_trace_name param_log 5 "params:parse_args:kernel/params.c: doing test_dynamic_debug"
+    search_trace_name param_log 4 "params:parse_one:kernel/params.c: doing test_dynamic_debug"
 
     # and for the enabled test-module's pr-debugs
     search_trace_name param_log 3 "test_dynamic_debug:do_cats: test_dd: D2_CORE msg"
@@ -867,7 +867,7 @@ function test_labelling {
     ddcmd label param_log class D2_KMS  +T:new_out	# case for class D2_* (wildcard) ??
     check_match_ct =T:param_log 0
     check_match_ct =T:new_out 6		# all are redirected
-    check_match_ct =T:new_out.mfslt 4	# module/params.c prdbgs still have all flags
+    check_match_ct =T:new_out.mfst 4	# module/params.c prdbgs still have the flags
 
     doprints
     search_trace_name new_out 2 "test_dynamic_debug:do_cats: test_dd: D2_CORE msg"
