@@ -7796,12 +7796,12 @@ EOM
 	}
 
 	if ($quiet == 0) {
-		print "\n";
 		if ($clean == 1) {
-			print "$vname has no obvious style problems and is ready for submission.\n";
+			print "$vname \n has no obvious style problems and is ready for submission.\n";
 		} else {
-			print "$vname has style problems, please review.\n";
+			print "$vname \n has style problems, please review.\n";
 		}
+		print "\n";
 	}
 	return $clean;
 }
