@@ -134,9 +134,9 @@ keywords are:::
 
 The meanings of each keyword are:
 
-func
-    The given string is compared against the function name
-    of each callsite.  Example::
+func <func_name>
+    The func_name is compared against the function name of each
+    callsite.  Example::
 
 	func svc_tcp_accept
 	func *recv*		# in rfcomm, bluetooth, ping, tcp
@@ -291,7 +291,7 @@ number of reasons:
  - trace-cmd can merge them for viewing
    ex: -e dyndbg (or -e prdbg,devdbg)
 
-The ``:0.`` label steers to the global trace-event buf:
+The ``:0.`` label steers output to the global trace-event buf:
 
    ddcmd open 0   # automatic, but also sets [#last_opened]_
    ddcmd =:0	  # steer pr_debugs to /sys/kernel/tracing/trace
