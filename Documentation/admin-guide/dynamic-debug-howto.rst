@@ -99,7 +99,7 @@ character). For example, you can match all usb drivers::
 
   :#> ddcmd file "drivers/usb/*" +p	# "" to suppress shell expansion
 
-Syntactically, a command is [#mostly]_ pairs of keyword values,
+Syntactically, a query/command is 0 or more pairs of keyword values,
 followed by a flags change or setting::
 
   command ::= match-spec* flags-spec
@@ -107,6 +107,14 @@ followed by a flags change or setting::
 The match-spec's select *prdbgs* from the catalog, upon which to apply
 the flags-spec, all constraints are ANDed together.  An absent keyword
 is the same as keyword "*".
+
+non-query commands support connection to tracefs:
+
+  command += open <name>
+  command += close <name>
+
+match specification
+===================
 
 A match specification is a keyword, which selects the attribute of
 the callsite to be compared, and a value to compare against.  Possible
@@ -117,8 +125,8 @@ keywords are:::
 		 'module' string |
 		 'format' string |
 		 'class' string |
-		 'line' line-range |
-		 'label' trace_name
+		 'label' string |
+		 'line' line-range
 
   line-range ::= lineno |
 		 '-'lineno |
@@ -206,8 +214,11 @@ line <ln_spec>
 label <lbl_name>
     This matches the lbl_name against each callsite's current label
     (the default is "0").  This allows a user to select and enable a
-    previously labelled set of callsites, allowing the user to
-    "assemble" a set of "related" pr_debugs.
+    previously labelled set of callsites, after assembling a group label
+    to express the "relatedness" they perceive.
+
+Flags Specification
+===================
 
 The flags-spec is a change operation followed by one or more flag
 characters.  The change operation is one of the characters::
@@ -220,11 +231,12 @@ The primary flags are::
 
   p    print to syslog
   T    write to tracefs
-  _    no flags (for +_,-_, like +0.-0)
-  :    trace-label flag (see below)
+  _    no-flags (allows positive assertion of no-flags)
+  :    trace-label pseudo-flag (see below)
 
-The prefix flags compose each site's dynamic-prefix, in order.
-The dynamic-prefix prepends the pr_debug msg for both p,T.
+The prefix flags append callsite info to each site's dynamic-prefix,
+in the order shown below, (with '':'' between each).  That is then
+prepended to the pr_debug messsage, for both sylog and tracefs.
 
   t    thread ID, or <intr>
   m    module name
@@ -232,43 +244,48 @@ The dynamic-prefix prepends the pr_debug msg for both p,T.
   s    the source file name
   l    line number
 
+NB: pr_fmt is after the dynamic-prefix.
+
 Basic flag examples:
 
   # because match-spec can be empty, these are legal commands.
   =p    # output to syslog (on all sites)
   =T    # output to trace (on all sites)
-  =_    # clear all flags (set them to off)
+  =_    # clear all flags (set them all off)
   +_    # set no flags. [#nochgquery]_
   -_    # clear no flags. [#nochgquery]_
   +mf   # set "module:function: " prefix
   +sl   # set "file:line: " prefix
 
-Labelling pr_debug callsites:
+Labelling pr_debug callsites
+============================
 
-Optionally, the T-flag [#notonly]_ can be followed by a user-chosen
-label/name (default is "0", implied).  This adds the pr_debug to the
-named set, which is then selectable with the "label" keyword.
+Callsites can also be labelled, using the ``:<name>`` trace-label
+pseudo-flag, and the following <name>.  This labels the callsite with
+that <name>, allowing its later selection and enablement using the
+"label" keyword.  The default label is "0".
+
+Labelling Examples:
 
   =T       # enable tracing to global/"0" (implicit)
   =T:0     # enable tracing to global/"0" (explicit)
   =T:0.    # same, dot terminates name (optional here)
-  =T:0.mf  # same, dot required before 'mf', "module:function:" prefix wanted
+  =T:0.mf  # same, also set "mf" flags (dot required to terminate name)
 
-  =T:foo    # set label to foo, enable them to tracing/instances/foo
+  =T:foo    # set labels to foo [#ifopened]_, enable them to tracing/instances/foo
   =T:foo.mf # same, with "module:function:" prefix
 
-  =_:foo    # clear all flags, set all labels to foo [#ifopend]_
-  =:foo     # touch no flags, set labels to foo [#ifopend]_
+  =_:foo    # clear all flags, set all labels to foo [#ifopened]_
+  =:foo     # set labels, touch no flags, since no flags are given
   =:0       # reset all labels to global trace-buf
   =:0.      # same, with buf-name termination char (not needed here)
 
-[#notonly] Labelling is obviously related to tracing, but is separate
-syntactically, and is allowed independently, since it then supports
-user's composing a "related" named set of pr_debugs, and then sending
-them all to syslog.
+Labelling is primarily for tracing, but is syntactically separate, and
+is allowed independently, since the label keyword can also be used to
+enable to syslog, or to both.
 
-  =p:foo    # foo is allowed here, writes to syslog just like :0. (RFC)
-  =:foo     # labelling is a "primary" flag, not dependent on p,T
+  =p:foo    # enable to syslog, independent of foo
+  =pT:foo   # trace to instances/foo, and to syslog
 
 Debug output to Syslog and/or Tracefs
 =====================================
@@ -277,49 +294,52 @@ Dynamic Debug can independently direct pr_debugs to both syslog and
 tracefs, using the +p, +T flags respectively.  This allows users to
 migrate away from syslog in bites, if and as they see a reason.
 
-Dyndbg supports 64-way steering pr_debugs into tracefs, by labeling
+Dyndbg supports 64-way steering of pr_debugs into tracefs, by labelling
 the callsites as described above.  You can steer trace traffic for any
 number of reasons:
 
  - create a flight-recorder buffer.
  - isolate hi-rate traffic.
  - simplify buffer management and overwrite guarantees.
- - assemble "related" sets of prdbgs by labeling them.
+ - assemble "related" sets of prdbgs by labelling them.
  - select & enable them later, with "label" keyword.
  - just label some traffic as trash/uninteresting (>/dev/null?)
  - 63 private buffers are supported + global
  - trace-cmd can merge them for viewing
    ex: -e dyndbg (or -e prdbg,devdbg)
 
-The ``:0.`` label steers output to the global trace-event buf:
+The ``:0.`` default label steers output to the global trace-event buf:
 
-   ddcmd open 0   # automatic, but also sets [#last_opened]_
+   ddcmd open 0   # opened by default, also sets [#last_opened]_
    ddcmd =:0	  # steer pr_debugs to /sys/kernel/tracing/trace
-   ddcmd =T	  # enable pr_debugs to their destinations(s)
+   ddcmd =T	  # enable pr_debugs to their respective destinations
 
    # also need to enable the events in tracefs
    echo 1 > /sys/kernel/tracing/trace_on
    echo 1 > /sys/kernel/tracing/events/dyndbg/enable
 
-Or ``:<name>.`` labels steer to /sys/kernel/tracing/instances/<name> [#ifopend]_
+Or the ``:<name>.`` labels steer +T enabled callsites into
+/sys/kernel/tracing/instances/<name> [#ifopened]_
 
    ddcmd open foo	# open or connect to /sys/kernel/tracing/instances/foo
    ddcmd =:foo		# set labels explicitly, and [#last_opened]_
    ddcmd =T		# reuse [#last_opened]_ implicitly
 
-   # also enable the events in tracefs
+   # also enable the events to the trace instance (as needed)
    echo 1 > /sys/kernel/tracing/instances/foo/trace_on
    echo 1 > /sys/kernel/tracing/instances/foo/events/dyndbg/enable
 
 open foo & close foo
 ====================
 
-The ``open foo`` & ``close foo`` allow dyndbg to manage the 63 private
-trace-instances it can use, so it can error with -E<mumble> when asked
-for one-too-many.
+The ``open foo`` & ``close foo`` commands allow dyndbg to manage the
+63 private trace-instances it can use simultaneously, so it can error
+with -ENOSPC when asked for one-too-many.
 
-[#ifopend] It is an error -E<mumble> to set a label (=:foo) that hasnt
-been previously opened.
+[#ifopened] It is an error -EINVAL to set a label (=:foo) that hasnt
+been previously opened.  Otherwise, [#last_opened] is set to the just
+opened label, allowing implicit labelling in subsequently selected and
+enabled callsites.
 
 [#already_opened] If /sys/kernel/tracing/instances/foo has already
 been created separately, then dyndbg just uses it, mixing any =T:foo
@@ -339,10 +359,7 @@ query-cmds.
 
 ``close foo`` insures that no pr_debugs are set to :foo, then unmaps
 the label from its reserved trace-id, preserving the trace buffer for
-trace-cmd etc.  Otherwise dyndbg will return -E<mumble>.
-
-[#mostly] The open <name> & close <name> commands are the exception to
-the earlier simplifing statement that a command is a selector and flags.
+trace-cmd etc.  Otherwise the command returns -EBUSY.
 
 Labeled Trace Examples
 ======================
@@ -352,10 +369,10 @@ Example 1:
 Use 2 private trace instances to trivially segregate interesting debug.
 
   ddcmd open usbcore_buf	# create or share tracing/instances/usbcore_buf
-  ddcmd module usbcore_buf =T	# enable module usbcore to tracing/instances/usbcore_buf
+  ddcmd module usbcore_buf =T	# enable module usbcore to just opened instance
 
   ddcmd open tbt		# create or share instances/tbt
-  ddcmd module thunderbolt =T	# enable mod: thunderbolt to instances/tbt
+  ddcmd module thunderbolt =T	# enable module thunderbolt to just opened instance
 
 Example 2:
 
@@ -374,8 +391,8 @@ review for potential utility.
     # label 2 classes together (presuming its useful)
     open drm_bulk	# sets [#last_good_open]_
 
-      class DRM_UT_CORE +T:drm_bulk	# explicit label, could use [#default_dest]_
-      class DRM_UT_DRIVER +T		# implicit by previous and open
+      class DRM_UT_CORE +T		# implicit :drm_bulk
+      class DRM_UT_DRIVER +T:drm_bulk	# explicit (but unnecessary)
 
     # capture DRM screen/layout changes
     open drm_screens
@@ -386,10 +403,10 @@ review for potential utility.
 
     # mark traffic to ignore
     open trash			# will remain empty
-      class junk -T:trash	# set :trash and clear T
+      class junk -T		# cuz we disable the label 
 
     open drm_vblank		# isolate hi-rate traffic
-      class DRM_UT_VBL   +T	# use drm_vblank (implicitly)
+      class DRM_UT_VBL +T	# use drm_vblank (implicitly)
 
     # afterthought - add to drm_bulk
     class DRM_UT_DRIVER +T:drm_bulk	# explicit name needed here
@@ -407,30 +424,29 @@ NB: Dyndbg's support for DRM.debug uses ``+p`` & ``-p`` to toggle each
 DRM_UT_* class by name, without altering any prefix customization you
 might favor and apply.
 
-This example also does explicit ``+T:<name>`` labeling more than
+This example also does explicit ``+T:<name>`` labelling more than
 strictly needed, because it also mostly follows a repeating "open then
 label" pattern, and could rely upon [#last_good_open] being set.  The
 afterthought provides a counter-example.
 
-Trash is handled by labelling and disabling certain traffic, so its
+Trash is handled by labelling and disabling certain traffic, so it is
 never collected.  This will waste a trace instance, but it will stay
-empty.  NB: the ``-T:trash`` disables the flag, but sets the label.
+empty.
 
 The extra ``open 0`` commands at the start & end of the DRM_CMD_BLK
-explicitly manipulate the [#last_good_open], since ``open 0`` never
-fails.  This defensive practice prevents surprises when the next user
-reasonably expects the "0" default, enabling to the global trace-buf.
-
-RFC: the ``open 0`` resets could be done automatically around a
-BLK_CMD (page-write).  This would elminiate a certain "flexibility" or
-magic-at-a-distance (take your pick).
+explicitly reset the [#last_good_open], since ``open 0`` never fails.
+This defensive practice prevents surprises when the next user expects
+the "0" default (reasonably!) which enables to the global trace-buf.
 
 Example 3: labelling 1st, deferred enable.
 
-If the DRM_CMD_BLK above had used ``-T:<label>`` with ``+:<label>``;
-then the selected sites get labelled, but are disabled.  This style
-lets a user aggregate an arbitrary set of "related" pr_debugs.
-Then those labels can be selected and enabled together:
+If the DRM_CMD_BLK above had replaced ``+T`` with ``-T``, then the
+selected sites would get their labels set, but the trace-enable flag
+is unset, and they are all trace-disabled.
+
+This style lets a user aggregate an arbitrary set of "related"
+pr_debugs.  Then those labels can be later selected and enabled
+together:
 
   ddcmd label drm_screens +T	# enable tracing on the user's label
   ddcmd label drm_bulk +p	# works for syslog too
@@ -462,6 +478,8 @@ labelled trace-instances.
     module Z1 +T	# implicit :z
   ALT_BLK_STYLE
 
+
+  
 Debug messages during Boot Process
 ==================================
 
