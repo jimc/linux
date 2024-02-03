@@ -260,31 +260,31 @@ Basic flag examples:
 Labelling pr_debug callsites
 ============================
 
-Callsites can also be labelled, using the ``:<name>`` trace-label
-pseudo-flag, and the following <name>.  This labels the callsite with
-that <name>, allowing its later selection and enablement using the
+Callsites can also be labelled, using the ``:<lbl_name>`` trace-label
+pseudo-flag, and the following <lbl_name>.  This labels the callsite
+with that name, allowing its later selection and enablement using the
 "label" keyword.  The default label is "0".
 
 Labelling Examples:
 
-  =T       # enable tracing to global/"0" (implicit)
-  =T:0     # enable tracing to global/"0" (explicit)
-  =T:0.    # same, dot terminates name (optional here)
-  =T:0.mf  # same, also set "mf" flags (dot required to terminate name)
+  =T:0     # enable tracing to "0"/global explicitly
+  =T:0.    # same, dot terminates lbl_name (optional here)
+  =T:0.mf  # same, but add "module:func:" prefix to msgs (dot required)
+  =T       # enable tracing to site.label (0 by default)
 
-  =T:foo    # set labels to foo [#ifopened]_, enable them to tracing/instances/foo
+  =T:foo    # set labels to foo [#ifopened]_, send them to tracing/instances/foo
   =T:foo.mf # same, with "module:function:" prefix
 
   =_:foo    # clear all flags, set all labels to foo [#ifopened]_
   =:foo     # set labels, touch no flags, since no flags are given
   =:0       # reset all labels to global trace-buf
-  =:0.      # same, with buf-name termination char (not needed here)
+  =:0.      # same (with optional dot)
 
-Labelling is primarily for tracing, but is syntactically separate, and
-is allowed independently, since the label keyword can also be used to
-enable to syslog, or to both.
+Labelling is primarily for mapping into tracing, but is syntactically
+separate, and is allowed independently, so the label keyword can be
+used to enable to syslog, or to both.
 
-  =p:foo    # enable to syslog, independent of foo
+  =p:foo    # enable to syslog, p ignores foo
   =pT:foo   # trace to instances/foo, and to syslog
 
 Debug output to Syslog and/or Tracefs
@@ -305,8 +305,6 @@ number of reasons:
  - select & enable them later, with "label" keyword.
  - just label some traffic as trash/uninteresting (>/dev/null?)
  - 63 private buffers are supported + global
- - trace-cmd can merge them for viewing
-   ex: -e dyndbg (or -e prdbg,devdbg)
 
 The ``:0.`` default label steers output to the global trace-event buf:
 
@@ -314,16 +312,16 @@ The ``:0.`` default label steers output to the global trace-event buf:
    ddcmd =:0	  # steer pr_debugs to /sys/kernel/tracing/trace
    ddcmd =T	  # enable pr_debugs to their respective destinations
 
-   # also need to enable the events in tracefs
+   # also need to enable the events into tracefs
    echo 1 > /sys/kernel/tracing/trace_on
    echo 1 > /sys/kernel/tracing/events/dyndbg/enable
 
 Or the ``:<name>.`` labels steer +T enabled callsites into
 /sys/kernel/tracing/instances/<name> [#ifopened]_
 
-   ddcmd open foo	# open or connect to /sys/kernel/tracing/instances/foo
-   ddcmd =:foo		# set labels explicitly, and [#last_opened]_
-   ddcmd =T		# reuse [#last_opened]_ implicitly
+   ddcmd open foo	# open/append to /sys/kernel/tracing/instances/foo
+   ddcmd =:foo		# set labels explicitly
+   ddcmd =T		# enable tracing to site.label
 
    # also enable the events to the trace instance (as needed)
    echo 1 > /sys/kernel/tracing/instances/foo/trace_on
@@ -336,25 +334,26 @@ The ``open foo`` & ``close foo`` commands allow dyndbg to manage the
 63 private trace-instances it can use simultaneously, so it can error
 with -ENOSPC when asked for one-too-many.
 
-[#ifopened] It is an error -EINVAL to set a label (=:foo) that hasnt
-been previously opened.  Otherwise, [#last_opened] is set to the just
-opened label, allowing implicit labelling in subsequently selected and
-enabled callsites.
+Otherwise, [#last_opened] is set to the just opened label, allowing
+implicit labelling in subsequently selected and enabled callsites.
+
+[#ifopened] It is an error -EINVAL to set a label (=:foo) that hasn't
+been previously opened.
 
 [#already_opened] If /sys/kernel/tracing/instances/foo has already
 been created separately, then dyndbg just uses it, mixing any =T:foo
 labelled pr_debugs into instances/foo/trace.  Otherwise dyndbg will
-open the trace-instance for you.
+open the trace-instance, and enable it? for you.
 
 Dyndbg treats ``:0.`` as the name of the global trace-event buffer; it
-is automatically opened, but needs enabled in tracefs too.
+is automatically opened, but needs to enabled in tracefs too.
 
 If ``open bar`` fails (if bar was misspelled), the [#last_good_open]
 is not what the user expects, so the open-cmd also terminates the
 play-thru-query-errors strategy normally used over a CMD_BLK of
 query-cmds.
 
-``open 0`` always succeeds, and sets [#last_good_open], providing the
+``open 0`` always succeeds, and sets [#last_opened]_, providing the
 [#default_dest] for subsequent query-cmds.
 
 ``close foo`` insures that no pr_debugs are set to :foo, then unmaps
@@ -382,21 +381,22 @@ review for potential utility.
   echo <<DRM_CMD_BLK > /proc/dynamic_debug/control
 
     # open 0		# automatically opened anyway
-    open 0		# but resets [#default_dest]_ to [#last_good_open]_
+    open 0		# but also resets [#default_dest]_ to [#last_opened]_
 
-      # for some reason user wants some traffic to global buff
-      class DRM_UT_KMS +T:0	# explicit 0 also sets [#default_dest]_
-      class DRM_UT_ATOMIC +T	# use [#default_dest]_ by either
+      # send some traffic to global trace, to mix with other events
+
+      class DRM_UT_KMS +T:0	# set label explicitly
+      class DRM_UT_ATOMIC +T	# enable to site.label
 
     # label 2 classes together (presuming its useful)
-    open drm_bulk	# sets [#last_good_open]_
+    open drm_bulk	# open instances/drm_bulk/, set [#last_opened]_
 
       class DRM_UT_CORE +T		# implicit :drm_bulk
       class DRM_UT_DRIVER +T:drm_bulk	# explicit (but unnecessary)
 
     # capture DRM screen/layout changes
     open drm_screens
-      class DRM_UT_LEASE +T	# all implied [#last_good_open]_
+      class DRM_UT_LEASE +T	# all implied [#last_opened]_
       class DRM_UT_DP    +T
       class DRM_UT_DRMRES +T
       class DRM_UT_STATE  +T
