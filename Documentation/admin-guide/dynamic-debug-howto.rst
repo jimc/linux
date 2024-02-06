@@ -110,10 +110,13 @@ is the same as keyword "*".
 
 non-query commands support connection to tracefs:
 
-  command += open <name>
-  command += close <name>
+  command ::= open <name>
+  command ::= close <name>
 
-match specification
+[Lukasz] Shouldn't it be here "::=" instead of "+="
+
+
+Match specification
 ===================
 
 A match specification is a keyword, which selects the attribute of
@@ -254,6 +257,10 @@ Basic flag examples:
   =_    # clear all flags (set them all off)
   +_    # set no flags. [#nochgquery]_
   -_    # clear no flags. [#nochgquery]_
+
+[Lukasz] Would you please add explanation for [#nochgquery]_ ?
+
+
   +mf   # set "module:function: " prefix
   +sl   # set "file:line: " prefix
 
@@ -264,6 +271,10 @@ Callsites can also be labelled, using the ``:<lbl_name>`` trace-label
 pseudo-flag, and the following <lbl_name>.  This labels the callsite
 with that name, allowing its later selection and enablement using the
 "label" keyword.  The default label is "0".
+
+[Lukasz] Would you please emphasise that by default (after boot) all callsites trace destinations
+are set to "0" and also [#default_dest]_ is set "0" ?
+
 
 Labelling Examples:
 
@@ -327,6 +338,14 @@ Or the ``:<name>.`` labels steer +T enabled callsites into
    echo 1 > /sys/kernel/tracing/instances/foo/trace_on
    echo 1 > /sys/kernel/tracing/instances/foo/events/dyndbg/enable
 
+[Lukasz] The above two echo lines are not needed when trace instance requested by open
+didn't exist and was created/opened. But when trace instance existed prior to open
+command then above two commands are required because we don't know what
+is the state of that particular trace instance. Even more commands might be required
+for example to disable capture of other trace events than dyndbg but these are tracefs
+details I wouldn't delve into too much.
+
+
 open foo & close foo
 ====================
 
@@ -337,16 +356,21 @@ with -ENOSPC when asked for one-too-many.
 Otherwise, [#last_opened] is set to the just opened label, allowing
 implicit labelling in subsequently selected and enabled callsites.
 
+[Lukasz] Do we need both [#last_opened] and [#default_dest]_ ?
+I mean can't we remove [#last_opened] in favor of replacing it with [#default_dest]_ ?
+IMHO it should be possible unless I missed something.
+
+
 [#ifopened] It is an error -EINVAL to set a label (=:foo) that hasn't
 been previously opened.
 
 [#already_opened] If /sys/kernel/tracing/instances/foo has already
 been created separately, then dyndbg just uses it, mixing any =T:foo
 labelled pr_debugs into instances/foo/trace.  Otherwise dyndbg will
-open the trace-instance, and enable it? for you.
+open the trace-instance, and enable it for you.
 
 Dyndbg treats ``:0.`` as the name of the global trace-event buffer; it
-is automatically opened, but needs to enabled in tracefs too.
+is automatically opened, but needs to be enabled in tracefs too.
 
 If ``open bar`` fails (if bar was misspelled), the [#last_good_open]
 is not what the user expects, so the open-cmd also terminates the
@@ -368,9 +392,9 @@ Example 1:
 Use 2 private trace instances to trivially segregate interesting debug.
 
   ddcmd open usbcore_buf	# create or share tracing/instances/usbcore_buf
-  ddcmd module usbcore_buf =T	# enable module usbcore to just opened instance
+  ddcmd module usbcore =T	# enable module usbcore to just opened instance
 
-  ddcmd open tbt		# create or share instances/tbt
+  ddcmd open tbt		# create or share tracing/instances/tbt
   ddcmd module thunderbolt =T	# enable module thunderbolt to just opened instance
 
 Example 2:
@@ -468,14 +492,14 @@ then labels several modules, and enables their pr_debugs to the
 labelled trace-instances.
 
   echo <<ALT_BLK_STYLE > /proc/dynamic_debug/control
-    open x;
-    open y;
-    open z
-    module X  +T:x
-    module X1 +T	# implicit :x
+    open x;             # set [#default_dest]_ to x
+    open y;             # set [#default_dest]_ to y
+    open z              # set [#default_dest]_ to z
+    module X  +T:z
+    module X1 +T	# :z, use [#default_dest]_ implicitly
     module Y  +T:y
     module Z  +T:z
-    module Z1 +T	# implicit :z
+    module Z1 +T	# :z, use [#default_dest]_ implicitly
   ALT_BLK_STYLE
 
 Debug messages during Boot Process
