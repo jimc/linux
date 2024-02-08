@@ -113,8 +113,6 @@ non-query commands support connection to tracefs:
   command ::= open <name>
   command ::= close <name>
 
-[Lukasz] Shouldn't it be here "::=" instead of "+="
-
 
 Match specification
 ===================
@@ -247,22 +245,19 @@ prepended to the pr_debug message, for both sylog and tracefs.
   s    the source file name
   l    line number
 
-NB: pr_fmt is after the dynamic-prefix.
-
 Basic flag examples:
 
   # because match-spec can be empty, these are legal commands.
   =p    # output to syslog (on all sites)
   =T    # output to trace (on all sites)
   =_    # clear all flags (set them all off)
-  +_    # set no flags. [#nochgquery]_
-  -_    # clear no flags. [#nochgquery]_
-
-[Lukasz] Would you please add explanation for [#nochgquery]_ ?
-
-
+  +_    # add no flags [#nochgquery]_
+  -_    # drop no flags [#nochgquery]_
   +mf   # set "module:function: " prefix
   +sl   # set "file:line: " prefix
+
+[#nochgquery] these queries alter no flags, they are processed
+normally.
 
 Labelling pr_debug callsites
 ============================
@@ -270,11 +265,8 @@ Labelling pr_debug callsites
 Callsites can also be labelled, using the ``:<lbl_name>`` trace-label
 pseudo-flag, and the following <lbl_name>.  This labels the callsite
 with that name, allowing its later selection and enablement using the
-"label" keyword.  The default label is "0".
-
-[Lukasz] Would you please emphasise that by default (after boot) all callsites trace destinations
-are set to "0" and also [#default_dest]_ is set "0" ?
-
+"label" keyword.  From boot, the [#default_dest] and all callsite
+labels are set to "0".
 
 Labelling Examples:
 
@@ -319,7 +311,7 @@ number of reasons:
 
 The ``:0.`` default label steers output to the global trace-event buf:
 
-   ddcmd open 0   # opened by default, also sets [#last_opened]_
+   ddcmd open 0   # opened by default, also sets [#default_dest]_
    ddcmd =:0	  # steer pr_debugs to /sys/kernel/tracing/trace
    ddcmd =T	  # enable pr_debugs to their respective destinations
 
@@ -330,36 +322,21 @@ The ``:0.`` default label steers output to the global trace-event buf:
 Or the ``:<name>.`` labels steer +T enabled callsites into
 /sys/kernel/tracing/instances/<name> [#ifopened]_
 
-   ddcmd open foo	# open/append to /sys/kernel/tracing/instances/foo
+   ddcmd open foo	# open or append to /sys/kernel/tracing/instances/foo
    ddcmd =:foo		# set labels explicitly
    ddcmd =T		# enable tracing to site.label
 
-   # also enable the events to the trace instance (as needed)
+   # needed if appending (above)
    echo 1 > /sys/kernel/tracing/instances/foo/trace_on
    echo 1 > /sys/kernel/tracing/instances/foo/events/dyndbg/enable
-
-[Lukasz] The above two echo lines are not needed when trace instance requested by open
-didn't exist and was created/opened. But when trace instance existed prior to open
-command then above two commands are required because we don't know what
-is the state of that particular trace instance. Even more commands might be required
-for example to disable capture of other trace events than dyndbg but these are tracefs
-details I wouldn't delve into too much.
-
 
 open foo & close foo
 ====================
 
 The ``open foo`` & ``close foo`` commands allow dyndbg to manage the
 63 private trace-instances it can use simultaneously, so it can error
-with -ENOSPC when asked for one-too-many.
-
-Otherwise, [#last_opened] is set to the just opened label, allowing
-implicit labelling in subsequently selected and enabled callsites.
-
-[Lukasz] Do we need both [#last_opened] and [#default_dest]_ ?
-I mean can't we remove [#last_opened] in favor of replacing it with [#default_dest]_ ?
-IMHO it should be possible unless I missed something.
-
+with -ENOSPC when asked for one-too-many.  Otherwise, [#default_dest]
+is upated accordingly.
 
 [#ifopened] It is an error -EINVAL to set a label (=:foo) that hasn't
 been previously opened.
@@ -377,8 +354,7 @@ is not what the user expects, so the open-cmd also terminates the
 play-thru-query-errors strategy normally used over a CMD_BLK of
 query-cmds.
 
-``open 0`` always succeeds, and sets [#last_opened]_, providing the
-[#default_dest] for subsequent query-cmds.
+``open 0`` always succeeds.
 
 ``close foo`` insures that no pr_debugs are set to :foo, then unmaps
 the label from its reserved trace-id, preserving the trace buffer for
@@ -405,7 +381,7 @@ review for potential utility.
   echo <<DRM_CMD_BLK > /proc/dynamic_debug/control
 
     # open 0		# automatically opened anyway
-    open 0		# but also resets [#default_dest]_ to [#last_opened]_
+    open 0		# but also resets [#default_dest]_ to 0
 
       # send some traffic to global trace, to mix with other events
 
@@ -413,14 +389,14 @@ review for potential utility.
       class DRM_UT_ATOMIC +T	# enable to site.label
 
     # label 2 classes together (presuming its useful)
-    open drm_bulk	# open instances/drm_bulk/, set [#last_opened]_
+    open drm_bulk	# open instances/drm_bulk/, set [#default_dest]_
 
       class DRM_UT_CORE +T		# implicit :drm_bulk
       class DRM_UT_DRIVER +T:drm_bulk	# explicit (but unnecessary)
 
     # capture DRM screen/layout changes
     open drm_screens
-      class DRM_UT_LEASE +T	# all implied [#last_opened]_
+      class DRM_UT_LEASE +T	# all implied [#default_dest]_
       class DRM_UT_DP    +T
       class DRM_UT_DRMRES +T
       class DRM_UT_STATE  +T
@@ -659,3 +635,6 @@ in case ``prefix_str`` is built dynamically.
 
 For ``print_hex_dump_debug()`` and ``print_hex_dump_bytes()``, only
 the ``p`` and ``T`` flags have meaning, other flags are ignored.
+
+pr_fmt displays after the dynamic-prefix.
+
