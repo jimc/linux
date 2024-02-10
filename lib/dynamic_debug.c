@@ -64,6 +64,7 @@ struct ddebug_query {
 	const char *function;
 	const char *format;
 	const char *class_string;
+	const char *user_label;
 	unsigned int first_lineno, last_lineno;
 };
 
@@ -303,13 +304,14 @@ static void vpr_info_dq(const struct ddebug_query *query, const char *msg)
 			fmtlen--;
 	}
 
-	v3pr_info("%s: func=\"%s\" file=\"%s\" module=\"%s\" format=\"%.*s\" lineno=%u-%u class=%s\n",
+	v3pr_info("%s: func=\"%s\" file=\"%s\" module=\"%s\" format=\"%.*s\" lineno=%u-%u class=%s label=%s\n",
 		  msg,
 		  query->function ?: "",
 		  query->filename ?: "",
 		  query->module ?: "",
 		  fmtlen, query->format ?: "",
-		  query->first_lineno, query->last_lineno, query->class_string);
+		  query->first_lineno, query->last_lineno,
+		  query->class_string, query->user_label);
 }
 
 static bool is_dd_trace_cmd(const char *str)
@@ -593,6 +595,16 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 			    valid_class != _DPRINTK_CLASS_ANY)
 				continue;
 
+			/* match against a given label */
+			if (query->user_label) {
+				int idx	= find_tr_instance(query->user_label);
+
+				if (idx < 0)
+					continue;
+				if (idx != get_trace_dst(dp))
+					continue;
+			}
+
 			/* match against the source filename */
 			if (query->filename &&
 			    !match_wildcard(query->filename, dp->filename) &&
@@ -798,6 +810,8 @@ static int check_set(const char **dest, char *src, char *name)
  * file <full-pathname>
  * file <base-filename>
  * module <module-name>
+ * class <class_name>
+ * label <user_label>
  * format <escaped-string-to-find-in-format>
  * line <lineno>
  * line <first-lineno>-<last-lineno> // where either may be empty
@@ -853,6 +867,8 @@ static int ddebug_parse_query(char *words[], int nwords,
 				return -EINVAL;
 		} else if (!strcmp(keyword, "class")) {
 			rc = check_set(&query->class_string, arg, "class");
+		} else if (!strcmp(keyword, "label")) {
+			rc = check_set(&query->user_label, arg, "label");
 		} else {
 			pr_err("unknown keyword \"%s\"\n", keyword);
 			return -EINVAL;
