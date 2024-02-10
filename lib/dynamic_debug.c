@@ -483,6 +483,27 @@ void update_tr_dst(const struct _ddebug *desc, const struct dd_ctrl *nctrl)
 		trc_tbl.buf[ndst].use_cnt++;
 }
 
+
+/*
+ * Selects trace destination. If callsite's current trace destination is '0'
+ * and user provided T flag without trace destination name then set callsite's
+ * trace destination to default trace destination. If a user provided trace
+ * destination name :trace_dest_name with or without T flag then set callsite's
+ * trace destination to the provided name. Otherwise keep callsite's current
+ * trace destination.
+ */
+static int select_tr_dst(struct flag_settings *modifiers, int cur_dst)
+{
+	if (!cur_dst && modifiers->flags & _DPRINTK_FLAGS_TRACE &&
+	    modifiers->trace_dst == DST_NOT_SET)
+		return trc_tbl.default_dst;
+
+	if (modifiers->trace_dst >= 0)
+		return modifiers->trace_dst;
+
+	return cur_dst;
+}
+
 static int ddebug_parse_cmd(char *words[], int nwords)
 {
 	if (nwords != 1)
@@ -609,8 +630,7 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 			nfound++;
 
 			nctrl.flags = (get_flags(dp) & modifiers->mask) | modifiers->flags;
-			nctrl.trace_dst = modifiers->trace_dst == DST_NOT_SET ?
-				get_trace_dst(dp) : modifiers->trace_dst;
+			nctrl.trace_dst = select_tr_dst(modifiers, get_trace_dst(dp));
 			if (!memcmp(&nctrl, get_ctrl(dp), sizeof(nctrl)))
 				continue;
 #ifdef CONFIG_JUMP_LABEL
@@ -906,10 +926,6 @@ static int ddebug_parse_flags(const char *str, struct flag_settings *modifiers)
 		modifiers->flags = 0;
 		break;
 	}
-
-	if (modifiers->flags & _DPRINTK_FLAGS_TRACE &&
-	    modifiers->trace_dst == DST_NOT_SET)
-		modifiers->trace_dst = trc_tbl.default_dst;
 
 	v3pr_info("op='%c' flags=0x%x mask=0x%x, trace_dest=0x%x\n", op,
 		  modifiers->flags, modifiers->mask, modifiers->trace_dst);
