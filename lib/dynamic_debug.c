@@ -951,7 +951,8 @@ static int ddebug_parse_flags(const char *str, struct flag_settings *modifiers)
 	return 0;
 }
 
-static int ddebug_exec_query(char *query_string, const char *modname)
+static int ddebug_exec_query(char *query_string, const char *modname,
+			     bool *is_trace_cmd)
 {
 	struct flag_settings modifiers = { .trace_dst = DST_NOT_SET };
 	struct ddebug_query query = {};
@@ -966,7 +967,8 @@ static int ddebug_exec_query(char *query_string, const char *modname)
 	}
 
 	/* check for open, close commands */
-	if (is_dd_trace_cmd(words[0]))
+	*is_trace_cmd = is_dd_trace_cmd(words[0]);
+	if (*is_trace_cmd)
 		return ddebug_parse_cmd(words, nwords-1);
 
 	if (ddebug_parse_query(words, nwords-1, &query, modname)) {
@@ -1003,16 +1005,19 @@ err:
 	return -EINVAL;
 }
 
-/* handle multiple queries in query string, continue on error, return
-   last error or number of matching callsites.  Module name is either
-   in the modname arg (for boot args) or perhaps in query string.
-*/
+/* handle multiple queries in query string, continue on error with
+ * exception of open and close commands, return last error or number
+ * of matching callsites.  Module name is either in the modname arg
+ * (for boot arg) or perhaps in query string.
+ */
 static int ddebug_exec_queries(char *query, const char *modname)
 {
 	char *split;
 	int i, errs = 0, exitcode = 0, rc, nfound = 0;
 
 	for (i = 0; query; query = split) {
+		bool is_trace_cmd = false;
+
 		split = strpbrk(query, "%;\n");
 		if (split)
 			*split++ = '\0';
@@ -1024,10 +1029,16 @@ static int ddebug_exec_queries(char *query, const char *modname)
 
 		vpr_info("query %d: \"%s\" mod:%s\n", i, query, modname ?: "*");
 
-		rc = ddebug_exec_query(query, modname);
+		rc = ddebug_exec_query(query, modname, &is_trace_cmd);
 		if (rc < 0) {
 			errs++;
 			exitcode = rc;
+			/*
+			 * if open or close command failed then
+			 * do not continue with next queries
+			 */
+			if (is_trace_cmd)
+				break;
 		} else {
 			nfound += rc;
 		}
