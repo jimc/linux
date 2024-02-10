@@ -81,7 +81,7 @@ by spaces, tabs, or commas.  So these are all equivalent::
   :#> ddcmd file,svcsock.c,line,1603,+p
 
 Command submissions are bounded by a write() system call.  Multiple
-commands can be written together, separated or ``%``, ``;`` or ``\n``::
+commands can be written together, separated by ``%``, ``;`` or ``\n``::
 
   :#> ddcmd func foo +p % func bar +p
   :#> ddcmd func foo +p \; func bar +p
