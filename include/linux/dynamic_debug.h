@@ -61,9 +61,18 @@ struct _ddebug {
 #else
 #define _DPRINTK_FLAGS_DEFAULT 0
 #endif
-	struct {
+	struct dd_ctrl {
 		unsigned int flags:8;
-		unsigned unused:24;
+	/*
+	 * The trace destination field is used to determine output of debug
+	 * logs when +T is set. Setting trace_dst value to 0 enables output
+	 * to prdbg and devdbg trace events. Setting trace_dst value to a
+	 * value in range of [1..63] enables output to trace instance.
+	 */
+#define TRACE_DST_BITS 6
+		unsigned int trace_dst:TRACE_DST_BITS;
+#define TRACE_DST_LAST	(1 << TRACE_DST_BITS)
+		unsigned unused:18;
 	} ctrl;
 } __attribute__((aligned(8)));
 
