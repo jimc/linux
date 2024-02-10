@@ -216,6 +216,16 @@ function check_err_msg() {
     fi
 }
 
+# $1 - default destination to check
+function check_default_dst() {
+    dst=$(tail -50 /proc/dynamic_debug/control | grep "#: Default trace destination" | \
+	  cut -d':' -f3 | sed -e 's/^[[:space:]]*//')
+    if [ "$dst" != "$1" ]; then
+        echo -e "${RED}: $BASH_SOURCE:$BASH_LINENO default dest '$dst' does not match with '$1'"
+        exit
+    fi
+}
+
 function basic_tests {
     echo -e "${GREEN}# BASIC_TESTS ${NC}"
     if [ $LACK_DD_BUILTIN -eq 1 ]; then
@@ -451,6 +461,70 @@ function test_flags {
 
     ddcmd close selftest
     is_trace_instance_closed selftest
+    ifrmmod test_dynamic_debug
+}
+
+# test verifies default destination
+function test_default_destination {
+    echo -e "${GREEN}# TEST_DEFAULT_DESTINATION ${NC}"
+
+    check_default_dst 0
+    modprobe test_dynamic_debug
+
+    ddcmd class,D2_CORE,+T	# default dest is 0
+    check_match_ct =T 1 -v
+
+    ddcmd open foo		# foo becomes default dest
+    is_trace_instance_opened foo
+    check_trace_instance_dir foo 1
+    check_default_dst foo
+
+    ddcmd class,D2_CORE,+T	# default dest is foo
+    check_match_ct =T:foo 1 -v
+
+    ddcmd open,0		# reopening sets default dest to 0
+    check_default_dst 0
+
+    ddcmd class,D2_CORE,-T
+    check_match_ct =:foo 1 -v
+
+    ddcmd class,D2_CORE,+T      # default dest is 0 but since callsite was already labelled
+                                # then reuse label
+    check_match_ct =T:foo 1 -v
+
+    ddcmd open bar		# bar becomes default dest
+    is_trace_instance_opened bar
+    check_trace_instance_dir bar 1
+    check_default_dst bar
+
+    ddcmd class,D2_KMS,+T	# default dest is bar
+    check_match_ct =T:bar 1 -v
+
+    ddcmd class,D2_KMS,+T:0	# set 0 dest explicitly
+    check_match_ct =T 1 -v
+
+    ddcmd class,D2_KMS,-T
+
+    ddcmd open,foo		# reopening sets default dest to foo
+    check_default_dst foo
+
+    ddcmd class,D2_KMS,+T       # default dest is 0 but since callsite was already labelled
+                                # then reuse label
+    check_match_ct =T:foo 2 -v
+
+    ddcmd "class D2_CORE -T:0"
+    ddcmd "class D2_KMS -T:0"
+    check_default_dst foo
+
+    ddcmd close foo
+    is_trace_instance_closed foo
+    check_default_dst 0         # after closing foo which was default dest we revert
+                                # to 0 as default dest
+
+    ddcmd close bar
+    is_trace_instance_closed bar
+    check_default_dst 0
+
     ifrmmod test_dynamic_debug
 }
 
@@ -902,6 +976,7 @@ tests_list=(
     test_percent_splitting
     test_mod_submod
     test_flags
+    test_default_destination
     test_actual_trace
     cycle_tests_normal
     cycle_not_best_practices
