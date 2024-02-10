@@ -192,6 +192,12 @@ end:
 	return end ? end : str + len;
 }
 
+static bool is_colon_show_args(struct dd_ctrl *ctrl)
+{
+	/* don't show trace destination when it is set to default "0" */
+	return ctrl->trace_dst;
+}
+
 /*
  * Maximum number of characters which are being displayed when
  * printing trace instance name, longer names are truncated
@@ -227,14 +233,15 @@ static inline const char *trim_prefix(const char *path)
 }
 
 typedef const char* (*read_flag_args_f)(const char *, struct flag_settings *);
+typedef bool (*is_show_args_f)(struct dd_ctrl *);
 typedef char* (*show_flag_args_f)(struct dd_ctrl *, char *);
 
 static const struct
 {
 	unsigned flag:8;
 	char opt_char;
-	bool always_show;
 	read_flag_args_f read_args;
+	is_show_args_f is_show_args;
 	show_flag_args_f show_args;
 } opt_array[] = {
 	{ _DPRINTK_FLAGS_PRINTK, 'p' },
@@ -247,7 +254,8 @@ static const struct
 	 * future use. When both T flag and ':'are provided together then
 	 * ':' has to follow T flag in the form of 'T:'.
 	 */
-	{ _DPRINTK_FLAGS_NONE, ':', true, read_colon_args, show_colon_args },
+	{ _DPRINTK_FLAGS_NONE, ':', read_colon_args, is_colon_show_args,
+				    show_colon_args },
 	{ _DPRINTK_FLAGS_INCL_MODNAME, 'm' },
 	{ _DPRINTK_FLAGS_INCL_FUNCNAME, 'f' },
 	{ _DPRINTK_FLAGS_INCL_SOURCENAME, 's' },
@@ -262,12 +270,15 @@ struct ctrlbuf { char buf[ARRAY_SIZE(opt_array)+FLAG_COLON_ARG_LEN+1]; };
 static char *ddebug_describe_ctrl(struct dd_ctrl *ctrl, struct ctrlbuf *cb)
 {
 	show_flag_args_f show_args = NULL;
+	is_show_args_f is_show_args;
 	char *p = cb->buf;
 	int i;
 
-	for (i = 0; i < ARRAY_SIZE(opt_array); ++i)
+	for (i = 0; i < ARRAY_SIZE(opt_array); ++i) {
+		is_show_args = opt_array[i].is_show_args;
+
 		if (ctrl->flags & opt_array[i].flag ||
-		    opt_array[i].always_show) {
+		    (is_show_args && is_show_args(ctrl))) {
 			if (show_args)
 				*p++ = '.';
 			*p++ = opt_array[i].opt_char;
@@ -275,6 +286,7 @@ static char *ddebug_describe_ctrl(struct dd_ctrl *ctrl, struct ctrlbuf *cb)
 			if (show_args)
 				p = show_args(ctrl, p);
 		}
+	}
 
 	if (p == cb->buf)
 		*p++ = '_';
