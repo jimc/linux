@@ -85,6 +85,7 @@ struct flag_settings {
 struct dd_private_tracebuf {
 	const char *name;
 	struct trace_array *arr;
+	int use_cnt;
 };
 
 /*
@@ -283,6 +284,7 @@ static int handle_trace_open_cmd(const char *arg)
 		goto end;
 	}
 
+	buf->use_cnt = 0;
 	set_bit(idx, trc_tbl.bmap);
 	v3pr_info("opened trace instance idx=%d, name=%s\n", idx, arg);
 end:
@@ -305,6 +307,14 @@ static int handle_trace_close_cmd(const char *arg)
 
 	buf = &trc_tbl.buf[idx];
 
+	WARN_ON(buf->use_cnt < 0);
+	if (buf->use_cnt) {
+		pr_err("trace instance is being used name=%s, use_cnt=%d\n",
+		       buf->name, buf->use_cnt);
+		ret = -EBUSY;
+		goto end;
+	}
+
 	trace_array_put(buf->arr);
 	/*
 	 * don't destroy trace instance but let user do it manually
@@ -323,6 +333,22 @@ static int handle_trace_close_cmd(const char *arg)
 end:
 	mutex_unlock(&ddebug_lock);
 	return ret;
+}
+
+static
+void update_tr_dst(const struct _ddebug *desc, const struct dd_ctrl *nctrl)
+{
+	int odst = get_trace_dst(desc);
+	int ndst = nctrl->trace_dst;
+
+	if (odst == ndst)
+		return;
+
+	if (odst)
+		trc_tbl.buf[odst].use_cnt--;
+
+	if (ndst)
+		trc_tbl.buf[ndst].use_cnt++;
 }
 
 static int ddebug_parse_cmd(char *words[], int nwords)
@@ -467,6 +493,7 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 				  dt->mod_name, dp->function,
 				  ddebug_describe_flags(get_flags(dp), &fbuf),
 				  ddebug_describe_flags(nctrl.flags, &nbuf));
+			update_tr_dst(dp, &nctrl);
 			set_ctrl(dp, &nctrl);
 		}
 	}
@@ -1715,6 +1742,14 @@ int ddebug_dyndbg_module_param_cb(char *param, char *val, const char *module)
 
 static void ddebug_table_free(struct ddebug_table *dt)
 {
+	int dst, i;
+
+	for (i = 0; i < dt->num_ddebugs; i++) {
+		dst = get_trace_dst(&dt->ddebugs[i]);
+		if (dst)
+			trc_tbl.buf[dst].use_cnt--;
+	}
+
 	list_del_init(&dt->link);
 	kfree(dt);
 }
