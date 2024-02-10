@@ -970,6 +970,69 @@ function setup_env_for_tests {
     echo
 }
 
+function test_labelling {
+    echo -e "${GREEN}# TEST_SITE_LABELLING - ${NC}"
+    ifrmmod test_dynamic_debug
+    ddcmd =_
+
+    # trace params processing of the modprobe
+    ddcmd open,param_log%module,params,+T:param_log.tmfs
+    check_match_ct =T:param_log 4 -r -v
+
+    # modprobe with params.  This uses the default_dest :param_log
+    modprobe test_dynamic_debug \
+	     dyndbg=class,D2_CORE,+Tmf%class,D2_KMS,+Tmf%class,D2_ATOMIC,+pmT
+
+    # check the trace for params processing during modprobe, with the expected prefixes
+    search_trace_name param_log 5 "params:parse_args:kernel/params.c: doing test_dynamic_debug"
+    search_trace_name param_log 4 "params:parse_one:kernel/params.c: doing test_dynamic_debug"
+
+    # and for the enabled test-module's pr-debugs
+    search_trace_name param_log 3 "test_dynamic_debug:do_cats: test_dd: D2_CORE msg"
+    search_trace_name param_log 2 "test_dynamic_debug:do_cats: test_dd: D2_KMS msg"
+    search_trace_name param_log 1 "test_dynamic_debug: test_dd: D2_ATOMIC msg"
+
+    # now change the labelled sites, by using the existing label
+    ddcmd open new_out
+    ddcmd label param_log +T:new_out	# redirect unclassed
+    check_match_ct =T:new_out 4	-r	# the module params prdbgs got moved
+    check_match_ct =T:param_log 2 -r	# CORE, KMS remain
+    ddcmd label param_log class D2_CORE +T:new_out	# must name class to change it
+    ddcmd label param_log class D2_KMS  +T:new_out	# case for class D2_* (wildcard) ??
+    check_match_ct =T:param_log 0
+    check_match_ct =T:new_out 6	-r	# all are redirected
+    check_match_ct =T:new_out.mfst 4	# module/params.c prdbgs still have the flags
+
+    doprints
+    search_trace_name new_out 2 "test_dynamic_debug:do_cats: test_dd: D2_CORE msg"
+    search_trace_name new_out 1 "test_dynamic_debug:do_cats: test_dd: D2_KMS msg"
+
+    check_match_ct =T.new_out 6 -r -v
+    check_match_ct =T: 6 -r -v
+
+    # its not enough to turn off T
+    ddcmd -T
+    ddcmd class D2_CORE -T % class D2_KMS -T
+    check_match_ct =T 0
+    check_match_ct =:new_out 6 -r -v
+
+    # must un-label prdbgs to close the label
+    ddcmd label new_out +:0
+    ddcmd label new_out class D2_CORE +:0
+    ddcmd label new_out class D2_KMS +:0
+    ddcmd close new_out
+
+    check_match_ct =T:param_log 0	# ok, but
+    check_match_ct :param_log 1 -r -v	# pick up the D2_ATOMIC
+    ddcmd label param_log class D2_ATOMIC +:0
+    ddcmd close param_log		# now it closes wo -EBUSY
+
+    ifrmmod test_dynamic_debug
+
+    del_trace_instance_dir param_log 1
+    del_trace_instance_dir new_out 1
+}
+
 tests_list=(
     basic_tests
     comma_terminator_tests
@@ -989,6 +1052,8 @@ tests_list=(
     test_private_trace_mixed_class  # again, to test pre,post conditions
 
     test_private_trace_overlong_name
+
+    test_labelling
 
     # works, takes 30 sec
     test_private_trace_fill_trace_index
