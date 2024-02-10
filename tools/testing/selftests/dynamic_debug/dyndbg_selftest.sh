@@ -468,19 +468,21 @@ function cycle_not_best_practices {
     self_test_ delete_directory
 }
 
-# proper life cycle - open, enable:named, disable:named, close
+# test verifies proper life cycle - open, enable:named, disable:named, close
 function test_private_trace_simple_proper {
     echo -e "${GREEN}# TEST_PRIVATE_TRACE_1 ${NC}"
-    # ddcmd close kparm_stream
+
     ddcmd open kparm_stream
     ddcmd module params +T:kparm_stream.mf
     check_match_ct =T:kparm_stream.mf 4
+
     ddcmd module params -T:kparm_stream.mf
     check_match_ct =T:kparm_stream.mf 0
     is_trace_instance_opened kparm_stream
     ddcmd module params +:0
     ddcmd close kparm_stream
     is_trace_instance_closed kparm_stream
+
     ddcmd =_
     check_trace_instance_dir kparm_stream 1
     is_trace_instance_closed kparm_stream
@@ -488,115 +490,128 @@ function test_private_trace_simple_proper {
     check_trace_instance_dir kparm_stream 0
 }
 
-function test_private_trace_2 {
-    echo -e "${GREEN}# TEST_PRIVATE_TRACE_2 ${NC}"
+# test verifies new syntax and close attempt of trace instance which is still in use
+function test_private_trace_syntax_close_in_use {
+    echo -e "${GREEN}# TEST_PRIVATE_SYNTAX_CLOSE_IN_USE ${NC}"
     ddcmd =_
     echo > /sys/kernel/tracing/trace
     echo 1 >/sys/kernel/tracing/tracing_on
     echo 1 >/sys/kernel/tracing/events/dyndbg/enable
+
     ddcmd open foo
     is_trace_instance_opened foo
     check_trace_instance_dir foo 1
 
     modprobe test_dynamic_debug
-    ddcmd class,D2_CORE,+T:foo.l,%class,D2_KMS,+fT:foo.ml
+    ddcmd class,D2_CORE,+T:foo.l,%class,D2_KMS,+fT:foo.ml	# test new syntax
     check_match_ct =T:foo.l 1
     check_match_ct =T:foo.mfl 1
 
-    # purpose ?
-    echo 1 >/sys/kernel/tracing/tracing_on
-    echo 1 >/sys/kernel/tracing/events/dyndbg/enable
-
-    tmark test_private_trace about to do_prints
-    search_trace "test_private_trace about to do_prints"
-    search_trace_name "0" 1 "test_private_trace about to do_prints"
+    tmark test_private_trace_syntax_close_in_use about to do_prints
+    search_trace "test_private_trace_syntax_close_in_use about to do_prints"
+    search_trace_name "0" 1 "test_private_trace_syntax_close_in_use about to do_prints"
 
     doprints
-    ddcmd class,D2_CORE,-T:foo
-    ddcmd close foo fail
-    check_err_msg "Device or resource busy"
-    ddcmd class,D2_KMS,-T:foo
-    ddcmd close foo
-    check_trace_instance_dir foo 1
-    is_trace_instance_closed foo
-    ddcmd close bar fail
-    check_err_msg "No such file or directory"
+    ddcmd class,D2_CORE,-T:0
+    ddcmd close foo fail	# close fails because foo is still being used
+    check_err_msg "Device or resource busy"	# verify error message
+
+    ddcmd class,D2_KMS,-T:0
+    ddcmd close foo	# now close succeeds
+    check_trace_instance_dir foo 1	# verify trace instance foo dir exists
+    is_trace_instance_closed foo	# verify trace instance foo is closed
+
+    ddcmd close bar fail	# try to close trace instance bar which is not opened
+    check_err_msg "No such file or directory"	# verify error message
+
     ifrmmod test_dynamic_debug
     search_trace_name foo 2 "D2_CORE msg"
     search_trace_name foo 1 "D2_KMS msg"
-    del_trace_instance_dir foo 1
-    check_trace_instance_dir foo 0
+    del_trace_instance_dir foo 1	# delete trace instance foo dir
+    check_trace_instance_dir foo 0	# verify trace instance foo dir does not exist
 }
 
-function test_private_trace_3 {
-    echo -e "${GREEN}# TEST_PRIVATE_TRACE_3 ${NC}"
+# test verifies new syntax and removal of module
+function test_private_trace_syntax_rmmod {
+    echo -e "${GREEN}# TEST_PRIVATE_TRACE_SYNTAX_RMMOD ${NC}"
     ddcmd =_
     echo > /sys/kernel/tracing/trace
     echo 1 >/sys/kernel/tracing/tracing_on
     echo 1 >/sys/kernel/tracing/events/dyndbg/enable
-    ddcmd open foo \; open bar
+
+    ddcmd open foo \; open bar	# open foo and bar trace instances and verify they are opened
     is_trace_instance_opened foo
     is_trace_instance_opened bar
-    modprobe test_dynamic_debug
+
+    modprobe test_dynamic_debug	# load module and test new syntax
     ddcmd class,D2_CORE,+T:foo
     ddcmd class,D2_KMS,+T:foo
     ddcmd class D2_CORE +T:foo \; class D2_KMS +T:foo
     ddcmd "class,D2_CORE,+T:foo;,class,D2_KMS,+T:foo"
     ddcmd class,D2_CORE,+T:foo\;class,D2_KMS,+T:foo
-    check_match_ct =T 2 -v
+
+    check_match_ct =T:foo 2 -v
     check_match_ct =Tl 0
     check_match_ct =Tmf 0
-    echo 1 >/sys/kernel/tracing/tracing_on
-    echo 1 >/sys/kernel/tracing/events/dyndbg/enable
-    tmark test_private_trace_2 about to do_prints
+
+    tmark test_private_trace_syntax_rmmod about to do_prints
     doprints
-    rmmod test_dynamic_debug
-    ddcmd "close bar;close foo"
-    is_trace_instance_closed bar
+
+    rmmod test_dynamic_debug	# remove module whose callsites are writing debug logs
+                                # to trace instance foo
+    ddcmd "close bar;close foo"	# close bar and foo trace instances, if usage count
+                                # of foo instance was not correctly decremented during
+				# removal of module then close will fail
+
+    is_trace_instance_closed bar	# verify that foo and bar trace instances are closed
     is_trace_instance_closed foo
     search_trace_name foo 2 "D2_CORE msg"
     search_trace_name foo 1 "D2_KMS msg"
-    del_trace_instance_dir foo 1
+
+    del_trace_instance_dir foo 1	# delete trace instance foo and verify its
+                                        # directory was removed
     check_trace_instance_dir foo 0
-    search_trace "test_private_trace_2 about to do_prints"
-    del_trace_instance_dir bar 1
+
+    search_trace "test_private_trace_syntax_rmmod about to do_prints"
+
+    del_trace_instance_dir bar 1	# delete trace instance bar and verify its
+                                        # directory was removed
     check_trace_instance_dir bar 0
 }
 
-function test_private_trace_4 {
-    echo -e "${GREEN}# TEST_PRIVATE_TRACE_4 ${NC}"
+# test verifies new syntax and combination of delete attempt of trace
+# instance which is still in use with module removal
+function test_private_trace_syntax_delete_in_use_rmmod {
+    echo -e "${GREEN}# TEST_PRIVATE_TRACE_SYNTAX_DELETE_IN_USE_RMMOD ${NC}"
     ddcmd =_
     echo > /sys/kernel/tracing/trace
     echo 1 >/sys/kernel/tracing/tracing_on
     echo 1 >/sys/kernel/tracing/events/dyndbg/enable
 
-    ddcmd open foo
+    ddcmd open foo	# open trace instance foo and test new syntax
     modprobe test_dynamic_debug dyndbg=class,D2_CORE,+T:foo%class,D2_KMS,+T:foo
     check_match_ct =Tl 0
     check_match_ct =Tmf 0
-    check_match_ct =T 2
-
-    # are these 2 doing anything ?
-    echo 1 >/sys/kernel/tracing/tracing_on
-    echo 1 >/sys/kernel/tracing/events/dyndbg/enable
+    check_match_ct =T:foo 2 -v
 
     tmark should be ready
-    search_trace_name "0" 0 "should be ready"	# in global trace
+    search_trace_name "0" 0 "should be ready"	# search in global trace
 
     doprints
-    search_trace_name foo 2 "D2_CORE msg"	# in private buf
+    search_trace_name foo 2 "D2_CORE msg"	# search in trace instance foo
     search_trace_name foo 1 "D2_KMS msg"
 
     # premature delete
-    del_trace_instance_dir foo 0
-    check_trace_instance_dir foo 1	# doesn't delete
+    del_trace_instance_dir foo 0	# delete fails because foo is being used
+    check_trace_instance_dir foo 1	# verify trace instance foo dir exists
     ifrmmod test_dynamic_debug
 
-    ddcmd "close foo"
-    is_trace_instance_closed foo
-    del_trace_instance_dir foo 1	# delete works now
+    ddcmd "close foo"			# close will succeed only if foo usage count
+                                        # was correctly decremented during module removal
+    is_trace_instance_closed foo	# verify trace instance foo is closed
+    del_trace_instance_dir foo 1	# foo delete works now
 
-    check_trace_instance_dir foo 0
+    check_trace_instance_dir foo 0	# verify trace instance foo dir does not exist
     search_trace "should be ready"
 }
 
@@ -763,9 +778,9 @@ tests_list=(
     cycle_not_best_practices
     test_private_trace_1
     test_private_trace_simple_proper
-    test_private_trace_2
-    test_private_trace_3
-    test_private_trace_4
+    test_private_trace_syntax_close_in_use
+    test_private_trace_syntax_rmmod
+    test_private_trace_syntax_delete_in_use_rmmod
     test_private_trace_mixed_class
     test_private_trace_mixed_class  # again, to test pre,post conditions
 
