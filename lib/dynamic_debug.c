@@ -358,9 +358,20 @@ static void update_tr_default_dst(int trace_dst)
 static int handle_trace_open_cmd(const char *arg)
 {
 	struct dd_private_tracebuf *buf;
-	int idx, ret = 0;
+	int idx = 0, ret = 0;
 
 	mutex_lock(&ddebug_lock);
+
+	/*
+	 * request to open '0' or an already opened trace instance
+	 * results in update of default trace destination
+	 */
+	if (!strcmp(arg, DD_TR_EVENT))
+		goto update;
+
+	idx = find_tr_instance(arg);
+	if (idx >= 0)
+		goto update;
 
 	/* bit 0 is not used, reserved for trace prdbg and devdbg events */
 	idx = find_next_zero_bit(trc_tbl.bmap, trc_tbl.bmap_size, 1);
@@ -372,12 +383,6 @@ static int handle_trace_open_cmd(const char *arg)
 	if (!dd_good_trace_name(arg)) {
 		pr_err("invalid instance name:%s\n", arg);
 		ret = -EINVAL;
-		goto end;
-	}
-
-	if (find_tr_instance(arg) >= 0) {
-		pr_err("instance is already opened name:%s\n", arg);
-		ret = -EEXIST;
 		goto end;
 	}
 
@@ -406,6 +411,7 @@ static int handle_trace_open_cmd(const char *arg)
 	buf->use_cnt = 0;
 	set_bit(idx, trc_tbl.bmap);
 	v3pr_info("opened trace instance idx=%d, name=%s\n", idx, arg);
+update:
 	update_tr_default_dst(idx);
 end:
 	mutex_unlock(&ddebug_lock);
