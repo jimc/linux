@@ -346,6 +346,107 @@ function test_mod_submod {
     ifrmmod test_dynamic_debug
 }
 
+# with "legacy-override" added late in classmaps-v2, the test module's
+# class'd pr_debugs are also altered during this test, changing the
+# expected counts.  Parameterize this to allow either.
+NUM_SITES=23 # was 5
+# test verifies different combinations of flags and trace destination
+function test_flags {
+    echo -e "${GREEN}# TEST_FLAGS ${NC}"
+
+    modprobe test_dynamic_debug dyndbg=+Tlm
+    check_match_ct =Tml $NUM_SITES -v
+
+    ddcmd open selftest
+    check_trace_instance_dir selftest 1
+    is_trace_instance_opened selftest
+
+    # invalid combinations of flags and trace destination
+    ddcmd module test_dynamic_debug =Tm:0 fail
+    check_err_msg "Invalid argument"
+    ddcmd module test_dynamic_debug =Tm:0. fail
+    check_err_msg "Invalid argument"
+    ddcmd module test_dynamic_debug =T:m.:0 fail
+    check_err_msg "Invalid argument"
+    ddcmd module test_dynamic_debug =T:m.:0. fail
+    check_err_msg "Invalid argument"
+    ddcmd module test_dynamic_debug =:0lT fail
+    check_err_msg "Invalid argument"
+    ddcmd module test_dynamic_debug =:0lT. fail
+    check_err_msg "Invalid argument"
+    ddcmd module test_dynamic_debug =:0.lm:0 fail
+    check_err_msg "Invalid argument"
+    ddcmd module test_dynamic_debug =:0.lmT. fail
+    check_err_msg "Invalid argument"
+
+    ddcmd module test_dynamic_debug =Tm:selftest fail
+    check_err_msg "Invalid argument"
+    ddcmd module test_dynamic_debug =Tm:selftest. fail
+    check_err_msg "Invalid argument"
+    ddcmd module test_dynamic_debug =T:m.:selftest fail
+    check_err_msg "Invalid argument"
+    ddcmd module test_dynamic_debug =T:m.:selftest. fail
+    check_err_msg "Invalid argument"
+    ddcmd module test_dynamic_debug =:selftestlT fail
+    check_err_msg "Invalid argument"
+    ddcmd module test_dynamic_debug =:selftestlT. fail
+    check_err_msg "Invalid argument"
+    ddcmd module test_dynamic_debug =:selftest.lm:0 fail
+    check_err_msg "Invalid argument"
+    ddcmd module test_dynamic_debug =:selftest.lmT fail
+    check_err_msg "Invalid argument"
+
+    ddcmd module test_dynamic_debug =Tl.m fail
+    check_err_msg "Invalid argument"
+    ddcmd module test_dynamic_debug =T.lm fail
+    check_err_msg "Invalid argument"
+
+    # valid combinations of flags and trace destination
+    ddcmd module test_dynamic_debug =p
+    check_match_ct =p $NUM_SITES
+    ddcmd module test_dynamic_debug =T
+    check_match_ct =T:selftest $NUM_SITES
+    ddcmd module test_dynamic_debug =_
+    check_match_ct =:selftest $NUM_SITES
+
+    ddcmd module test_dynamic_debug =T:0
+    check_match_ct =T $NUM_SITES
+    ddcmd module test_dynamic_debug -_
+    check_match_ct =T $NUM_SITES
+    ddcmd module test_dynamic_debug =T:0.mf
+    check_match_ct =Tmf $NUM_SITES
+    ddcmd module test_dynamic_debug =T:selftest
+    check_match_ct =T:selftest $NUM_SITES
+    ddcmd module test_dynamic_debug =T:selftest.mf
+    check_match_ct =T:selftest.mf $NUM_SITES
+    ddcmd module test_dynamic_debug =_:selftest
+    check_match_ct =:selftest $NUM_SITES
+
+    ddcmd module test_dynamic_debug =:0
+    ddcmd module test_dynamic_debug =:selftest
+    check_match_ct =:selftest $NUM_SITES
+    ddcmd module test_dynamic_debug =p:selftest
+    check_match_ct =p:selftest $NUM_SITES
+    ddcmd module test_dynamic_debug +_
+    check_match_ct =p:selftest $NUM_SITES
+
+    ddcmd module test_dynamic_debug =T:selftest.mlf
+    ddcmd module test_dynamic_debug =:0
+    check_match_ct =Tmfl $NUM_SITES
+    ddcmd module test_dynamic_debug =:selftest
+    check_match_ct =T:selftest.mfl $NUM_SITES
+    ddcmd module test_dynamic_debug =:0
+    check_match_ct =Tmfl $NUM_SITES
+    ddcmd module test_dynamic_debug =_:selftest
+    check_match_ct =:selftest $NUM_SITES
+
+    ddcmd module test_dynamic_debug =:0.
+
+    ddcmd close selftest
+    is_trace_instance_closed selftest
+    ifrmmod test_dynamic_debug
+}
+
 function test_actual_trace {
     echo -e "${GREEN}# TEST_ACTUAL_TRACE ${NC}"
     ddcmd =_
@@ -793,6 +894,7 @@ tests_list=(
     comma_terminator_tests
     test_percent_splitting
     test_mod_submod
+    test_flags
     test_actual_trace
     cycle_tests_normal
     cycle_not_best_practices
