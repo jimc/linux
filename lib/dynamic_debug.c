@@ -896,6 +896,7 @@ static int ddebug_parse_query(char *words[], int nwords,
  */
 static int ddebug_parse_flags(const char *str, struct flag_settings *modifiers)
 {
+	bool explicit_no_flags = !strchr(str, '_') ? false : true;
 	read_flag_args_f read_args;
 	int op, i;
 	char *fst;
@@ -941,6 +942,14 @@ static int ddebug_parse_flags(const char *str, struct flag_settings *modifiers)
 	case '=':
 		/* modifiers->flags already set */
 		modifiers->mask = 0;
+
+		/*
+		 * cover the case where "ddcmd =:foo" sets (only)
+		 * the foo label, since no flags are given
+		 */
+		if (!explicit_no_flags && !modifiers->flags &&
+		    modifiers->trace_dst != DST_NOT_SET)
+			modifiers->mask = ~0U;
 		break;
 	case '+':
 		modifiers->mask = ~0U;
