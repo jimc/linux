@@ -75,7 +75,7 @@ struct ddebug_iter {
 struct flag_settings {
 	unsigned int flags;
 	unsigned int mask;
-	unsigned int trace_dst;
+	int trace_dst;
 };
 
 #define DD_OPEN_CMD	"open"
@@ -87,8 +87,6 @@ struct dd_private_tracebuf {
 	struct trace_array *arr;
 	int use_cnt;
 };
-
-#define DST_NOT_SET    (-1)
 
 /*
  * When trace is enabled (T flag is set) and trace destination field
@@ -104,6 +102,9 @@ struct dd_tracebuf_tbl_info {
 	struct dd_private_tracebuf buf[TRACE_DST_LAST];
 	DECLARE_BITMAP(bmap, TRACE_DST_LAST);
 	int bmap_size;
+#define DST_NOT_SET	(-1)
+#define DST_TR_EVENT	0
+	int default_dst;
 };
 
 static DEFINE_MUTEX(ddebug_lock);
@@ -114,7 +115,8 @@ MODULE_PARM_DESC(verbose, " dynamic_debug/control processing "
 		 "( 0 = off (default), 1 = module add/rm, 2 = >control summary, 3 = parsing, 4 = per-site changes)");
 
 static struct
-dd_tracebuf_tbl_info trc_tbl = { .bmap_size = TRACE_DST_LAST };
+dd_tracebuf_tbl_info trc_tbl = { .bmap_size = TRACE_DST_LAST,
+				 .default_dst = DST_TR_EVENT, };
 
 static inline struct dd_ctrl *get_ctrl(struct _ddebug *desc)
 {
@@ -150,7 +152,7 @@ static int find_tr_instance(const char *name)
 static const
 char *read_colon_args(const char *str, struct flag_settings *modifiers)
 {
-	int len, idx = 0;
+	int len, idx = DST_TR_EVENT;
 	char *end;
 
 	/* Check if trace destination was already set */
@@ -334,6 +336,24 @@ static bool dd_good_trace_name(const char *str)
 	return true;
 }
 
+static const char *get_tr_default_dst_str(void)
+{
+	if (trc_tbl.default_dst == DST_TR_EVENT)
+		return DD_TR_EVENT;
+	else
+		return trc_tbl.buf[trc_tbl.default_dst].name;
+}
+
+static void update_tr_default_dst(int trace_dst)
+{
+	if (trace_dst == trc_tbl.default_dst)
+		return;
+
+	trc_tbl.default_dst = trace_dst;
+	v3pr_info("set default trace dst to idx=%d, name=%s\n", trace_dst,
+		  get_tr_default_dst_str());
+}
+
 static int handle_trace_open_cmd(const char *arg)
 {
 	struct dd_private_tracebuf *buf;
@@ -385,6 +405,7 @@ static int handle_trace_open_cmd(const char *arg)
 	buf->use_cnt = 0;
 	set_bit(idx, trc_tbl.bmap);
 	v3pr_info("opened trace instance idx=%d, name=%s\n", idx, arg);
+	update_tr_default_dst(idx);
 end:
 	mutex_unlock(&ddebug_lock);
 	return ret;
@@ -412,6 +433,13 @@ static int handle_trace_close_cmd(const char *arg)
 		ret = -EBUSY;
 		goto end;
 	}
+
+	/*
+	 * check if default trace instance is being closed,
+	 * if yes then update default destination to '0'
+	 */
+	if (trc_tbl.default_dst == idx)
+		trc_tbl.default_dst = DST_TR_EVENT;
 
 	trace_array_put(buf->arr);
 	/*
@@ -575,7 +603,8 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 			nfound++;
 
 			nctrl.flags = (get_flags(dp) & modifiers->mask) | modifiers->flags;
-			nctrl.trace_dst = modifiers->trace_dst;
+			nctrl.trace_dst = modifiers->trace_dst == DST_NOT_SET ?
+				get_trace_dst(dp) : modifiers->trace_dst;
 			if (!memcmp(&nctrl, get_ctrl(dp), sizeof(nctrl)))
 				continue;
 #ifdef CONFIG_JUMP_LABEL
@@ -871,8 +900,13 @@ static int ddebug_parse_flags(const char *str, struct flag_settings *modifiers)
 		modifiers->flags = 0;
 		break;
 	}
-	v3pr_info("op='%c' flags=0x%x maskp=0x%x\n", op, modifiers->flags, modifiers->mask);
 
+	if (modifiers->flags & _DPRINTK_FLAGS_TRACE &&
+	    modifiers->trace_dst == DST_NOT_SET)
+		modifiers->trace_dst = trc_tbl.default_dst;
+
+	v3pr_info("op='%c' flags=0x%x mask=0x%x, trace_dest=0x%x\n", op,
+		  modifiers->flags, modifiers->mask, modifiers->trace_dst);
 	return 0;
 }
 
@@ -1588,15 +1622,21 @@ static int ddebug_proc_show(struct seq_file *m, void *p)
 	}
 	seq_puts(m, "\n");
 
-	if (ddebug_iter_is_last(iter) &&
-	    !bitmap_empty(trc_tbl.bmap, trc_tbl.bmap_size)) {
-		int idx = 1;
+	if (ddebug_iter_is_last(iter)) {
 
 		seq_puts(m, "\n");
-		seq_puts(m, "#: Opened trace instances:");
-		for_each_set_bit_from(idx, trc_tbl.bmap, trc_tbl.bmap_size)
-			seq_printf(m, " %s", trc_tbl.buf[idx].name);
-		seq_puts(m, "\n");
+		seq_printf(m, "#: Default trace destination: %s\n",
+			   get_tr_default_dst_str());
+
+		if (!bitmap_empty(trc_tbl.bmap, trc_tbl.bmap_size)) {
+			int idx = 1;
+
+			seq_puts(m, "\n");
+			seq_puts(m, "#: Opened trace instances:");
+			for_each_set_bit_from(idx, trc_tbl.bmap, trc_tbl.bmap_size)
+				seq_printf(m, " %s", trc_tbl.buf[idx].name);
+			seq_puts(m, "\n");
+		}
 	}
 
 	return 0;
