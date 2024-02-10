@@ -898,6 +898,7 @@ static int ddebug_parse_flags(const char *str, struct flag_settings *modifiers)
 {
 	read_flag_args_f read_args;
 	int op, i;
+	char *fst;
 
 	switch (*str) {
 	case '+':
@@ -910,7 +911,7 @@ static int ddebug_parse_flags(const char *str, struct flag_settings *modifiers)
 		return -EINVAL;
 	}
 
-	for (; *str ; ++str) {
+	for (fst = (char *)str; *str ; ++str, fst++) {
 		for (i = ARRAY_SIZE(opt_array) - 1; i >= 0; i--) {
 			if (*str == opt_array[i].opt_char) {
 				modifiers->flags |= opt_array[i].flag;
@@ -931,6 +932,9 @@ static int ddebug_parse_flags(const char *str, struct flag_settings *modifiers)
 			return -EINVAL;
 		}
 	}
+	/* warn if no flags/labels are given */
+	if (!(str - fst))
+		pr_err("no flags or label is specified, please use _ to assert no-flags\n");
 
 	/* calculate final flags, mask based upon op */
 	switch (op) {
