@@ -610,7 +610,20 @@ function search_in_trace_for {
 }
 
 function test_private_trace_mixed_class {
-    echo -e "${GREEN}# TEST_PRIVATE_TRACE_5 ${NC}"
+    local modname="test_dynamic_debug"
+    echo -e "${GREEN}# TEST_PRIVATE_TRACE_mixed_class ${NC}"
+
+    local eyeball_ref=<<'EOD'
+        modprobe-1173    [001] .....   7.781008: 0: test_dynamic_debug:do_cats: test_dd: D2_CORE msg
+        modprobe-1173    [001] .....   7.781010: 0: test_dynamic_debug:do_cats: test_dd: D2_KMS msg
+        modprobe-1173    [001] .....   7.781010: 0: test_dynamic_debug:do_levels: test_dd: V3 msg
+             cat-1214    [001] .....   7.905494: 0: test_dd: doing categories
+             cat-1214    [001] .....   7.905495: 0: test_dynamic_debug:do_cats: test_dd: D2_CORE msg
+             cat-1214    [001] .....   7.905496: 0: test_dynamic_debug:do_cats: test_dd: D2_KMS msg
+             cat-1214    [001] .....   7.905497: 0: test_dd: doing levels
+             cat-1214    [001] .....   7.905498: 0: test_dynamic_debug:do_levels: test_dd: V3 msg
+EOD
+
     ddcmd =_
     ddcmd module,params,+T:unopened fail
     check_err_msg "Invalid argument"
@@ -620,7 +633,7 @@ function test_private_trace_mixed_class {
     ddcmd open bupkus
     is_trace_instance_opened bupkus
     check_trace_instance_dir bupkus 1
-    modprobe test_dynamic_debug \
+    modprobe $modname \
 	     dyndbg=class,D2_CORE,+T:bupkus.mf%class,D2_KMS,+T:bupkus.mf%class,V3,+T:bupkus.mf
 
     # test various name misses
@@ -635,8 +648,7 @@ function test_private_trace_mixed_class {
     ddcmd "module params =:0."
 
     check_match_ct =T:bupkus.mf 3		# the 3 classes enabled above
-    # enable the 5 non-class'd pr_debug()s
-    ddcmd "module test_dynamic_debug =T:bupkus"
+    ddcmd "module $modname =T:bupkus"		# enable the 5 non-class'd pr_debug()s
     check_match_ct =T:bupkus 8 -r		# 8=5+3
 
     doprints
@@ -648,18 +660,6 @@ function test_private_trace_mixed_class {
     ddcmd class,D2_CORE,-T:0%class,D2_KMS,-T:0%class,V3,-T:0 # turn off class'd and set dest to 0
     ddcmd close,bupkus
     is_trace_instance_closed bupkus
-
-    # check results
-    eyeball_ref=<<EOD
-        modprobe-1173    [001] .....   7.781008: 0: test_dynamic_debug:do_cats: test_dd: D2_CORE msg
-        modprobe-1173    [001] .....   7.781010: 0: test_dynamic_debug:do_cats: test_dd: D2_KMS msg
-        modprobe-1173    [001] .....   7.781010: 0: test_dynamic_debug:do_levels: test_dd: V3 msg
-             cat-1214    [001] .....   7.905494: 0: test_dd: doing categories
-             cat-1214    [001] .....   7.905495: 0: test_dynamic_debug:do_cats: test_dd: D2_CORE msg
-             cat-1214    [001] .....   7.905496: 0: test_dynamic_debug:do_cats: test_dd: D2_KMS msg
-             cat-1214    [001] .....   7.905497: 0: test_dd: doing levels
-             cat-1214    [001] .....   7.905498: 0: test_dynamic_debug:do_levels: test_dd: V3 msg
-EOD
 
     # validate the 3 enabled class'd sites, with mf prefix
     search_trace_name bupkus 0 "test_dynamic_debug:do_cats: test_dd: D2_CORE msg"
