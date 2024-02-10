@@ -169,8 +169,8 @@ function error_log_ref {
 }
 
 function ifrmmod {
-    lsmod | grep $1 2>&1>/dev/null || echo $1 not there
-    lsmod | grep $1 2>&1>/dev/null && rmmod $1
+    lsmod | grep $1 2>&1>/dev/null || ([ "$2" == "-v" ] && echo "module '$1' is not loaded")
+    lsmod | grep $1 2>&1>/dev/null && rmmod $1 && [ "$2" == "-v" ] && echo "unload module '$1'"
 }
 
 # $1 - text to search for
@@ -768,6 +768,37 @@ function test_private_trace_fill_trace_index {
     check_trace_instance_dir trace_instance_63 0
 }
 
+# prepares dynamic debug and trace environment for tests execution
+function setup_env_for_tests {
+    echo -e "${GREEN}# SETUP_ENV_FOR_TESTS ${NC}"
+
+    echo "MODULES"
+    ifrmmod test_dynamic_debug_submod -v	# unload test_dynamic_debug_submod module
+                                                # if it is loaded
+    ifrmmod test_dynamic_debug -v	# unload test_dynamic_debug module it if is loaded
+    echo
+
+    # display all callsites which have flags != "_"
+    echo "CALLSITES with flags != \":0\""
+    cat /proc/dynamic_debug/control | grep -v "=_" | grep -v "not set" | grep -v "^$" \
+	    | grep -v "#: Opened trace instances" | grep -v "#: Default trace destination"
+    ddcmd module,*,=_:0 # clear all flags and set dest to 0
+    echo
+
+    # close all opened trace instances and delete their respective directories
+    echo "OPEN trace instance"
+    output=$(tail -n9 /proc/dynamic_debug/control | grep "#: Opened trace instances" \
+	    | cut -f3 -d":" | xargs -n1)
+    for dst in $output
+    do
+        echo "close trace instance '$dst'"
+	echo close,$dst > /proc/dynamic_debug/control
+	echo "delete '/sys/kernel/debug/tracing/instances/$dst' directory"
+	rmdir /sys/kernel/debug/tracing/instances/$dst
+    done
+    echo
+}
+
 tests_list=(
     basic_tests
     comma_terminator_tests
@@ -792,9 +823,7 @@ tests_list=(
 
 # Run tests
 
-ifrmmod test_dynamic_debug_submod
-ifrmmod test_dynamic_debug
-
+setup_env_for_tests
 for test in "${tests_list[@]}"
 do
     $test
