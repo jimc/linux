@@ -181,6 +181,7 @@ function search_trace() {
 # $1 - trace instance name, 0 for global event trace
 # $2 - line number counting from the bottom
 # $3 - text to search for
+# $4 - optional -v to see verbose results
 function search_trace_name() {
 	if [ "$1" = "0" ]; then
 	    buf=$(cat /sys/kernel/debug/tracing/trace)
@@ -201,7 +202,7 @@ function search_trace_name() {
 		    in line '$line' or '$buf'"
 	    exit
 	fi
-	if [ $V = 1 ]; then
+	if [[ "$4" == "-v" || $V = 1 ]]; then
 	    echo -e "${MAGENTA}: search_trace_name in $1 found: \n$output \nin:${BLUE} $buf ${NC}"
         fi
 }
