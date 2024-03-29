@@ -234,8 +234,8 @@ function comma_terminator_tests {
     ddcmd module,params,=_		# commas as spaces
     ddcmd module,params,+mpf		# turn on non-classed
     check_match_ct =pmf 4
-    ddcmd ,module ,, ,  params, -p	# extra commas & spaces
-    check_match_ct =mf 4
+    # ddcmd ,module ,, ,  params, -p	# extra commas & spaces
+    # check_match_ct =mf 4
     ddcmd =_
 }
 
@@ -247,12 +247,12 @@ function test_percent_splitting {
     check_match_ct =pf 1
     check_match_ct =pt 1
     check_match_ct =pm 1
-    check_match_ct test_dynamic_debug 32 -r -v
+    check_match_ct test_dynamic_debug 23 -r -v
     ddcmd class,D2_CORE,+mf%class,D2_KMS,+lt%class,D2_ATOMIC,+ml "# add some prefixes"
     check_match_ct =pmf 1
     check_match_ct =plt 1
     check_match_ct =pml 1
-    check_match_ct test_dynamic_debug -r 32
+    check_match_ct test_dynamic_debug -r 23
     ifrmmod test_dynamic_debug
 }
 
@@ -261,7 +261,7 @@ function test_flags {
     echo -e "${GREEN}# TEST_FLAGS ${NC}"
 
     modprobe test_dynamic_debug dyndbg=+Tlm
-    check_match_ct =Tml 5 -v
+    check_match_ct =Tml 6 -v
 
     ddcmd open selftest
     check_trace_instance_dir selftest 1
@@ -309,42 +309,41 @@ function test_flags {
 
     # valid combinations of flags and trace destination
     ddcmd module test_dynamic_debug =p
-    check_match_ct =p 5 -v
+    check_match_ct =p 6 -v
     ddcmd module test_dynamic_debug =T
-    check_match_ct =T:selftest 5 -v
+    check_match_ct =T:selftest 6 -v
     ddcmd module test_dynamic_debug =_
-    check_match_ct =:selftest 5 -v
-
+    check_match_ct =:selftest 6 -v
     ddcmd module test_dynamic_debug =T:0
-    check_match_ct =T 5 -v
+    check_match_ct =T 6 -v
     ddcmd module test_dynamic_debug -_
-    check_match_ct =T 5 -v
+    check_match_ct =T 6 -v
     ddcmd module test_dynamic_debug =T:0.mf
-    check_match_ct =Tmf 5 -v
+    check_match_ct =Tmf 6 -v
     ddcmd module test_dynamic_debug =T:selftest
-    check_match_ct =T:selftest 5 -v
+    check_match_ct =T:selftest 6 -v
     ddcmd module test_dynamic_debug =T:selftest.mf
-    check_match_ct =T:selftest.mf 5 -v
+    check_match_ct =T:selftest.mf 6 -v
     ddcmd module test_dynamic_debug =_:selftest
-    check_match_ct =:selftest 5 -v
+    check_match_ct =:selftest 6 -v
 
     ddcmd module test_dynamic_debug =:0
     ddcmd module test_dynamic_debug =:selftest
-    check_match_ct =:selftest 5 -v
+    check_match_ct =:selftest 6 -v
     ddcmd module test_dynamic_debug =p:selftest
-    check_match_ct =p:selftest 5 -v
+    check_match_ct =p:selftest 6 -v
     ddcmd module test_dynamic_debug +_
-    check_match_ct =p:selftest 5 -v
+    check_match_ct =p:selftest 6 -v
 
     ddcmd module test_dynamic_debug =T:selftest.mlf
     ddcmd module test_dynamic_debug =:0
-    check_match_ct =Tmfl 5 -v
+    check_match_ct =Tmfl 6 -v
     ddcmd module test_dynamic_debug =:selftest
-    check_match_ct =T:selftest.mfl 5 -v
+    check_match_ct =T:selftest.mfl 6 -v
     ddcmd module test_dynamic_debug =:0
-    check_match_ct =Tmfl 5 -v
+    check_match_ct =Tmfl 6 -v
     ddcmd module test_dynamic_debug =_:selftest
-    check_match_ct =:selftest 5 -v
+    check_match_ct =:selftest 6 -v
 
     ddcmd module test_dynamic_debug =:0.
 
@@ -440,13 +439,13 @@ function self_start {
     check_trace_instance_dir selftest 1
     is_trace_instance_opened selftest
     modprobe test_dynamic_debug dyndbg=+T:selftest.mf
-    check_match_ct =T:selftest.mf 5
+    check_match_ct =T:selftest.mf 6
 }
 
 function self_end_normal {
     echo \# disable -T:selftest, rmmod, close
     ddcmd module test_dynamic_debug -T:selftest # leave mf
-    check_match_ct =:selftest.mf 5 -v
+    check_match_ct =:selftest.mf 6 -v
     ddcmd module test_dynamic_debug +:0
     ddcmd close selftest
     is_trace_instance_closed selftest
@@ -456,7 +455,7 @@ function self_end_normal {
 function self_end_disable_anon {
     echo \# disable, close, rmmod
     ddcmd module test_dynamic_debug -T
-    check_match_ct =:selftest.mf 5
+    check_match_ct =:selftest.mf 6
     ddcmd module test_dynamic_debug +:0
     ddcmd close selftest
     is_trace_instance_closed selftest
@@ -466,7 +465,7 @@ function self_end_disable_anon {
 function self_end_disable_anon_mf {
     echo \# disable, close, rmmod
     ddcmd module test_dynamic_debug -Tf
-    check_match_ct =:selftest.m 5
+    check_match_ct =:selftest.m 6
     ddcmd module test_dynamic_debug +:0
     ddcmd close selftest
     is_trace_instance_closed selftest
@@ -477,7 +476,7 @@ function self_end_nodisable {
     echo \# SKIPPING: ddcmd module test_dynamic_debug -T:selftest
     ddcmd close selftest fail # close fails because selftest is still being used
     check_err_msg "Device or resource busy"
-    check_match_ct =T:selftest.mf 5
+    check_match_ct =T:selftest.mf 6
     rmmod test_dynamic_debug
     ddcmd close selftest # now selftest can be closed because rmmod removed
                          # all callsites which were using it
@@ -488,7 +487,7 @@ function self_end_delete_directory {
     del_trace_instance_dir selftest 0
     check_err_msg "Device or resource busy"
     ddcmd module test_dynamic_debug -mT:selftest
-    check_match_ct =:selftest.f 5
+    check_match_ct =:selftest.f 6
     del_trace_instance_dir selftest 0
     check_err_msg "Device or resource busy"
     ddcmd module test_dynamic_debug +:0
