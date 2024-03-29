@@ -606,7 +606,7 @@ function test_private_trace_syntax_rmmod {
     ddcmd class,D2_CORE,+T:foo
     ddcmd class,D2_KMS,+T:foo
     ddcmd class D2_CORE +T:foo \; class D2_KMS +T:foo
-    ddcmd "class,D2_CORE,+T:foo;,class,D2_KMS,+T:foo"
+    ddcmd "class,D2_CORE,+T:foo % class,D2_KMS,+T:foo"
     ddcmd class,D2_CORE,+T:foo\;class,D2_KMS,+T:foo
 
     check_match_ct =T:foo 2 -v
@@ -723,7 +723,7 @@ EOD
 
     check_match_ct =T:bupkus.mf 3		# the 3 classes enabled above
     ddcmd "module $modname =T:bupkus"		# enable the 5 non-class'd pr_debug()s
-    check_match_ct =T:bupkus 8 -r		# 8=5+3
+    check_match_ct =T:bupkus 9 -r		# 9=6+3
 
     doprints
     ddcmd close,bupkus fail
@@ -749,7 +749,7 @@ EOD
     check_trace_instance_dir bupkus 1
 
     ddcmd "module test_dynamic_debug =T:bupkus"	# rearm the 5 plain-old prdbgs
-    check_match_ct =T:bupkus 5
+    check_match_ct =T:bupkus 6
 
     doprints # 2nd time
     search_trace_name bupkus 0 "test_dd: doing categories"
@@ -872,9 +872,9 @@ function test_labelling {
 	     dyndbg=class,D2_CORE,+Tmf%class,D2_KMS,+Tmf%class,D2_ATOMIC,+pmT
 
     # check the trace for params processing during modprobe, with the expected prefixes
-    search_trace_name param_log 5 "params:parse_args:kernel/params.c: doing test_dynamic_debug"
+    search_trace_name param_log 6 "params:parse_args:kernel/params.c: doing test_dynamic_debug"
+    search_trace_name param_log 5 "params:parse_one:kernel/params.c: doing test_dynamic_debug"
     search_trace_name param_log 4 "params:parse_one:kernel/params.c: doing test_dynamic_debug"
-
     # and for the enabled test-module's pr-debugs
     search_trace_name param_log 3 "test_dynamic_debug:do_cats: test_dd: D2_CORE msg"
     search_trace_name param_log 2 "test_dynamic_debug:do_cats: test_dd: D2_KMS msg"
