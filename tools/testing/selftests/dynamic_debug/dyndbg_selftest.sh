@@ -214,32 +214,64 @@ EOF
 
 function comma_terminator_tests {
     echo -e "${GREEN}# COMMA_TERMINATOR_TESTS ${NC}"
-    # try combos of space & comma
+    # try combos of spaces & commas
     check_match_ct '\[params\]' 4 -r
     ddcmd module,params,=_		# commas as spaces
-    ddcmd module,params,+mpf		# turn on non-classed
+    ddcmd module,params,+mpf		# turn on module's pr-debugs
     check_match_ct =pmf 4
-    ddcmd ,module ,, ,  params, -p	# extra commas & spaces
-    ddcmd " , module ,,, ,  params, -m"	# extra commas & spaces
+    ddcmd ,module ,, ,  params, -p
+    check_match_ct =mf 4
+    ddcmd " , module ,,, ,  params, -m"	#
     check_match_ct =f 4
     ddcmd =_
 }
 
 function test_percent_splitting {
     echo -e "${GREEN}# TEST_PERCENT_SPLITTING - multi-command splitting on % ${NC}"
+    ifrmmod test_dynamic_debug_submod
     ifrmmod test_dynamic_debug
     ddcmd =_
     modprobe test_dynamic_debug dyndbg=class,D2_CORE,+pf%class,D2_KMS,+pt%class,D2_ATOMIC,+pm
     check_match_ct =pf 1
     check_match_ct =pt 1
     check_match_ct =pm 1
-    check_match_ct test_dynamic_debug 23 -r -v
-    ddcmd class,D2_CORE,+mf%class,D2_KMS,+lt%class,D2_ATOMIC,+ml "# add some prefixes"
+    check_match_ct test_dynamic_debug 23 -r
+    # add flags to those callsites
+    ddcmd class,D2_CORE,+mf%class,D2_KMS,+lt%class,D2_ATOMIC,+ml
     check_match_ct =pmf 1
     check_match_ct =plt 1
     check_match_ct =pml 1
-    check_match_ct test_dynamic_debug -r 23
+    check_match_ct test_dynamic_debug 23 -r
     ifrmmod test_dynamic_debug
+}
+
+function test_mod_submod {
+    echo -e "${GREEN}# TEST_MOD_SUBMOD ${NC}"
+    ifrmmod test_dynamic_debug_submod
+    ifrmmod test_dynamic_debug
+    ddcmd =_
+
+    # modprobe with class enablements
+    modprobe test_dynamic_debug dyndbg=class,D2_CORE,+pf%class,D2_KMS,+pt%class,D2_ATOMIC,+pm
+    check_match_ct '\[test_dynamic_debug\]' 23 -r
+    check_match_ct =pf 1
+    check_match_ct =pt 1
+    check_match_ct =pm 1
+
+    modprobe test_dynamic_debug_submod
+    check_match_ct test_dynamic_debug_submod 23 -r
+    check_match_ct '\[test_dynamic_debug\]' 23 -r
+    check_match_ct test_dynamic_debug 46 -r
+
+    # change classes again, this time submod too
+    ddcmd class,D2_CORE,+mf%class,D2_KMS,+lt%class,D2_ATOMIC,+ml "# add some prefixes"
+    check_match_ct =pmf 1 -v
+    check_match_ct =plt 1 -v
+    check_match_ct =pml 1 -v
+    #  submod changed too
+    check_match_ct =mf 1 -v
+    check_match_ct =lt 1 -v
+    check_match_ct =ml 1 -v
 }
 
 function test_actual_trace {
@@ -642,6 +674,7 @@ tests_list=(
     basic_tests
     comma_terminator_tests
     test_percent_splitting
+    test_mod_submod
 )
 test_list_2=(
     test_actual_trace
