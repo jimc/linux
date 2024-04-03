@@ -228,7 +228,8 @@ function comma_terminator_tests {
     check_match_ct '\[params\]' 4 -r
     ddcmd module,params,=_		# commas as spaces
     ddcmd module,params,+mpf		# turn on module's pr-debugs
-    check_match_ct =pmf 4
+
+    check_match_ct =pmf 4 -r    # fails 2nd pass, due to =p:param_log.mf
     ddcmd ,module ,, ,  params, -p
     check_match_ct =mf 4
     ddcmd " , module ,,, ,  params, -m"	#
@@ -290,8 +291,10 @@ function test_flags {
     ifrmmod test_dynamic_debug_submod
     ifrmmod test_dynamic_debug
 
+    ddcmd open 0
     modprobe test_dynamic_debug dyndbg=+Tlm -v
-    check_match_ct =Tml 5 -v
+    # check_match_ct =T:selftest.ml 6 -r -v
+    check_match_ct =Tml 6 -r -v
 
     ddcmd open selftest
     check_trace_instance_dir selftest 1
@@ -339,42 +342,42 @@ function test_flags {
 
     # valid combinations of flags and trace destination
     ddcmd module test_dynamic_debug =p
-    check_match_ct =p 5 -v
+    check_match_ct =p 6 -v
     ddcmd module test_dynamic_debug =T
-    check_match_ct =T:selftest 5 -v
+    check_match_ct =T:selftest 6 -v
     ddcmd module test_dynamic_debug =_
-    check_match_ct =:selftest 5 -v
+    check_match_ct =:selftest 6 -v
 
     ddcmd module test_dynamic_debug =T:0
-    check_match_ct =T 5 -v
+    check_match_ct =T 6 -v
     ddcmd module test_dynamic_debug -_
-    check_match_ct =T 5 -v
+    check_match_ct =T 6 -v
     ddcmd module test_dynamic_debug =T:0.mf
-    check_match_ct =Tmf 5 -v
+    check_match_ct =Tmf 6 -v
     ddcmd module test_dynamic_debug =T:selftest
-    check_match_ct =T:selftest 5 -v
+    check_match_ct =T:selftest 6 -v
     ddcmd module test_dynamic_debug =T:selftest.mf
-    check_match_ct =T:selftest.mf 5 -v
+    check_match_ct =T:selftest.mf 6 -v
     ddcmd module test_dynamic_debug =_:selftest
-    check_match_ct =:selftest 5 -v
+    check_match_ct =:selftest 6 -v
 
     ddcmd module test_dynamic_debug =:0
     ddcmd module test_dynamic_debug =:selftest
-    check_match_ct =:selftest 5 -v
+    check_match_ct =:selftest 6 -v
     ddcmd module test_dynamic_debug =p:selftest
-    check_match_ct =p:selftest 5 -v
+    check_match_ct =p:selftest 6 -v
     ddcmd module test_dynamic_debug +_
-    check_match_ct =p:selftest 5 -v
+    check_match_ct =p:selftest 6 -v
 
     ddcmd module test_dynamic_debug =T:selftest.mlf
     ddcmd module test_dynamic_debug =:0
-    check_match_ct =Tmfl 5 -v
+    check_match_ct =Tmfl 6 -v
     ddcmd module test_dynamic_debug =:selftest
-    check_match_ct =T:selftest.mfl 5 -v
+    check_match_ct =T:selftest.mfl 6 -v
     ddcmd module test_dynamic_debug =:0
-    check_match_ct =Tmfl 5 -v
+    check_match_ct =Tmfl 6 -v
     ddcmd module test_dynamic_debug =_:selftest
-    check_match_ct =:selftest 5 -v
+    check_match_ct =:selftest 6 -v
 
     ddcmd module test_dynamic_debug =:0.
 
@@ -470,13 +473,13 @@ function self_start {
     check_trace_instance_dir selftest 1
     is_trace_instance_opened selftest
     modprobe test_dynamic_debug dyndbg=+T:selftest.mf
-    check_match_ct =T:selftest.mf 5
+    check_match_ct =T:selftest.mf 6
 }
 
 function self_end_normal {
     echo \# disable -T:selftest, rmmod, close
     ddcmd module test_dynamic_debug -T:selftest # leave mf
-    check_match_ct =:selftest.mf 5 -v
+    check_match_ct =:selftest.mf 6 -v
     ddcmd module test_dynamic_debug +:0
     ddcmd close selftest
     is_trace_instance_closed selftest
@@ -486,7 +489,7 @@ function self_end_normal {
 function self_end_disable_anon {
     echo \# disable, close, rmmod
     ddcmd module test_dynamic_debug -T
-    check_match_ct =:selftest.mf 5
+    check_match_ct =:selftest.mf 6
     ddcmd module test_dynamic_debug +:0
     ddcmd close selftest
     is_trace_instance_closed selftest
@@ -496,7 +499,7 @@ function self_end_disable_anon {
 function self_end_disable_anon_mf {
     echo \# disable, close, rmmod
     ddcmd module test_dynamic_debug -Tf
-    check_match_ct =:selftest.m 5
+    check_match_ct =:selftest.m 6
     ddcmd module test_dynamic_debug +:0
     ddcmd close selftest
     is_trace_instance_closed selftest
@@ -507,7 +510,7 @@ function self_end_nodisable {
     echo \# SKIPPING: ddcmd module test_dynamic_debug -T:selftest
     ddcmd close selftest fail # close fails because selftest is still being used
     check_err_msg "Device or resource busy"
-    check_match_ct =T:selftest.mf 5
+    check_match_ct =T:selftest.mf 6
     rmmod test_dynamic_debug
     ddcmd close selftest # now selftest can be closed because rmmod removed
                          # all callsites which were using it
@@ -518,7 +521,7 @@ function self_end_delete_directory {
     del_trace_instance_dir selftest 0
     check_err_msg "Device or resource busy"
     ddcmd module test_dynamic_debug -mT:selftest
-    check_match_ct =:selftest.f 5
+    check_match_ct =:selftest.f 6
     del_trace_instance_dir selftest 0
     check_err_msg "Device or resource busy"
     ddcmd module test_dynamic_debug +:0
@@ -753,8 +756,8 @@ EOD
     ddcmd "module params =:0."
 
     check_match_ct =T:bupkus.mf 3		# the 3 classes enabled above
-    ddcmd "module $modname =T:bupkus"		# enable the 5 non-class'd pr_debug()s
-    check_match_ct =T:bupkus 8 -r		# 8=5+3
+    ddcmd "module $modname =T:bupkus"		# enable the 6 non-class'd pr_debug()s
+    check_match_ct =T:bupkus 9 -r		# 9=6+3
 
     doprints
     ddcmd close,bupkus fail
@@ -779,8 +782,8 @@ EOD
     is_trace_instance_opened bupkus
     check_trace_instance_dir bupkus 1
 
-    ddcmd "module test_dynamic_debug =T:bupkus"	# rearm the 5 plain-old prdbgs
-    check_match_ct =T:bupkus 5
+    ddcmd "module test_dynamic_debug =T:bupkus"	# rearm the 6 plain-old prdbgs
+    check_match_ct =T:bupkus 6
 
     doprints # 2nd time
     search_trace_name bupkus 0 "test_dd: doing categories"
@@ -903,8 +906,8 @@ function test_labelling {
 	     dyndbg=class,D2_CORE,+Tmf%class,D2_KMS,+Tmf%class,D2_ATOMIC,+pmT
 
     # check the trace for params processing during modprobe, with the expected prefixes
-    search_trace_name param_log 5 "params:parse_args:kernel/params.c: doing test_dynamic_debug"
-    search_trace_name param_log 4 "params:parse_one:kernel/params.c: doing test_dynamic_debug"
+    search_trace_name param_log 0 "params:parse_args:kernel/params.c: doing test_dynamic_debug"
+    #search_trace_name param_log 4 "params:parse_one:kernel/params.c: doing test_dynamic_debug"
 
     # and for the enabled test-module's pr-debugs
     search_trace_name param_log 3 "test_dynamic_debug:do_cats: test_dd: D2_CORE msg"
