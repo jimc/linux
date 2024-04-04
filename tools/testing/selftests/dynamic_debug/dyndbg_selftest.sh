@@ -11,6 +11,11 @@ CYAN="\033[0;36m"
 NC="\033[0;0m"
 error_msg=""
 
+[ -e /proc/dynamic_debug/control ] || {
+    echo -e "${RED}: this test requires CONFIG_DYNAMIC_DEBUG=y ${NC}"
+    exit 127 # tbd whether this is a useful distinction
+}
+
 function vx () {
     echo $1 > /sys/module/dynamic_debug/parameters/verbose
 }
