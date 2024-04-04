@@ -11,6 +11,11 @@ CYAN="\033[0;36m"
 NC="\033[0;0m"
 error_msg=""
 
+[ -e /proc/dynamic_debug/control ] || {
+    echo -e "${RED}: kernel not configured for this test ${NC}"
+    exit 127
+}
+
 function vx () {
     echo $1 > /sys/module/dynamic_debug/parameters/verbose
 }
