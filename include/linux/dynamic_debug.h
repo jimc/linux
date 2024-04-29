@@ -146,9 +146,9 @@ struct ddebug_class_user {
 
 /* encapsulate linker provided built-in (or module) dyndbg data */
 struct _ddebug_info {
-	struct _ddebug *descs;
-	struct ddebug_class_map *classes;
-	struct ddebug_class_user *class_users;
+	struct _ddebug *descs __counted_by(num_descs);
+	struct ddebug_class_map *classes __counted_by(num_classes);
+	struct ddebug_class_user *class_users __counted_by(num_class_users);
 	unsigned int num_descs;
 	unsigned int num_classes;
 	unsigned int num_class_users;

@@ -49,9 +49,9 @@ extern struct ddebug_class_user __stop___dyndbg_class_users[];
 struct ddebug_table {
 	struct list_head link;
 	const char *mod_name;
-	struct _ddebug *ddebugs;
-	struct ddebug_class_map *classes;
-	struct ddebug_class_user *class_users;
+	struct _ddebug *ddebugs __counted_by(num_ddebugs);
+	struct ddebug_class_map *classes __counted_by(num_classes);
+	struct ddebug_class_user *class_users __counted_by(num_class_users);
 	unsigned int num_ddebugs, num_classes, num_class_users;
 };
 
