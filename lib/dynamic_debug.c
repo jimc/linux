@@ -785,6 +785,9 @@ static int remaining(int wrote)
 
 static int __dynamic_emit_lookup(const struct _ddebug *desc, char *buf, int pos)
 {
+	if (!(desc->flags & _DPRINTK_FLAGS_INCL_LOOKUP))
+		return pos;
+
 	if (desc->flags & _DPRINTK_FLAGS_INCL_MODNAME)
 		pos += snprintf(buf + pos, remaining(pos), "%s:",
 				desc->modname);
@@ -798,12 +801,15 @@ static int __dynamic_emit_lookup(const struct _ddebug *desc, char *buf, int pos)
 		pos += snprintf(buf + pos, remaining(pos), "%d:",
 				desc->lineno);
 
+	/* we have a non-empty prefix, add trailing space */
+	if (remaining(pos))
+		buf[pos++] = ' ';
+
 	return pos;
 }
 
 static char *dynamic_emit_prefix(struct _ddebug *desc, char *buf)
 {
-	int pos_after_tid;
 	int pos = 0;
 
 	if (likely(!(desc->flags & _DPRINTK_FLAGS_INCL_ANY)))
@@ -816,13 +822,10 @@ static char *dynamic_emit_prefix(struct _ddebug *desc, char *buf)
 			pos += snprintf(buf + pos, remaining(pos), "[%d] ",
 					task_pid_vnr(current));
 	}
-	pos_after_tid = pos;
 
 	if (unlikely(desc->flags & _DPRINTK_FLAGS_INCL_LOOKUP))
 		pos += __dynamic_emit_lookup(desc, buf, pos);
 
-	if (pos - pos_after_tid)
-		pos += snprintf(buf + pos, remaining(pos), " ");
 	if (pos >= PREFIX_SIZE)
 		buf[PREFIX_SIZE - 1] = '\0';
 
