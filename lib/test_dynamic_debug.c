@@ -17,15 +17,22 @@
 
 /* re-gen output by reading or writing sysfs node: do_prints */
 
-static void do_prints(void); /* device under test */
+static void do_prints(unsigned int reps); /* device under test */
 static int param_set_do_prints(const char *instr, const struct kernel_param *kp)
 {
-	do_prints();
+	unsigned long reps = 1;
+	int rc;
+
+	rc = kstrtoul(instr, 0, &reps);
+	if (rc)
+		pr_notice("want number, not: %s, using %lu\n", instr, reps);
+
+	do_prints(reps);
 	return 0;
 }
 static int param_get_do_prints(char *buffer, const struct kernel_param *kp)
 {
-	do_prints();
+	do_prints(1);
 	return scnprintf(buffer, PAGE_SIZE, "did do_prints\n");
 }
 static const struct kernel_param_ops param_ops_do_prints = {
@@ -144,17 +151,19 @@ static void do_levels(void)
 	prdbg(V7);
 }
 
-static void do_prints(void)
+static void do_prints(unsigned int reps)
 {
-	pr_debug("do_prints:\n");
-	do_cats();
-	do_levels();
+	pr_debug("do_prints: %d times\n", reps);
+	for (; reps; reps--) {
+		do_cats();
+		do_levels();
+	}
 }
 
 static int __init test_dynamic_debug_init(void)
 {
 	pr_debug("init start\n");
-	do_prints();
+	do_prints(1);
 	pr_debug("init done\n");
 	return 0;
 }
