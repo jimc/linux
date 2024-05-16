@@ -5898,6 +5898,7 @@ sub process {
 			}
 		}
 
+# except for declarative macros (whether file or function scope),
 # multi-statement macros should be enclosed in a do while loop, grab the
 # first statement and ensure its the whole macro if its not enclosed
 # in a known good container
@@ -5957,6 +5958,7 @@ sub process {
 				MODULE_PARM_DESC|
 				DECLARE_PER_CPU|
 				DEFINE_PER_CPU|
+				(?:__)?DYNDBG_CLASSMAP_\w+(?:_\w+)?|
 				__typeof__\(|
 				union|
 				struct|
