@@ -9,6 +9,7 @@
 #include <linux/module.h>
 
 #include <drm/drm_module.h>
+#include <drm/drm_print.h>
 
 #include "xe_defaults.h"
 #include "xe_device_types.h"
@@ -19,6 +20,8 @@
 #include "xe_pm.h"
 #include "xe_observation.h"
 #include "xe_sched_job.h"
+
+DRM_CLASSMAP_USE(drm_debug_classes);
 
 struct xe_modparam xe_modparam = {
 	.probe_display =	XE_DEFAULT_PROBE_DISPLAY,
