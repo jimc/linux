@@ -20,6 +20,7 @@
 #include "komeda_kms.h"
 
 DEFINE_DRM_GEM_DMA_FOPS(komeda_cma_fops);
+DRM_CLASSMAP_USE(drm_debug_classes);
 
 static int komeda_gem_dma_dumb_create(struct drm_file *file,
 				      struct drm_device *dev,
