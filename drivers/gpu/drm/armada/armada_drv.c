@@ -35,6 +35,7 @@ static const struct drm_ioctl_desc armada_ioctls[] = {
 };
 
 DEFINE_DRM_GEM_FOPS(armada_drm_fops);
+DRM_CLASSMAP_USE(drm_debug_classes);
 
 static const struct drm_driver armada_drm_driver = {
 	.gem_prime_import	= armada_gem_prime_import,
