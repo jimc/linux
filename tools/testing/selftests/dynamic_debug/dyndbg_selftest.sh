@@ -11,6 +11,30 @@ CYAN="\033[0;36m"
 NC="\033[0;0m"
 error_msg=""
 
+[ -e /proc/dynamic_debug/control ] || {
+    echo -e "${RED}: this test requires CONFIG_DYNAMIC_DEBUG=y ${NC}"
+    exit 0 # nothing to test here, no good reason to fail.
+}
+
+# need info to avoid failures due to untestable configs
+
+[ -f "$KCONFIG_CONFIG" ] || KCONFIG_CONFIG=".config"
+if [ -f "$KCONFIG_CONFIG" ]; then
+    echo "# consulting KCONFIG_CONFIG: $KCONFIG_CONFIG"
+    grep -q "CONFIG_DYNAMIC_DEBUG=y" $KCONFIG_CONFIG ; LACK_DD_BUILTIN=$?
+    grep -q "CONFIG_TEST_DYNAMIC_DEBUG=m" $KCONFIG_CONFIG ; LACK_TMOD=$?
+    grep -q "CONFIG_TEST_DYNAMIC_DEBUG_SUBMOD=m" $KCONFIG_CONFIG ; LACK_TMOD_SUBMOD=$?
+    if [ $V -eq 1 ]; then
+	echo LACK_DD_BUILTIN: $LACK_DD_BUILTIN
+	echo LACK_TMOD: $LACK_TMOD
+	echo LACK_TMOD_SUBMOD: $LACK_TMOD_SUBMOD
+    fi
+else
+    LACK_DD_BUILTIN=0
+    LACK_TMOD=0
+    LACK_TMOD_SUBMOD=0
+fi
+
 function vx () {
     echo $1 > /sys/module/dynamic_debug/parameters/verbose
 }
@@ -192,6 +216,10 @@ function check_err_msg() {
 
 function basic_tests {
     echo -e "${GREEN}# BASIC_TESTS ${NC}"
+    if [ $LACK_DD_BUILTIN -eq 1 ]; then
+	echo "SKIP"
+	return
+    fi
     ddcmd =_ # zero everything (except class'd sites)
     check_match_ct =p 0
     # there are several main's :-/
@@ -214,6 +242,10 @@ EOF
 
 function comma_terminator_tests {
     echo -e "${GREEN}# COMMA_TERMINATOR_TESTS ${NC}"
+    if [ $LACK_DD_BUILTIN -eq 1 ]; then
+	echo "SKIP"
+	return
+    fi
     # try combos of spaces & commas
     check_match_ct '\[params\]' 4 -r
     ddcmd module,params,=_		# commas as spaces
@@ -226,9 +258,12 @@ function comma_terminator_tests {
     ddcmd =_
 }
 
-    
 function test_percent_splitting {
     echo -e "${GREEN}# TEST_PERCENT_SPLITTING - multi-command splitting on % ${NC}"
+    if [ $LACK_TMOD -eq 1 ]; then
+	echo "SKIP"
+	return
+    fi
     ifrmmod test_dynamic_debug_submod
     ifrmmod test_dynamic_debug
     ddcmd =_
@@ -248,6 +283,14 @@ function test_percent_splitting {
 
 function test_mod_submod {
     echo -e "${GREEN}# TEST_MOD_SUBMOD ${NC}"
+    if [ $LACK_TMOD -eq 1 ]; then
+	echo "SKIP"
+	return
+    fi
+    if [ $LACK_TMOD_SUBMOD -eq 1 ]; then
+	echo "SKIP"
+	return
+    fi
     ifrmmod test_dynamic_debug_submod
     ifrmmod test_dynamic_debug
     ddcmd =_
