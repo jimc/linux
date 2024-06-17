@@ -168,7 +168,6 @@ function error_log_ref {
 }
 
 function ifrmmod {
-    lsmod | grep $1 2>&1>/dev/null || echo $1 not there
     lsmod | grep $1 2>&1>/dev/null && rmmod $1
 }
 
@@ -316,13 +315,13 @@ function test_mod_submod {
 
     # change classes again, this time submod too
     ddcmd class,D2_CORE,+mf%class,D2_KMS,+lt%class,D2_ATOMIC,+ml "# add some prefixes"
-    check_match_ct =pmf 1 -v
-    check_match_ct =plt 1 -v
-    check_match_ct =pml 1 -v
+    check_match_ct =pmf 1
+    check_match_ct =plt 1
+    check_match_ct =pml 1
     #  submod changed too
-    check_match_ct =mf 1 -v
-    check_match_ct =lt 1 -v
-    check_match_ct =ml 1 -v
+    check_match_ct =mf 1
+    check_match_ct =lt 1
+    check_match_ct =ml 1
 
     # now work the classmap-params
     # fresh start, to clear all above flags (test-fn limits)
@@ -333,25 +332,25 @@ function test_mod_submod {
     echo 1 > /sys/module/test_dynamic_debug/parameters/p_disjoint_bits
     echo 4 > /sys/module/test_dynamic_debug/parameters/p_level_num
     # 2 mods * ( V1-3 + D2_CORE )
-    check_match_ct =p 8 -v
+    check_match_ct =p 8
     echo 3 > /sys/module/test_dynamic_debug/parameters/p_disjoint_bits
     echo 0 > /sys/module/test_dynamic_debug/parameters/p_level_num
     # 2 mods * ( D2_CORE, D2_DRIVER )
-    check_match_ct =p 4 -v
+    check_match_ct =p 4
     echo 0x16 > /sys/module/test_dynamic_debug/parameters/p_disjoint_bits
     echo 0 > /sys/module/test_dynamic_debug/parameters/p_level_num
     # 2 mods * ( D2_DRIVER, D2_KMS, D2_ATOMIC )
-    check_match_ct =p 6 -v
+    check_match_ct =p 6
 
     # recap DRM_USE_DYNAMIC_DEBUG regression
     ifrmmod test_dynamic_debug_submod
     ifrmmod test_dynamic_debug
     # set super-mod params
     modprobe test_dynamic_debug p_disjoint_bits=0x16 p_level_num=5
-    check_match_ct =p 7 -v
+    check_match_ct =p 7
     modprobe test_dynamic_debug_submod
     # see them picked up by submod
-    check_match_ct =p 14 -v
+    check_match_ct =p 14
 }
 
 tests_list=(
