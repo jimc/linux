@@ -82,15 +82,17 @@ struct ddebug_class_map {
 
 /*
  * dyndbg-classmaps is closely modelled on DRM.debug, which has:
- *   ~23 macros, each passing DRM_UT_* as 1st arg
+ *    10 debug categories: DRM_UT_*
+ *   ~23 categorized debug macros, each passing DRM_UT_* as 1st arg
  *   ~5000 calls to them, across all of drivers/gpu/drm/
- *   Optimizing compilers handle this well.
  *
- * So dyndbg maps known classnames to limited (0..62) .classids, and
- * insists classes are selected by name for adjustment.
+ * Optimizing compilers handle this well, so dyndbg preserves it,
+ * keeping the DRM_UT_* values in each site's _ddebug.class_id.
  *
- * modules either DEFINE classnames, or USE names defined elsewhere
- * (in another module).  This supports classnames defined over subsystems.
+ * Dyndbg protects (DRM's) class'd prdbgs from generic alteration by
+ * requiring "class DRM_UT_*" in >control commands; so modules
+ * deploying classmaps must either _DEFINE a map & classnames, or
+ * reference/_USE one defined elsewhere (in the subsystem).
  */
 /**
  * DYNDBG_CLASSMAP_DEFINE - define debug classes used by a module.
