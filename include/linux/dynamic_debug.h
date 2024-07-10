@@ -80,15 +80,22 @@ struct ddebug_class_map {
 	enum ddebug_class_map_type map_type;
 };
 
+/*
+ * modules using dyndbg-classmaps must invoke either
+ */
 /**
- * DYNDBG_CLASSMAP_DEFINE - define a set of debug-classes used by a module.
+ * DYNDBG_CLASSMAP_DEFINE - define debug classes used by a module.
  * @_var:   name of the classmap, exported for other modules coordinated use.
- * @_type:  enum ddebug_class_map_type, chooses bits/verbose, numeric/names.
- * @_base:  offset of 1st class-name, used to share 0..62 classid space
- * @classes: vals are stringified enum-vals, like DRM_UT_*
+ * @_type:  enum ddebug_class_map_type: DISJOINT - independent, LEVEL - v2>v1
+ * @_base:  reserve N classids starting at _base, to split 0..62 classid space
+ * @classes: names of the N classes.
  *
- * Defines and exports a struct ddebug_class_map whose @classes are
- * used to validate a "class FOO .." >control command on the module
+ * This tells dyndbg what classids the module is using, by mapping
+ * names onto them.  This qualifies "class NAME" >controls on the
+ * defining module, ignoring unknown names.
+ *
+ * The @classes also name the bits 0.. in any CLASSMAP_PARAM referring
+ * to the classmap.
  */
 #define __DYNDBG_CLASSMAP_DEFINE(_var, _maptype, _base, ...)		\
 	static const char *_var##_classnames[] = { __VA_ARGS__ };	\
@@ -131,9 +138,9 @@ struct ddebug_class_user {
  * DYNDBG_CLASSMAP_USE - refer to a classmap, DEFINEd elsewhere.
  * @_var: name of the exported classmap var
  *
- * This registers a module's use of another module's classmap defn, so
- * dyndbg can authorize "class DRM_CORE ..." >control commands upon
- * this module.
+ * This tells dyndbg that the module has prdbgs with classids defined
+ * in the named classmap.  This qualifies "class NAME" >controls on
+ * the user module, ignoring unknown names.
  */
 #define DYNDBG_CLASSMAP_USE(_var)					\
 	DYNDBG_CLASSMAP_USE_(_var, __UNIQUE_ID(ddebug_class_user))
@@ -165,27 +172,30 @@ struct ddebug_class_param {
 };
 
 /**
- * DYNDBG_CLASSMAP_PARAM - wrap a dyndbg-classmap with a controlling sys-param
- * @_name  sysfs node name
- * @_var   name of the struct classmap var defining the controlled classes
- * @_flags flags to be toggled, typically just 'p'
+ * DYNDBG_CLASSMAP_PARAM - control a ddebug-classmap from a sys-param
+ * @_name:  sysfs node name
+ * @_var:   name of the classmap var defining the controlled classes/bits
+ * @_flags: flags to be toggled, typically just 'p'
  *
  * Creates a sysfs-param to control the classes defined by the
- * classmap.  Keeps bits in a private/static
+ * exported classmap, with bits 0..N-1 mapped to the classes named.
+ * This version keeps class-state in a private long int.
  */
 #define DYNDBG_CLASSMAP_PARAM(_name, _var, _flags)			\
 	static unsigned long _name##_bvec;				\
 	__DYNDBG_CLASSMAP_PARAM(_name, _name##_bvec, _var, _flags)
 
 /**
- * DYNDBG_CLASSMAP_PARAM_REF - wrap a dyndbg-classmap with a controlling sys-param
- * @_name  sysfs node name
- * @_bits  name of the module's unsigned long bit-vector, ex: __drm_debug
- * @_var   name of the struct classmap var defining the controlled classes
- * @_flags flags to be toggled, typically just 'p'
+ * DYNDBG_CLASSMAP_PARAM_REF - wrap a classmap with a controlling sys-param
+ * @_name:  sysfs node name
+ * @_bits:  name of the module's unsigned long bit-vector, ex: __drm_debug
+ * @_var:   name of the (exported) classmap var defining the classes/bits
+ * @_flags: flags to be toggled, typically just 'p'
  *
- * Creates a sysfs-param to control the classmap, keeping bitvec in user @_bits.
- * This lets drm use __drm_debug elsewhere too.
+ * Creates a sysfs-param to control the classes defined by the
+ * exported clasmap, with bits 0..N-1 mapped to the classes named.
+ * This version keeps class-state in user @_bits.  This lets drm check
+ * __drm_debug elsewhere too.
  */
 #define DYNDBG_CLASSMAP_PARAM_REF(_name, _bits, _var, _flags)		\
 	__DYNDBG_CLASSMAP_PARAM(_name, _bits, _var, _flags)
