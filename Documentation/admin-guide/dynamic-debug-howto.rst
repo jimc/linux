@@ -390,42 +390,56 @@ in case ``prefix_str`` is built dynamically.
 Dynamic Debug classmaps
 =======================
 
-Dyndbg allows selection/grouping of *prdbg* callsites using structural
-info: module, file, function, line.  Classmaps allow authors to add
-their own domain-oriented groupings using class-names.  Classmaps are
-exported, so they referencable from other modules.
+Classmaps adds the "class" keyword, which selects prdbgs based on
+author supplied, domain-oriented names; this complements the code
+organizational keywords: module, file, function, line.
 
-  # enable classes individually
+The main difference from the others: class'd prdbgs must be named to
+be changed.  This protects them from generic overwrite:
+
+  # IOW this cannot undo any DRM.debug settings
+  :#> ddcmd -p
+
+So each class must be enabled individually (no wildcards):
+
   :#> ddcmd class DRM_UT_CORE +p
   :#> ddcmd class DRM_UT_KMS +p
   # or more selectively
   :#> ddcmd class DRM_UT_CORE module drm +p
 
-The "class FOO" syntax protects class'd prdbgs from generic overwrite::
+Or the legacy/normal (convenient) way:
 
-  # IOW this doesn't wipe any DRM.debug settings
-  :#> ddcmd -p
-
-To support the DRM.debug parameter, DYNDBG_CLASSMAP_PARAM* updates all
-classes in a classmap, mapping param-bits 0..N onto the classes:
-DRM_UT_<*> for the DRM use-case.
+  :#> echo 0x1ff > /sys/module/drm/parameters/debug
 
 Dynamic Debug Classmap API
 ==========================
 
-DYNDBG_CLASSMAP_DEFINE - modules use this to create classmaps, naming
-each of the classes (stringified enum-symbols: "DRM_UT_<*>"), and
-type, and mapping the class-names to consecutive _class_ids.
+The classmap API is closely modeled on DRM, which has:
 
-By doing so, modules tell dyndbg that they have prdbgs with those
-class_ids, and they authorize dyndbg to accept "class FOO" for the
-module defining the classmap, and its contained classnames.
+enum drm_debug_category: DRM_UT_* // 10 independent categories. 
+dyndbg's .classid encodes that directly, allowing 0..62 classes
 
-DYNDBG_CLASSMAP_USE - drm drivers invoke this to ref the CLASSMAP that
-drm DEFINEs.  This shares the classmap definition, and authorizes
-dyndbg to apply changes to the user module's class'd pr_debugs.  It
-also tells dyndbg how to initialize the user's prdbgs at modprobe,
-based upon the current setting of the parent's controlling param.
+DRM has ~5k calls like: drm_dbg(DRM_UT_KMS, "kms msg");
+these are unchanged, even in argtype, since classid === category.
+
+DRM controls the classes together via sysfs; bits 0..9 control the
+classes independently.
+
+Its expected that other classmap users will also provide debug-macros
+using an enum-defined categorization scheme like DRM's, and dyndbg can
+be adapted under them similarly.
+
+DYNDBG_CLASSMAP_DEFINE(var,type,_base,classnames) - this maps
+classnames onto class-ids starting at _base, it also maps the
+names onto CLASSMAP_PARAM bits 0..N.
+
+DYNDBG_CLASSMAP_USE(var) - modules call this to refer to the var
+_DEFINEd elsewhere (and exported).
+
+Classmaps are opt-in: modules invoke _DEFINE or _USE to authorize
+dyndbg to update those classes.  "class FOO" queries are validated
+against the classes, this finds the classid to alter; classes are not
+directly selectable by their classid.
 
 There are 2 types of classmaps:
 
@@ -436,9 +450,9 @@ DYNDBG_CLASSMAP_PARAM - modelled after module_param_cb, it refers to a
 DEFINEd classmap, and associates it to the param's data-store.  This
 state is then applied to DEFINEr and USEr modules when they're modprobed.
 
-This interface also enforces the DD_CLASS_TYPE_LEVEL_NUM relation
+The PARAM interface also enforces the DD_CLASS_TYPE_LEVEL_NUM relation
 amongst the contained classnames; all classes are independent in the
-control parser itself.
+control parser itself; there is no implied meaning in names like "V4".
 
 Modules or module-groups (drm & drivers) can define multiple
 classmaps, as long as they share the limited 0..62 per-module-group
