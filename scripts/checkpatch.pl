@@ -5963,6 +5963,7 @@ sub process {
 				MODULE_PARM_DESC|
 				DECLARE_PER_CPU|
 				DEFINE_PER_CPU|
+				DYNDBG_CLASSMAP|
 				__typeof__\(|
 				union|
 				struct|
