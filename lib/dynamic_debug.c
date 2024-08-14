@@ -1249,13 +1249,13 @@ static void ddebug_apply_params(const struct ddebug_class_map *cm, const char *m
  * modular classmap vector/section.  Save the start and length of the
  * subrange at its edges.
  */
-static void ddebug_attach_module_classes(struct ddebug_table *dt, struct _ddebug_info *di)
+static void ddebug_attach_module_classes(struct ddebug_table *dt,
+					 const struct _ddebug_info *di)
 {
 	struct ddebug_class_map *cm;
 	int i, nc = 0;
 
 	for (i = 0, cm = di->classes; i < di->num_classes; i++, cm++) {
-
 		if (!strcmp(cm->mod_name, dt->mod_name)) {
 			vpr_cm_info(cm, "classes[%d]:", i);
 			if (!nc++)
@@ -1294,7 +1294,6 @@ static void ddebug_attach_user_module_classes(struct ddebug_table *dt,
 			continue;
 
 		if (!strcmp(cli->user_mod_name, dt->mod_name)) {
-
 			vpr_cm_info(cli->map, "class_ref[%d] %s -> %s", i,
 				    cli->user_mod_name, cli->map->mod_name);
 			if (!nc++)
