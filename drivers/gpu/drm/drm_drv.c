@@ -57,6 +57,8 @@ MODULE_LICENSE("GPL and additional rights");
 static DEFINE_SPINLOCK(drm_minor_lock);
 static struct idr drm_minors_idr;
 
+DRM_CLASSMAP_USE(drm_debug_classes);
+
 /*
  * If the drm core fails to init for whatever reason,
  * we should prevent any drivers from registering with it.
