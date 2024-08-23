@@ -23,6 +23,8 @@
 #include "drm_crtc_internal.h"
 #include "drm_internal.h"
 
+DRM_CLASSMAP_USE(drm_debug_classes);
+
 /**
  * DOC: overview
  *
