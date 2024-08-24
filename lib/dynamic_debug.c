@@ -182,6 +182,8 @@ static int ddebug_find_valid_class(struct ddebug_table const *dt, const char *cl
 	return -ENOENT;
 }
 
+#define MATCH_CLASS_ANY _DPRINTK_CLASS_DFLT
+
 /*
  * Search the tables for _ddebug's which match the given `query' and
  * apply the `flags' and `mask' to them.  Returns number of matching
@@ -212,14 +214,14 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 				continue;
 		} else {
 			/* constrain query, do not touch class'd callsites */
-			valid_class = _DPRINTK_CLASS_DFLT;
+			valid_class = MATCH_CLASS_ANY;
 		}
 
 		for (i = 0; i < dt->num_ddebugs; i++) {
 			struct _ddebug *dp = &dt->ddebugs[i];
 
 			/* match site against query-class */
-			if (dp->class_id != valid_class)
+			if (dp->class_id != valid_class && valid_class != MATCH_CLASS_ANY)
 				continue;
 
 			/* match against the source filename */
