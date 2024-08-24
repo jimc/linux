@@ -209,17 +209,22 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 		if (query->class_string) {
 			valid_class = ddebug_find_valid_class(dt, query->class_string);
 			if (valid_class < 0)
+				/* skip/reject unknown classes */
 				continue;
 		} else {
-			/* constrain query, do not touch class'd callsites */
-			valid_class = _DPRINTK_CLASS_DFLT;
+			valid_class = _DPRINTK_CLASS_ANY;
 		}
 
 		for (i = 0; i < dt->num_ddebugs; i++) {
 			struct _ddebug *dp = &dt->ddebugs[i];
-
-			/* match site against query-class */
-			if (dp->class_id != valid_class)
+			/*
+			 * skip site if its class isn't the one
+			 * queried, unless its the default class.
+			 * 2nd term drops protection of class'd
+			 * prdbgs from unclassed queries.
+			 */
+			if (dp->class_id != valid_class &&
+			    valid_class != _DPRINTK_CLASS_ANY)
 				continue;
 
 			/* match against the source filename */
