@@ -194,6 +194,17 @@ static int ddebug_find_valid_class(struct ddebug_table const *dt, const char *cl
 }
 
 /*
+ * classmaps-v1 protected classes from changes by legacy commands
+ * (those selecting _DPRINTK_CLASS_DFLT by omission), v2 undoes that
+ * special treatment.  State so explicitly.  Later we could give
+ * modules the choice to protect their classes or to keep v2 behavior.
+ */
+static inline bool ddebug_client_module_protects_classes(const struct ddebug_table *dt)
+{
+	return false;
+}
+
+/*
  * Search the tables for _ddebug's which match the given `query' and
  * apply the `flags' and `mask' to them.  Returns number of matching
  * callsites, normally the same as number of changes.  If verbose,
@@ -206,7 +217,7 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 	unsigned int newflags;
 	unsigned int nfound = 0;
 	struct flagsbuf fbuf, nbuf;
-	int valid_class;
+	int slctd_class;
 
 	/* search for matching ddebugs */
 	mutex_lock(&ddebug_lock);
@@ -218,21 +229,26 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 			continue;
 
 		if (query->class_string) {
-			valid_class = ddebug_find_valid_class(dt, query->class_string);
-			if (valid_class < 0)
+			slctd_class = ddebug_find_valid_class(dt, query->class_string);
+			if (slctd_class < 0)
+				/* skip/reject classes unknown by module */
 				continue;
 		} else {
-			/* constrain query, do not touch class'd callsites */
-			valid_class = _DPRINTK_CLASS_DFLT;
+			slctd_class = _DPRINTK_CLASS_DFLT;
 		}
 
 		for (i = 0; i < dt->info.descs.len; i++) {
 			struct _ddebug *dp = &dt->info.descs.start[i];
 
-			/* match site against query-class */
-			if (dp->class_id != valid_class)
-				continue;
-
+			if (dp->class_id != slctd_class) {
+				if (query->class_string)
+					/* site.class != given class */
+					continue;
+				/* legacy query, class'd site */
+				else if (ddebug_client_module_protects_classes(dt))
+					continue;
+				/* allow change on class'd pr_debug */
+			}
 			/* match against the source filename */
 			if (query->filename &&
 			    !match_wildcard(query->filename, dp->filename) &&
