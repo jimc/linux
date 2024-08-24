@@ -26,6 +26,8 @@ struct _ddebug {
 #define CLS_BITS 6
 	unsigned int class_id:CLS_BITS;
 #define _DPRINTK_CLASS_DFLT		((1 << CLS_BITS) - 1)
+#define _DPRINTK_CLASS_ANY		_DPRINTK_CLASS_DFLT /* 2nd meaning */
+
 	/*
 	 * The flags field controls the behaviour at the callsite.
 	 * The bits here are changed dynamically when the user
