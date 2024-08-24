@@ -158,10 +158,7 @@ static void vpr_info_dq(const struct ddebug_query *query, const char *msg)
 		  _dt->num_class_users);				\
 	})
 
-#define __outvar /* filled by callee */
-static struct ddebug_class_map *ddebug_find_valid_class(struct ddebug_table const *dt,
-							const char *class_string,
-							__outvar int *class_id)
+static int ddebug_find_valid_class(struct ddebug_table const *dt, const char *class_string)
 {
 	struct ddebug_class_map *map;
 	struct ddebug_class_user *cli;
@@ -170,22 +167,19 @@ static struct ddebug_class_map *ddebug_find_valid_class(struct ddebug_table cons
 	for (i = 0, map = dt->classes; i < dt->num_classes; i++, map++) {
 		idx = match_string(map->class_names, map->length, class_string);
 		if (idx >= 0) {
-			*class_id = idx + map->base;
 			vpr_dt_info(dt, "good-class: %s.%s ", map->mod_name, class_string);
-			return map;
+			return idx + map->base;
 		}
 	}
 	for (i = 0, cli = dt->class_users; i < dt->num_class_users; i++, cli++) {
 		idx = match_string(cli->map->class_names, cli->map->length, class_string);
 		if (idx >= 0) {
-			*class_id = idx + cli->map->base;
 			vpr_dt_info(dt, "class-ref: %s.%s ",
 				    cli->user_mod_name, class_string);
-			return cli->map;
+			return idx + cli->map->base;
 		}
 	}
-	*class_id = -ENOENT;
-	return NULL;
+	return -ENOENT;
 }
 
 /*
@@ -194,16 +188,14 @@ static struct ddebug_class_map *ddebug_find_valid_class(struct ddebug_table cons
  * callsites, normally the same as number of changes.  If verbose,
  * logs the changes.  Takes ddebug_lock.
  */
-static int ddebug_change(const struct ddebug_query *query,
-			 struct flag_settings *modifiers)
+static int ddebug_change(const struct ddebug_query *query, struct flag_settings *modifiers)
 {
 	int i;
 	struct ddebug_table *dt;
 	unsigned int newflags;
 	unsigned int nfound = 0;
 	struct flagsbuf fbuf, nbuf;
-	struct ddebug_class_map *map = NULL;
-	int __outvar valid_class;
+	int valid_class;
 
 	/* search for matching ddebugs */
 	mutex_lock(&ddebug_lock);
@@ -215,8 +207,8 @@ static int ddebug_change(const struct ddebug_query *query,
 			continue;
 
 		if (query->class_string) {
-			map = ddebug_find_valid_class(dt, query->class_string, &valid_class);
-			if (!map)
+			valid_class = ddebug_find_valid_class(dt, query->class_string);
+			if (valid_class < 0)
 				continue;
 		} else {
 			/* constrain query, do not touch class'd callsites */
