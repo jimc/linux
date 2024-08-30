@@ -374,7 +374,7 @@ function test_flags {
     echo -e "${GREEN}# TEST_FLAGS ${NC}"
 
     modprobe test_dynamic_debug dyndbg=+Tlm
-    check_match_ct =Tml 5 -v
+    check_match_ct =Tml 23 -v
 
     ddcmd open selftest
     check_trace_instance_dir selftest 1
@@ -422,42 +422,42 @@ function test_flags {
 
     # valid combinations of flags and trace destination
     ddcmd module test_dynamic_debug =p
-    check_match_ct =p 5 -v
+    check_match_ct =p 23 -v
     ddcmd module test_dynamic_debug =T
-    check_match_ct =T:selftest 5 -v
+    check_match_ct =T:selftest 23 -v
     ddcmd module test_dynamic_debug =_
-    check_match_ct =:selftest 5 -v
+    check_match_ct =:selftest 23 -v
 
     ddcmd module test_dynamic_debug =T:0
-    check_match_ct =T 5 -v
+    check_match_ct =T 23 -v
     ddcmd module test_dynamic_debug -_
-    check_match_ct =T 5 -v
+    check_match_ct =T 23 -v
     ddcmd module test_dynamic_debug =T:0.mf
-    check_match_ct =Tmf 5 -v
+    check_match_ct =Tmf 23 -v
     ddcmd module test_dynamic_debug =T:selftest
-    check_match_ct =T:selftest 5 -v
+    check_match_ct =T:selftest 23 -v
     ddcmd module test_dynamic_debug =T:selftest.mf
-    check_match_ct =T:selftest.mf 5 -v
+    check_match_ct =T:selftest.mf 23 -v
     ddcmd module test_dynamic_debug =_:selftest
-    check_match_ct =:selftest 5 -v
+    check_match_ct =:selftest 23 -v
 
     ddcmd module test_dynamic_debug =:0
     ddcmd module test_dynamic_debug =:selftest
-    check_match_ct =:selftest 5 -v
+    check_match_ct =:selftest 23 -v
     ddcmd module test_dynamic_debug =p:selftest
-    check_match_ct =p:selftest 5 -v
+    check_match_ct =p:selftest 23 -v
     ddcmd module test_dynamic_debug +_
-    check_match_ct =p:selftest 5 -v
+    check_match_ct =p:selftest 23 -v
 
     ddcmd module test_dynamic_debug =T:selftest.mlf
     ddcmd module test_dynamic_debug =:0
-    check_match_ct =Tmfl 5 -v
+    check_match_ct =Tmfl 23 -v
     ddcmd module test_dynamic_debug =:selftest
-    check_match_ct =T:selftest.mfl 5 -v
+    check_match_ct =T:selftest.mfl 23 -v
     ddcmd module test_dynamic_debug =:0
-    check_match_ct =Tmfl 5 -v
+    check_match_ct =Tmfl 23 -v
     ddcmd module test_dynamic_debug =_:selftest
-    check_match_ct =:selftest 5 -v
+    check_match_ct =:selftest 23 -v
 
     ddcmd module test_dynamic_debug =:0.
 
