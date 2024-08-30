@@ -365,6 +365,8 @@ function test_mod_submod {
     modprobe test_dynamic_debug_submod
     # see them picked up by submod
     check_match_ct =p 14
+    ifrmmod test_dynamic_debug_submod
+    ifrmmod test_dynamic_debug
 }
 
 # test verifies different combinations of flags and trace destination
