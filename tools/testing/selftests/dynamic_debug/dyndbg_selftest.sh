@@ -553,13 +553,13 @@ function self_start {
     check_trace_instance_dir selftest 1
     is_trace_instance_opened selftest
     modprobe test_dynamic_debug dyndbg=+T:selftest.mf
-    check_match_ct =T:selftest.mf 5
+    check_match_ct =T:selftest.mf 23
 }
 
 function self_end_normal {
     echo \# disable -T:selftest, rmmod, close
     ddcmd module test_dynamic_debug -T:selftest # leave mf
-    check_match_ct =:selftest.mf 5 -v
+    check_match_ct =:selftest.mf 23 -v
     ddcmd module test_dynamic_debug +:0
     ddcmd close selftest
     is_trace_instance_closed selftest
@@ -569,7 +569,7 @@ function self_end_normal {
 function self_end_disable_anon {
     echo \# disable, close, rmmod
     ddcmd module test_dynamic_debug -T
-    check_match_ct =:selftest.mf 5
+    check_match_ct =:selftest.mf 23
     ddcmd module test_dynamic_debug +:0
     ddcmd close selftest
     is_trace_instance_closed selftest
@@ -579,7 +579,7 @@ function self_end_disable_anon {
 function self_end_disable_anon_mf {
     echo \# disable, close, rmmod
     ddcmd module test_dynamic_debug -Tf
-    check_match_ct =:selftest.m 5
+    check_match_ct =:selftest.m 23
     ddcmd module test_dynamic_debug +:0
     ddcmd close selftest
     is_trace_instance_closed selftest
@@ -590,7 +590,7 @@ function self_end_nodisable {
     echo \# SKIPPING: ddcmd module test_dynamic_debug -T:selftest
     ddcmd close selftest fail # close fails because selftest is still being used
     check_err_msg "Device or resource busy"
-    check_match_ct =T:selftest.mf 5
+    check_match_ct =T:selftest.mf 23
     rmmod test_dynamic_debug
     ddcmd close selftest # now selftest can be closed because rmmod removed
                          # all callsites which were using it
@@ -601,7 +601,7 @@ function self_end_delete_directory {
     del_trace_instance_dir selftest 0
     check_err_msg "Device or resource busy"
     ddcmd module test_dynamic_debug -mT:selftest
-    check_match_ct =:selftest.f 5
+    check_match_ct =:selftest.f 23
     del_trace_instance_dir selftest 0
     check_err_msg "Device or resource busy"
     ddcmd module test_dynamic_debug +:0
