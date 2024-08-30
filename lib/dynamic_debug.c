@@ -924,7 +924,7 @@ static int ddebug_parse_flags(const char *str, struct flag_settings *modifiers)
 		return -EINVAL;
 	}
 
-	for (fst = (char *)str; *str ; ++str, fst++) {
+	for (fst = (char *)str; *str ; ++str) {
 		for (i = ARRAY_SIZE(opt_array) - 1; i >= 0; i--) {
 			if (*str == opt_array[i].opt_char) {
 				modifiers->flags |= opt_array[i].flag;
@@ -947,7 +947,7 @@ static int ddebug_parse_flags(const char *str, struct flag_settings *modifiers)
 	}
 	/* warn if no flags/labels are given */
 	if (!(str - fst))
-		pr_err("no flags or label is specified, please use _ to assert no-flags\n");
+		pr_warn("no flags or label is specified, please use _ to assert no-flags\n");
 
 	/* calculate final flags, mask based upon op */
 	switch (op) {
