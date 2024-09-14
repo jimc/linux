@@ -1284,8 +1284,6 @@ static void ddebug_attach_user_module_classes(struct ddebug_table *dt,
 static int ddebug_add_module(struct _ddebug_info *di, const char *modname)
 {
 	struct ddebug_table *dt;
-	struct _ddebug *iter;
-	int i, class_ct = 0;
 
 	if (!di->descs.len)
 		return 0;
@@ -1308,18 +1306,14 @@ static int ddebug_add_module(struct _ddebug_info *di, const char *modname)
 
 	INIT_LIST_HEAD(&dt->link);
 
-	for_subvec(i, iter, di, descs)
-		if (iter->class_id != _DPRINTK_CLASS_DFLT)
-			class_ct++;
-
-	if (class_ct && di->maps.len)
+	if (di->maps.len)
 		ddebug_attach_module_classes(dt, di);
 
 	mutex_lock(&ddebug_lock);
 	list_add_tail(&dt->link, &ddebug_tables);
 	mutex_unlock(&ddebug_lock);
 
-	if (class_ct && di->users.len)
+	if (di->users.len)
 		ddebug_attach_user_module_classes(dt, di);
 
 	vpr_info("%3u debug prints in module %s\n", di->descs.len, modname);
