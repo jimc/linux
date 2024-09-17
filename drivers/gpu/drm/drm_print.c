@@ -41,6 +41,8 @@
  */
 unsigned long __drm_debug;
 EXPORT_SYMBOL(__drm_debug);
+unsigned long __drm_debug_trace;
+EXPORT_SYMBOL(__drm_debug_trace);
 
 MODULE_PARM_DESC(debug, "Enable debug output, where each bit enables a debug category.\n"
 "\t\tBit 0 (0x01)  will enable CORE messages (drm core code)\n"
@@ -70,6 +72,7 @@ DRM_CLASSMAP_DEFINE(drm_debug_classes, DD_CLASS_TYPE_DISJOINT_BITS,
 		    "DRM_UT_DRMRES");
 
 DRM_CLASSMAP_PARAM_REF(debug, __drm_debug, drm_debug_classes, p);
+DRM_CLASSMAP_PARAM_REF(debug_trace, __drm_debug_trace, drm_debug_classes, T);
 
 #endif
 
