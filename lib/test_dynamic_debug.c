@@ -74,7 +74,7 @@ enum cat_disjoint_bits {
 	D2_DRMRES };
 
 /* numeric verbosity, V2 > V1 related */
-enum cat_level_num { V0 = 14, V1, V2, V3, V4, V5, V6, V7 };
+enum cat_level_num { V0 = 16, V1, V2, V3, V4, V5, V6, V7 };
 
 /*
  * use/demonstrate multi-module-group classmaps, as for DRM
@@ -86,6 +86,17 @@ enum cat_level_num { V0 = 14, V1, V2, V3, V4, V5, V6, V7 };
  * The classmap is exported, so that other modules in the group can
  * link to it and control their prdbgs.
  */
+#ifdef FORCE_CLASSID_CONFLICT_MODPROBE
+/*
+ * Enable with -Dflag on compile to test overlapping class-id range
+ * detection.  This should break on modprobe.
+ * TLDR: This is declared 1st cuz linker builds sections in LIFO
+ * order, and we want this to be the reported usurper of reserved
+ * class-ids.
+ */
+DYNDBG_CLASSMAP_DEFINE(classid_range_conflict, 0, D2_CORE + 1, "D3_CORE");
+#endif
+
 DYNDBG_CLASSMAP_DEFINE(map_disjoint_bits, DD_CLASS_TYPE_DISJOINT_BITS,
 		       D2_CORE,
 		       "D2_CORE",
@@ -118,9 +129,17 @@ DYNDBG_CLASSMAP_PARAM(p_level_num,	map_level_num, p);
 DYNDBG_CLASSMAP_USE(map_disjoint_bits);
 DYNDBG_CLASSMAP_USE(map_level_num);
 
+#ifdef FORCE_CLASSID_CONFLICT_MODPROBE
+/*
+ * enable to test overlapping class-id range detection.
+ * This should break on modprobe (of submod)
+ */
+DYNDBG_CLASSMAP_DEFINE(classid_range_conflict_submod, 0, D2_CORE + 1, "D3_SUB");
+#endif
+
 #if defined (DD_MACRO_ARGCHECK)
 /*
- * Exersize compile-time arg-checks in the macro.
+ * Exersize compile-time arg-checks in the _DEFINE macro.
  * These will break compilation.
  */
 DYNDBG_CLASSMAP_DEFINE(fail_base_neg, 0, -1, "NEGATIVE_BASE_ARG");

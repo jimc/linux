@@ -1241,6 +1241,25 @@ static void ddebug_apply_params(const struct ddebug_class_map *cm, const char *m
 	}
 }
 
+static int ddebug_class_check_range(struct ddebug_class_map *cm,
+				    u64 *reserved_ids)
+{
+	u64 range;
+
+	range = (((1ULL << cm->length) - 1) << cm->base);
+	vpr_cm_info(cm, "class-ids:? %llx %llx", range, *reserved_ids);
+	if (range & *reserved_ids) {
+		pr_err("[%d..%d] on %s conflicts with %llx\n", cm->base,
+		       cm->base + cm->length - 1, cm->class_names[0],
+		       *reserved_ids);
+		return -1;
+	} else {
+		vpr_cm_info(cm, "ok class-ids: %llx %llx", range, *reserved_ids);
+		*reserved_ids |= range;
+		return 0;
+	}
+}
+
 /*
  * Find this module's classmaps in a sub/whole-range of the builtin/
  * modular classmap vector/section.  Save the start and length of the
@@ -1266,8 +1285,11 @@ static int ddebug_attach_module_classes(struct ddebug_table *dt,
 	vpr_info("module:%s attached %d classes\n", dt->mod_name, nc);
 	dt->num_classes = nc;
 
-	for (i = 0, cm = dt->classes; i < dt->num_classes; i++, cm++)
+	for (i = 0, cm = dt->classes; i < dt->num_classes; i++, cm++) {
+		if (ddebug_class_check_range(cm, reserved_ids))
+			return -EINVAL;
 		ddebug_apply_params(cm, cm->mod_name);
+	}
 	return 0;
 }
 
@@ -1277,8 +1299,8 @@ static int ddebug_attach_module_classes(struct ddebug_table *dt,
  * list to be seen by ddebug_change.
  */
 static int ddebug_attach_user_module_classes(struct ddebug_table *dt,
-					      const struct _ddebug_info *di,
-					      u64 *reserved_ids)
+					     const struct _ddebug_info *di,
+					     u64 *reserved_ids)
 {
 	struct ddebug_class_user *cli;
 	int i, nc = 0;
@@ -1306,9 +1328,11 @@ static int ddebug_attach_user_module_classes(struct ddebug_table *dt,
 	dt->num_class_users = nc;
 
 	/* now iterate dt */
-	for (i = 0, cli = dt->class_users; i < dt->num_class_users; i++, cli++)
+	for (i = 0, cli = dt->class_users; i < dt->num_class_users; i++, cli++) {
+		if (ddebug_class_check_range(cli->map, reserved_ids))
+			return -EINVAL;
 		ddebug_apply_params(cli->map, cli->user_mod_name);
-
+	}
 	vpr_dt_info(dt, "attach-client-module: ");
 	return 0;
 }
@@ -1350,6 +1374,7 @@ static int ddebug_add_module(struct _ddebug_info *di, const char *modname)
 		if (rc)
 			return rc;
 	}
+
 	mutex_lock(&ddebug_lock);
 	list_add_tail(&dt->link, &ddebug_tables);
 	mutex_unlock(&ddebug_lock);
