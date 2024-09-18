@@ -1211,6 +1211,21 @@ static void ddebug_apply_params(const struct ddebug_class_map *cm, const char *m
 	}
 }
 
+static int ddebug_class_range_overlap(struct ddebug_class_map *cm,
+				      u64 *reserved_ids)
+{
+	u64 range = (((1ULL << cm->length) - 1) << cm->base);
+
+	if (range & *reserved_ids) {
+		pr_err("[%d..%d] on %s conflicts with %llx\n", cm->base,
+		       cm->base + cm->length - 1, cm->class_names[0],
+		       *reserved_ids);
+		return -EINVAL;
+	}
+	*reserved_ids |= range;
+	return 0;
+}
+
 /*
  * scan the named array: @_vec, ref'd from inside @_box, for the
  * start,len of the sub-array of elements matching on ->mod_name;
@@ -1242,9 +1257,11 @@ static int ddebug_module_apply_class_maps(struct ddebug_table *dt,
 	struct ddebug_class_map *cm;
 	int i;
 
-	for_subvec(i, cm, &dt->info, maps)
+	for_subvec(i, cm, &dt->info, maps) {
+		if (ddebug_class_range_overlap(cm, reserved_ids))
+			return -EINVAL;
 		ddebug_apply_params(cm, cm->mod_name);
-
+	}
 	vpr_info("module:%s attached %d classmaps\n", dt->mod_name, dt->info.maps.len);
 	return 0;
 }
@@ -1255,10 +1272,11 @@ static int ddebug_module_apply_class_users(struct ddebug_table *dt,
 	struct ddebug_class_user *cli;
 	int i;
 
-	/* now iterate dt */
-	for_subvec(i, cli, &dt->info, users)
+	for_subvec(i, cli, &dt->info, users) {
+		if (ddebug_class_range_overlap(cli->map, reserved_ids))
+			return -EINVAL;
 		ddebug_apply_params(cli->map, cli->mod_name);
-
+	}
 	vpr_info("module:%s attached %d classmap uses\n", dt->mod_name, dt->info.users.len);
 	return 0;
 }
@@ -1311,10 +1329,10 @@ static int ddebug_add_module(struct _ddebug_info *di, const char *modname)
 			return rc;
 		}
 	}
+
 	mutex_lock(&ddebug_lock);
 	list_add_tail(&dt->link, &ddebug_tables);
 	mutex_unlock(&ddebug_lock);
-
 
 	if (dt->info.users.len) {
 		rc = ddebug_module_apply_class_users(dt, &reserved_ids);
