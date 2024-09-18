@@ -81,7 +81,7 @@ enum cat_disjoint_bits {
 	D2_DRMRES };
 
 /* numeric verbosity, V2 > V1 related */
-enum cat_level_num { V0 = 14, V1, V2, V3, V4, V5, V6, V7 };
+enum cat_level_num { V0 = 16, V1, V2, V3, V4, V5, V6, V7 };
 
 /* recapitulate DRM's parent(drm.ko) <-- _submod(drivers,helpers) */
 #if !defined(TEST_DYNAMIC_DEBUG_SUBMOD)
@@ -90,6 +90,7 @@ enum cat_level_num { V0 = 14, V1, V2, V3, V4, V5, V6, V7 };
  * classmaps on the client enums above, and then declares the PARAMS
  * ref'g the classmaps.  Each is exported.
  */
+
 DYNDBG_CLASSMAP_DEFINE(map_disjoint_bits, DD_CLASS_TYPE_DISJOINT_BITS,
 		       D2_CORE,
 		       "D2_CORE",
@@ -112,6 +113,14 @@ DYNDBG_CLASSMAP_DEFINE(map_level_num, DD_CLASS_TYPE_LEVEL_NUM,
 
 DYNDBG_CLASSMAP_PARAM(disjoint_bits, p);
 DYNDBG_CLASSMAP_PARAM(level_num, p);
+
+#ifdef FORCE_CLASSID_CONFLICT_MODPROBE
+/*
+ * Enable with -Dflag on compile to test overlapping class-id range
+ * detection.  This should break on modprobe.
+ */
+DYNDBG_CLASSMAP_DEFINE(classid_range_conflict, 0, D2_CORE + 1, "D3_CORE");
+#endif
 
 #else /* TEST_DYNAMIC_DEBUG_SUBMOD */
 
