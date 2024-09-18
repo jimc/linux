@@ -1246,8 +1246,9 @@ static void ddebug_apply_params(const struct ddebug_class_map *cm, const char *m
  * modular classmap vector/section.  Save the start and length of the
  * subrange at its edges.
  */
-static void ddebug_attach_module_classes(struct ddebug_table *dt,
-					 const struct _ddebug_info *di)
+static int ddebug_attach_module_classes(struct ddebug_table *dt,
+					const struct _ddebug_info *di,
+					u64 *reserved_ids)
 {
 	struct ddebug_class_map *cm;
 	int i, nc = 0;
@@ -1260,13 +1261,14 @@ static void ddebug_attach_module_classes(struct ddebug_table *dt,
 		}
 	}
 	if (!nc)
-		return;
+		return 0;
 
 	vpr_info("module:%s attached %d classes\n", dt->mod_name, nc);
 	dt->num_classes = nc;
 
 	for (i = 0, cm = dt->classes; i < dt->num_classes; i++, cm++)
 		ddebug_apply_params(cm, cm->mod_name);
+	return 0;
 }
 
 /*
@@ -1274,8 +1276,9 @@ static void ddebug_attach_module_classes(struct ddebug_table *dt,
  * means a query against the dt/module, which means it must be on the
  * list to be seen by ddebug_change.
  */
-static void ddebug_attach_user_module_classes(struct ddebug_table *dt,
-					      const struct _ddebug_info *di)
+static int ddebug_attach_user_module_classes(struct ddebug_table *dt,
+					      const struct _ddebug_info *di,
+					      u64 *reserved_ids)
 {
 	struct ddebug_class_user *cli;
 	int i, nc = 0;
@@ -1298,7 +1301,7 @@ static void ddebug_attach_user_module_classes(struct ddebug_table *dt,
 		}
 	}
 	if (!nc)
-		return;
+		return 0;
 
 	dt->num_class_users = nc;
 
@@ -1307,6 +1310,7 @@ static void ddebug_attach_user_module_classes(struct ddebug_table *dt,
 		ddebug_apply_params(cli->map, cli->user_mod_name);
 
 	vpr_dt_info(dt, "attach-client-module: ");
+	return 0;
 }
 
 /*
@@ -1316,6 +1320,8 @@ static void ddebug_attach_user_module_classes(struct ddebug_table *dt,
 static int ddebug_add_module(struct _ddebug_info *di, const char *modname)
 {
 	struct ddebug_table *dt;
+	u64 reserved_ids;
+	int rc;
 
 	if (!di->num_descs)
 		return 0;
@@ -1339,16 +1345,20 @@ static int ddebug_add_module(struct _ddebug_info *di, const char *modname)
 
 	INIT_LIST_HEAD(&dt->link);
 
-	if (di->num_classes)
-		ddebug_attach_module_classes(dt, di);
-
+	if (di->num_classes) {
+		rc = ddebug_attach_module_classes(dt, di, &reserved_ids);
+		if (rc)
+			return rc;
+	}
 	mutex_lock(&ddebug_lock);
 	list_add_tail(&dt->link, &ddebug_tables);
 	mutex_unlock(&ddebug_lock);
 
-	if (di->num_class_users)
-		ddebug_attach_user_module_classes(dt, di);
-
+	if (di->num_class_users) {
+		rc = ddebug_attach_user_module_classes(dt, di, &reserved_ids);
+		if (rc)
+			return rc;
+	}
 	vpr_info("%3u debug prints in module %s\n", di->num_descs, modname);
 	return 0;
 }
@@ -1433,6 +1443,11 @@ static int ddebug_module_notify(struct notifier_block *self, unsigned long val,
 	switch (val) {
 	case MODULE_STATE_COMING:
 		ret = ddebug_add_module(&mod->dyndbg_info, mod->name);
+		if (ret == -EINVAL) {
+			pr_err("conflicting dyndbg-classmap reservations\n");
+			ddebug_remove_module(mod->name);
+			break;
+		}
 		if (ret)
 			WARN(1, "Failed to allocate memory: dyndbg may not work properly.\n");
 		break;
