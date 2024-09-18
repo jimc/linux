@@ -111,7 +111,11 @@ struct ddebug_class_map {
  * to the classmap.
  */
 #define __DYNDBG_CLASSMAP_DEFINE(_var, _maptype, _base, ...)		\
+	static_assert(((_base) >= 0 && (_base) < _DPRINTK_CLASS_DFLT));	\
 	static const char *_var##_classnames[] = { __VA_ARGS__ };	\
+	static_assert(ARRAY_SIZE(_var##_classnames) > 0);		\
+	static_assert((ARRAY_SIZE(_var##_classnames) + _base) <		\
+		      _DPRINTK_CLASS_DFLT);				\
 	extern struct ddebug_class_map _var;				\
 	struct ddebug_class_map __aligned(8) __used			\
 		__section("__dyndbg_classes") _var = {			\
