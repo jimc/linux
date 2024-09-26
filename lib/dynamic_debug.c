@@ -49,11 +49,10 @@ extern struct ddebug_class_user __stop___dyndbg_class_users[];
 struct ddebug_table {
 	struct list_head link;
 	const char *mod_name;
-	struct _ddebug *ddebugs;
-	struct ddebug_class_map *classes;
-	struct ddebug_class_user *class_users;
-	unsigned int num_ddebugs, num_classes, num_class_users;
-};
+	decl_subvec_ofT_(struct _ddebug, ddebugs);
+	decl_subvec_ofT_(struct ddebug_class_map, classes);
+	decl_subvec_ofT_(struct ddebug_class_user, class_users);
+} __packed;
 
 struct ddebug_query {
 	const char *filename;
@@ -1257,6 +1256,15 @@ static int ddebug_class_range_overlap(struct ddebug_class_map *cm,
 }
 
 /*
+ * simplify an oft-used for-loop pattern walking N steps in a T _vec
+ * member in a struct _box.  Expects int i and T *sp to be declared in
+ * caller.
+ */
+#define for_subvec(sp, _box, _vec) for (i = 0, (sp) = (_box)->_vec;	\
+					i < (_box)->num_##_vec;		\
+					i++, (sp)++)
+
+/*
  * Find this module's classmaps in a sub/whole-range of the builtin/
  * modular classmap vector/section.  Save the start and length of the
  * subrange at its edges.
@@ -1281,7 +1289,7 @@ static int ddebug_attach_module_classes(struct ddebug_table *dt,
 	vpr_info("module:%s attached %d classes\n", dt->mod_name, nc);
 	dt->num_classes = nc;
 
-	for (i = 0, cm = dt->classes; i < dt->num_classes; i++, cm++) {
+	for_subvec(cm, di, classes) {
 		if (ddebug_class_range_overlap(cm, reserved_ids))
 			return -EINVAL;
 		ddebug_apply_params(cm, cm->mod_name);
@@ -1306,7 +1314,7 @@ static int ddebug_attach_user_module_classes(struct ddebug_table *dt,
 	 * module's refs, save to dt.  For loadables, this is the
 	 * whole array.
 	 */
-	for (i = 0, cli = di->class_users; i < di->num_class_users; i++, cli++) {
+	for_subvec(cli, di, class_users) {
 
 		if (WARN_ON_ONCE(!cli || !cli->map || !cli->mod_name))
 			continue;
@@ -1324,7 +1332,7 @@ static int ddebug_attach_user_module_classes(struct ddebug_table *dt,
 	dt->num_class_users = nc;
 
 	/* now iterate dt */
-	for (i = 0, cli = dt->class_users; i < dt->num_class_users; i++, cli++) {
+	for_subvec(cli, dt, class_users) {
 		if (ddebug_class_range_overlap(cli->map, reserved_ids))
 			return -EINVAL;
 		ddebug_apply_params(cli->map, cli->mod_name);
