@@ -53,7 +53,7 @@ struct ddebug_table {
 	struct ddebug_class_map *classes;
 	struct ddebug_class_user *class_users;
 	unsigned int num_ddebugs, num_classes, num_class_users;
-};
+} __packed;
 
 struct ddebug_query {
 	const char *filename;
@@ -1267,77 +1267,57 @@ static int ddebug_class_range_overlap(struct ddebug_class_map *cm,
 }
 
 /*
- * Find this module's classmaps in a sub/whole-range of the builtin/
- * modular classmap vector/section.  Save the start and length of the
- * subrange at its edges.
+ * scan the linker-ordered @_vec, of num_##_vec elements, for the
+ * start,len of the elements matching on ->mod_name; remember them in
+ * _dst.  Macro depends upon the fields being in both _box and _dst.
+ * @_i:   caller provided counter.
+ * @_sp:  cursor into @_vec.
+ * @_box: ptr to a struct with @_vec, num__##@_vec, mod_name fields.
+ * @_vec: name of ref into array[T] of builtin/modular __section data.
+ * @_dst: ptr to struct with @_vec and num__##@_vec fields, both updated.
  */
+#define __evalout /* macro "return" val */
+#define dd_mark_vector_subrange(_i, _dst, _sp, _box, _vec) ({		\
+	int nc = 0;							\
+	for_subvec(_i, _sp, _box, _vec) {				\
+		if (!strcmp((_sp)->mod_name, (_dst)->mod_name)) {	\
+			if (!nc++)					\
+				(_dst)->_vec = (_sp);			\
+		} else {						\
+			if (nc)						\
+				break; /* end of consecutive matches */ \
+		}							\
+	}								\
+	__evalout _dst->num_##_vec = nc;				\
+})
+
 static int ddebug_attach_module_classes(struct ddebug_table *dt,
-					const struct _ddebug_info *di,
 					u64 *reserved_ids)
 {
 	struct ddebug_class_map *cm;
-	int i, nc = 0;
-
-	for_subvec(i, cm, di, classes) {
-		if (!strcmp(cm->mod_name, dt->mod_name)) {
-			vpr_cm_info(cm, "classes[%d]:", i);
-			if (!nc++)
-				dt->classes = cm;
-		}
-	}
-	if (!nc)
-		return 0;
-
-	vpr_info("module:%s attached %d classes\n", dt->mod_name, nc);
-	dt->num_classes = nc;
+	int i;
 
 	for_subvec(i, cm, dt, classes) {
 		if (ddebug_class_range_overlap(cm, reserved_ids))
 			return -EINVAL;
 		ddebug_apply_params(cm, cm->mod_name);
 	}
+	vpr_info("module:%s attached %d classmaps\n", dt->mod_name, dt->num_classes);
 	return 0;
 }
 
-/*
- * propagates class-params thru their classmaps to class-users.  this
- * means a query against the dt/module, which means it must be on the
- * list to be seen by ddebug_change.
- */
 static int ddebug_attach_user_module_classes(struct ddebug_table *dt,
-					     const struct _ddebug_info *di,
 					     u64 *reserved_ids)
 {
 	struct ddebug_class_user *cli;
-	int i, nc = 0;
+	int i;
 
-	/*
-	 * For builtins: scan the array, find start/length of this
-	 * module's refs, save to dt.  For loadables, this is the
-	 * whole array.
-	 */
-	for_subvec(i, cli, di, class_users) {
-		if (WARN_ON_ONCE(!cli || !cli->map || !cli->mod_name))
-			continue;
-		if (!strcmp(cli->mod_name, dt->mod_name)) {
-			vpr_cm_info(cli->map, "class_ref[%d] %s -> %s", i,
-				    cli->mod_name, cli->map->mod_name);
-			if (!nc++)
-				dt->class_users = cli;
-		}
-	}
-	if (!nc)
-		return 0;
-
-	dt->num_class_users = nc;
-
-	/* now iterate dt */
-	for_subvec(i, cli, di, class_users) {
+	for_subvec(i, cli, dt, class_users) {
 		if (ddebug_class_range_overlap(cli->map, reserved_ids))
 			return -EINVAL;
 		ddebug_apply_params(cli->map, cli->mod_name);
 	}
-	vpr_dt_info(dt, "attach-client-module: ");
+	vpr_info("module:%s attached %d classmap uses\n", dt->mod_name, dt->num_class_users);
 	return 0;
 }
 
@@ -1348,8 +1328,10 @@ static int ddebug_attach_user_module_classes(struct ddebug_table *dt,
 static int ddebug_add_module(struct _ddebug_info *di, const char *modname)
 {
 	struct ddebug_table *dt;
+	struct ddebug_class_map *cm;
+	struct ddebug_class_user *cli;
 	u64 reserved_ids = 0;
-	int rc;
+	int rc, i;
 
 	if (!di->num_descs)
 		return 0;
@@ -1372,9 +1354,17 @@ static int ddebug_add_module(struct _ddebug_info *di, const char *modname)
 	dt->num_ddebugs = di->num_descs;
 
 	INIT_LIST_HEAD(&dt->link);
+	/*
+	 * for builtin modules, ddebug_init() insures that the di
+	 * cursor marks just the module's descriptors, but it doesn't
+	 * do so for the builtin class _maps & _users.  find the
+	 * start,len of the vectors by mod_name, save to dt.
+	 */
+	dd_mark_vector_subrange(i, dt, cm, di, classes);
+	dd_mark_vector_subrange(i, dt, cli, di, class_users);
 
-	if (di->num_classes) {
-		rc = ddebug_attach_module_classes(dt, di, &reserved_ids);
+	if (dt->num_classes) {
+		rc = ddebug_attach_module_classes(dt, &reserved_ids);
 		if (rc) {
 			kfree(dt);
 			return rc;
@@ -1385,8 +1375,8 @@ static int ddebug_add_module(struct _ddebug_info *di, const char *modname)
 	list_add_tail(&dt->link, &ddebug_tables);
 	mutex_unlock(&ddebug_lock);
 
-	if (di->num_class_users) {
-		rc = ddebug_attach_user_module_classes(dt, di, &reserved_ids);
+	if (dt->num_class_users) {
+		rc = ddebug_attach_user_module_classes(dt, &reserved_ids);
 		if (rc)
 			return rc;
 	}
