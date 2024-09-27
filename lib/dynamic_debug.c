@@ -1274,20 +1274,7 @@ static int ddebug_attach_module_classes(struct ddebug_table *dt,
 					u64 *reserved_ids)
 {
 	struct ddebug_class_map *cm;
-	int i, nc = 0;
-
-	for (i = 0, cm = di->classes; i < di->num_classes; i++, cm++) {
-		if (!strcmp(cm->mod_name, dt->mod_name)) {
-			vpr_cm_info(cm, "classes[%d]:", i);
-			if (!nc++)
-				dt->classes = cm;
-		}
-	}
-	if (!nc)
-		return 0;
-
-	vpr_info("module:%s attached %d classes\n", dt->mod_name, nc);
-	dt->num_classes = nc;
+	int i;
 
 	for_subvec(cm, di, classes) {
 		if (ddebug_class_check_range(cm, reserved_ids))
@@ -1307,31 +1294,13 @@ static int ddebug_attach_user_module_classes(struct ddebug_table *dt,
 					     u64 *reserved_ids)
 {
 	struct ddebug_class_user *cli;
-	int i, nc = 0;
+	int i;
 
 	/*
 	 * For builtins: scan the array, find start/length of this
 	 * module's refs, save to dt.  For loadables, this is the
 	 * whole array.
 	 */
-	for_subvec(cli, di, class_users) {
-
-		if (WARN_ON_ONCE(!cli || !cli->map || !cli->mod_name))
-			continue;
-
-		if (!strcmp(cli->mod_name, dt->mod_name)) {
-			vpr_cm_info(cli->map, "class_ref[%d] %s -> %s", i,
-				    cli->mod_name, cli->map->mod_name);
-			if (!nc++)
-				dt->class_users = cli;
-		}
-	}
-	if (!nc)
-		return 0;
-
-	dt->num_class_users = nc;
-
-	/* now iterate dt */
 	for_subvec(cli, dt, class_users) {
 		if (ddebug_class_check_range(cli->map, reserved_ids))
 			return -EINVAL;
@@ -1349,6 +1318,7 @@ static int ddebug_add_module(struct _ddebug_info *di, const char *modname)
 {
 	struct ddebug_table *dt;
 	struct ddebug_class_map *cm;
+	struct ddebug_class_user *cli;
 	u64 reserved_ids;
 	int rc, i, nc = 0;
 
@@ -1374,19 +1344,39 @@ static int ddebug_add_module(struct _ddebug_info *di, const char *modname)
 
 	INIT_LIST_HEAD(&dt->link);
 
-	if (di->num_classes) {
+	for_subvec(cm, di, classes) {
+		if (!strcmp(cm->mod_name, dt->mod_name)) {
+			vpr_cm_info(cm, "classes[%d]:", i);
+			if (!nc++)
+				dt->classes = cm;
+		}
+	}
+	if (nc) {
+		dt->num_classes = nc;
 		rc = ddebug_attach_module_classes(dt, di, &reserved_ids);
 		if (rc)
 			return rc;
+		vpr_info("module:%s attached %d classes\n", dt->mod_name, nc);
 	}
 
 	mutex_lock(&ddebug_lock);
 	list_add_tail(&dt->link, &ddebug_tables);
 	mutex_unlock(&ddebug_lock);
 
-	if (di->num_class_users) {
+	nc = 0;
+	for_subvec(cli, di, class_users) {
+		if (!strcmp(cli->mod_name, dt->mod_name)) {
+			vpr_cm_info(cli->map, "class_ref[%d] %s -> %s", i,
+				    cli->mod_name, cli->map->mod_name);
+			if (!nc++)
+				dt->class_users = cli;
+		}
+	}
+	if (nc) {
+		dt->num_class_users = nc;
 		rc = ddebug_attach_user_module_classes(dt, di, &reserved_ids);
 		if (rc)
+			/* XXX notify undoes that add tail ?? */
 			return rc;
 	}
 	vpr_info("%3u debug prints in module %s\n", di->num_descs, modname);
