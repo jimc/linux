@@ -175,7 +175,7 @@ static int ddebug_find_valid_class(struct ddebug_table const *dt, const char *cl
 		idx = match_string(cli->map->class_names, cli->map->length, class_string);
 		if (idx >= 0) {
 			vpr_dt_info(dt, "class-ref: %s.%s ",
-				    cli->user_mod_name, class_string);
+				    cli->mod_name, class_string);
 			return idx + cli->map->base;
 		}
 	}
@@ -1308,12 +1308,12 @@ static int ddebug_attach_user_module_classes(struct ddebug_table *dt,
 	 */
 	for (i = 0, cli = di->class_users; i < di->num_class_users; i++, cli++) {
 
-		if (WARN_ON_ONCE(!cli || !cli->map || !cli->user_mod_name))
+		if (WARN_ON_ONCE(!cli || !cli->map || !cli->mod_name))
 			continue;
 
-		if (!strcmp(cli->user_mod_name, dt->mod_name)) {
+		if (!strcmp(cli->mod_name, dt->mod_name)) {
 			vpr_cm_info(cli->map, "class_ref[%d] %s -> %s", i,
-				    cli->user_mod_name, cli->map->mod_name);
+				    cli->mod_name, cli->map->mod_name);
 			if (!nc++)
 				dt->class_users = cli;
 		}
@@ -1327,7 +1327,7 @@ static int ddebug_attach_user_module_classes(struct ddebug_table *dt,
 	for (i = 0, cli = dt->class_users; i < dt->num_class_users; i++, cli++) {
 		if (ddebug_class_range_overlap(cli->map, reserved_ids))
 			return -EINVAL;
-		ddebug_apply_params(cli->map, cli->user_mod_name);
+		ddebug_apply_params(cli->map, cli->mod_name);
 	}
 	vpr_dt_info(dt, "attach-client-module: ");
 	return 0;
