@@ -1264,6 +1264,16 @@ static int ddebug_class_range_overlap(struct ddebug_class_map *cm,
 					i < (_box)->num_##_vec;		\
 					i++, (sp)++)
 
+#define dd_find_vec_subrange(_dt, _sp, _box, _vec) ({			\
+	int nc = 0;							\
+	for_subvec(_sp, _box, _vec) {					\
+		if (!strcmp((_sp)->mod_name, (_dt)->mod_name)) {	\
+			if (!nc++)					\
+				(_dt)->_vec = (_sp);			\
+		}							\
+	}								\
+	dt->num_##_vec = nc;						\
+})
 /*
  * Find this module's classmaps in a sub/whole-range of the builtin/
  * modular classmap vector/section.  Save the start and length of the
@@ -1274,26 +1284,16 @@ static int ddebug_attach_module_classes(struct ddebug_table *dt,
 					u64 *reserved_ids)
 {
 	struct ddebug_class_map *cm;
-	int i, nc = 0;
+	int i;
 
-	for (i = 0, cm = di->classes; i < di->num_classes; i++, cm++) {
-		if (!strcmp(cm->mod_name, dt->mod_name)) {
-			vpr_cm_info(cm, "classes[%d]:", i);
-			if (!nc++)
-				dt->classes = cm;
-		}
-	}
-	if (!nc)
-		return 0;
-
-	vpr_info("module:%s attached %d classes\n", dt->mod_name, nc);
-	dt->num_classes = nc;
+	dd_find_vec_subrange(dt, cm, di, classes);
 
 	for_subvec(cm, di, classes) {
 		if (ddebug_class_range_overlap(cm, reserved_ids))
 			return -EINVAL;
 		ddebug_apply_params(cm, cm->mod_name);
 	}
+	vpr_info("module:%s attached %d classes\n", dt->mod_name, dt->num_classes);
 	return 0;
 }
 
@@ -1307,29 +1307,14 @@ static int ddebug_attach_user_module_classes(struct ddebug_table *dt,
 					     u64 *reserved_ids)
 {
 	struct ddebug_class_user *cli;
-	int i, nc = 0;
+	int i;
 
 	/*
 	 * For builtins: scan the array, find start/length of this
 	 * module's refs, save to dt.  For loadables, this is the
 	 * whole array.
 	 */
-	for_subvec(cli, di, class_users) {
-
-		if (WARN_ON_ONCE(!cli || !cli->map || !cli->mod_name))
-			continue;
-
-		if (!strcmp(cli->mod_name, dt->mod_name)) {
-			vpr_cm_info(cli->map, "class_ref[%d] %s -> %s", i,
-				    cli->mod_name, cli->map->mod_name);
-			if (!nc++)
-				dt->class_users = cli;
-		}
-	}
-	if (!nc)
-		return 0;
-
-	dt->num_class_users = nc;
+	dd_find_vec_subrange(dt, cli, di, class_users);
 
 	/* now iterate dt */
 	for_subvec(cli, dt, class_users) {
