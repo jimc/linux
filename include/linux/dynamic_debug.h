@@ -169,14 +169,14 @@ struct ddebug_class_user {
 		.map = &(_var),						\
 	}
 
-#define decl_subvec_ofT_(type, name) struct { int num_##name; type *name; }
+#define decl_subvec_ofT_(type, name) int num_##name; type *name
 
 /* encapsulate linker provided built-in (or module) dyndbg data */
 struct _ddebug_info {
 	decl_subvec_ofT_(struct _ddebug, descs);
 	decl_subvec_ofT_(struct ddebug_class_map, classes);
 	decl_subvec_ofT_(struct ddebug_class_user, class_users);
-};
+} __packed;
 
 struct ddebug_class_param {
 	union {
