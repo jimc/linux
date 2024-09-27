@@ -147,7 +147,7 @@ struct ddebug_class_map {
 	}
 
 struct ddebug_class_user {
-	char *user_mod_name;
+	char *mod_name;
 	struct ddebug_class_map *map;
 };
 
@@ -165,7 +165,7 @@ struct ddebug_class_user {
 	extern struct ddebug_class_map _var;				\
 	static struct ddebug_class_user __aligned(8) __used		\
 	__section("__dyndbg_class_users") _uname = {			\
-		.user_mod_name = KBUILD_MODNAME,			\
+		.mod_name = KBUILD_MODNAME,				\
 		.map = &(_var),						\
 	}
 
