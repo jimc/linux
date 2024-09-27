@@ -1310,6 +1310,16 @@ static int ddebug_attach_user_module_classes(struct ddebug_table *dt,
 	return 0;
 }
 
+#define dd_find_vec_subrange(_dt, _sp, _box, _vec) ({			\
+	nc = 0;								\
+	for_subvec(_sp, _box, _vec) {					\
+		if (!strcmp((_sp)->mod_name, (_dt)->mod_name)) {	\
+			if (!nc++)					\
+				(_dt)->_vec = (_sp);			\
+		}							\
+	}								\
+	dt->num_##_vec = nc;						\
+})
 /*
  * Allocate a new ddebug_table for the given module
  * and add it to the global list.
@@ -1320,7 +1330,7 @@ static int ddebug_add_module(struct _ddebug_info *di, const char *modname)
 	struct ddebug_class_map *cm;
 	struct ddebug_class_user *cli;
 	u64 reserved_ids;
-	int rc, i, nc = 0;
+	int rc, i, nc;
 
 	if (!di->num_descs)
 		return 0;
@@ -1344,15 +1354,8 @@ static int ddebug_add_module(struct _ddebug_info *di, const char *modname)
 
 	INIT_LIST_HEAD(&dt->link);
 
-	for_subvec(cm, di, classes) {
-		if (!strcmp(cm->mod_name, dt->mod_name)) {
-			vpr_cm_info(cm, "classes[%d]:", i);
-			if (!nc++)
-				dt->classes = cm;
-		}
-	}
-	if (nc) {
-		dt->num_classes = nc;
+	dd_find_vec_subrange(dt, cm, di, classes);
+	if (dt->num_classes) {
 		rc = ddebug_attach_module_classes(dt, di, &reserved_ids);
 		if (rc)
 			return rc;
@@ -1363,17 +1366,8 @@ static int ddebug_add_module(struct _ddebug_info *di, const char *modname)
 	list_add_tail(&dt->link, &ddebug_tables);
 	mutex_unlock(&ddebug_lock);
 
-	nc = 0;
-	for_subvec(cli, di, class_users) {
-		if (!strcmp(cli->mod_name, dt->mod_name)) {
-			vpr_cm_info(cli->map, "class_ref[%d] %s -> %s", i,
-				    cli->mod_name, cli->map->mod_name);
-			if (!nc++)
-				dt->class_users = cli;
-		}
-	}
-	if (nc) {
-		dt->num_class_users = nc;
+	dd_find_vec_subrange(dt, cli, di, class_users);
+	if (dt->num_class_users) {
 		rc = ddebug_attach_user_module_classes(dt, di, &reserved_ids);
 		if (rc)
 			/* XXX notify undoes that add tail ?? */
