@@ -1173,11 +1173,12 @@ static const char * const ddebug_classmap_typenames[] = {
 	"DISJOINT_BITS", "LEVEL_NUM"
 };
 
-#define vpr_cm_info(cm_p, msg_p, ...) ({				\
+#define vpr_cm_info(cm_p, msg_fmt, ...) ({				\
 	struct ddebug_class_map const *_cm = cm_p;			\
-	v2pr_info(msg_p " module:%s base:%d len:%d type:%s\n", ##__VA_ARGS__, \
-		  _cm->mod_name, _cm->base, _cm->length,		\
-		  ddebug_classmap_typenames[_cm->map_type]);		\
+	v2pr_info(msg_fmt " [%d..%d] %s..%s\n", ##__VA_ARGS__,		\
+		  _cm->base, _cm->base + _cm->length,			\
+		  _cm->class_names[0],					\
+		  _cm->class_names[_cm->length - 1]);			\
 	})
 
 static void ddebug_sync_classbits(const struct kernel_param *kp, const char *modname)
@@ -1216,7 +1217,7 @@ static void ddebug_match_apply_kparam(const struct kernel_param *kp,
 
 	if (map == dcp->map) {
 		v2pr_info(" found kp:%s =0x%lx", kp->name, *dcp->bits);
-		vpr_cm_info(map, "  mapped to:");
+		vpr_cm_info(map, "  mapped to: %s", modnm);
 		ddebug_sync_classbits(kp, modnm);
 	}
 }
@@ -1228,14 +1229,14 @@ static void ddebug_apply_params(const struct ddebug_class_map *cm, const char *m
 	int i;
 
 	if (cm->mod) {
-		vpr_cm_info(cm, "loaded class:");
+		vpr_cm_info(cm, "loaded classmap: %s", modnm);
 		/* ifdef protects the cm->mod->kp deref */
 		for (i = 0, kp = cm->mod->kp; i < cm->mod->num_kp; i++, kp++)
 			ddebug_match_apply_kparam(kp, cm, modnm);
 	}
 #endif
 	if (!cm->mod) {
-		vpr_cm_info(cm, "builtin class:");
+		vpr_cm_info(cm, "builtin classmap: %s", modnm);
 		for (kp = __start___param; kp < __stop___param; kp++)
 			ddebug_match_apply_kparam(kp, cm, modnm);
 	}
