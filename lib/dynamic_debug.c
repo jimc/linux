@@ -158,20 +158,34 @@ static void vpr_info_dq(const struct ddebug_query *query, const char *msg)
 		  _dt->num_class_users);				\
 	})
 
+/*
+ * simplify a repeated for-loop pattern walking N steps in a T _vec
+ * member inside a struct _box.  It expects int i and T *_sp to be
+ * declared in the caller.
+ * @_i:  caller provided counter.
+ * @_sp: cursor into _vec, to examine each item.
+ * @_box: ptr to a struct containing @_vec member
+ * @_vec: name of a sub-struct member in _box, with array-ref and length
+ */
+#define for_subvec(_i, _sp, _box, _vec)				       \
+	for ((_i) = 0, (_sp) = (_box)->_vec;			       \
+	     (_i) < (_box)->num_##_vec;				       \
+	     (_i)++, (_sp)++)
+
 static int ddebug_find_valid_class(struct ddebug_table const *dt, const char *class_string)
 {
 	struct ddebug_class_map *map;
 	struct ddebug_class_user *cli;
 	int i, idx;
 
-	for (i = 0, map = dt->classes; i < dt->num_classes; i++, map++) {
+	for_subvec(i, map, dt, classes) {
 		idx = match_string(map->class_names, map->length, class_string);
 		if (idx >= 0) {
 			vpr_dt_info(dt, "good-class: %s.%s ", map->mod_name, class_string);
 			return idx + map->base;
 		}
 	}
-	for (i = 0, cli = dt->class_users; i < dt->num_class_users; i++, cli++) {
+	for_subvec(i, cli, dt, class_users) {
 		idx = match_string(cli->map->class_names, cli->map->length, class_string);
 		if (idx >= 0) {
 			vpr_dt_info(dt, "class-ref: %s -> %s.%s ",
@@ -1190,7 +1204,7 @@ static void ddebug_apply_params(const struct ddebug_class_map *cm, const char *m
 	if (cm->mod) {
 		vpr_cm_info(cm, "loaded classmap: %s", modnm);
 		/* ifdef protects the cm->mod->kp deref */
-		for (i = 0, kp = cm->mod->kp; i < cm->mod->num_kp; i++, kp++)
+		for_subvec(i, kp, cm->mod, kp)
 			ddebug_match_apply_kparam(kp, cm, modnm);
 	}
 #endif
@@ -1212,7 +1226,7 @@ static void ddebug_attach_module_classes(struct ddebug_table *dt,
 	struct ddebug_class_map *cm;
 	int i, nc = 0;
 
-	for (i = 0, cm = di->classes; i < di->num_classes; i++, cm++) {
+	for_subvec(i, cm, di, classes) {
 		if (!strcmp(cm->mod_name, dt->mod_name)) {
 			vpr_cm_info(cm, "classes[%d]:", i);
 			if (!nc++)
@@ -1225,7 +1239,7 @@ static void ddebug_attach_module_classes(struct ddebug_table *dt,
 	vpr_info("module:%s attached %d classes\n", dt->mod_name, nc);
 	dt->num_classes = nc;
 
-	for (i = 0, cm = dt->classes; i < dt->num_classes; i++, cm++)
+	for_subvec(i, cm, dt, classes)
 		ddebug_apply_params(cm, cm->mod_name);
 }
 
@@ -1245,7 +1259,7 @@ static void ddebug_attach_user_module_classes(struct ddebug_table *dt,
 	 * module's refs, save to dt.  For loadables, this is the
 	 * whole array.
 	 */
-	for (i = 0, cli = di->class_users; i < di->num_class_users; i++, cli++) {
+	for_subvec(i, cli, di, class_users) {
 		if (WARN_ON_ONCE(!cli || !cli->map || !cli->mod_name))
 			continue;
 		if (!strcmp(cli->mod_name, dt->mod_name)) {
@@ -1261,7 +1275,7 @@ static void ddebug_attach_user_module_classes(struct ddebug_table *dt,
 	dt->num_class_users = nc;
 
 	/* now iterate dt */
-	for (i = 0, cli = dt->class_users; i < dt->num_class_users; i++, cli++)
+	for_subvec(i, cli, di, class_users)
 		ddebug_apply_params(cli->map, cli->mod_name);
 
 	vpr_dt_info(dt, "attach-client-module: ");
@@ -1299,7 +1313,7 @@ static int ddebug_add_module(struct _ddebug_info *di, const char *modname)
 
 	INIT_LIST_HEAD(&dt->link);
 
-	for (i = 0, iter = di->descs; i < di->num_descs; i++, iter++)
+	for_subvec(i, iter, di, descs)
 		if (iter->class_id != _DPRINTK_CLASS_DFLT)
 			class_ct++;
 
