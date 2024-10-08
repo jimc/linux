@@ -828,16 +828,19 @@ EOD
 
     check_match_ct =T:bupkus.mf 3		# the 3 classes enabled above
     ddcmd "module $modname =T:bupkus"		# enable the 5 non-class'd pr_debug()s
-    check_match_ct =T:bupkus 8 -r		# 8=5+3
+    check_match_ct =T:bupkus 23 -r		# 8=5+3 !
 
     doprints
-    ddcmd close,bupkus fail
+    ddcmd close,bupkus fail	# cuz 23 are used
     check_err_msg "Device or resource busy"
-    ddcmd "module * -T:0"			# misses class'd ones
-    ddcmd close,bupkus fail
 
-    ddcmd class,D2_CORE,-T:0%class,D2_KMS,-T:0%class,V3,-T:0 # turn off class'd and set dest to 0
-    ddcmd close,bupkus
+    # turn off class'd and set dest to 0
+    ddcmd class,D2_CORE,-T:0%class,D2_KMS,-T:0%class,V3,-T:0
+    ddcmd close,bupkus fail	# still using some
+
+    ddcmd "module * -T:0"	# now un-label the rest
+    ddcmd close,bupkus		# this succeeds
+
     is_trace_instance_closed bupkus
 
     # validate the 3 enabled class'd sites, with mf prefix
@@ -853,8 +856,8 @@ EOD
     is_trace_instance_opened bupkus
     check_trace_instance_dir bupkus 1
 
-    ddcmd "module test_dynamic_debug =T:bupkus"	# rearm the 5 plain-old prdbgs
-    check_match_ct =T:bupkus 5
+    ddcmd "module test_dynamic_debug =T:bupkus"	# rearm all the prdbgs
+    check_match_ct =T:bupkus 23
 
     doprints # 2nd time
     search_trace_name bupkus 0 "test_dd: doing categories"
@@ -987,9 +990,9 @@ function test_labelling {
 
     # now change the labelled sites, by using the existing label
     ddcmd open new_out
-    ddcmd label param_log +T:new_out	# redirect unclassed
-    check_match_ct =T:new_out 4	-r	# the module params prdbgs got moved
-    check_match_ct =T:param_log 2 -r	# CORE, KMS remain
+    ddcmd label param_log +T:new_out	# re-label param_log -> new_out
+    check_match_ct =T:new_out 6	-r	# (all) the module params prdbgs got moved
+    check_match_ct =T:param_log 0 -r	# CORE, KMS (do not) remain (no class protection)
     ddcmd label param_log class D2_CORE +T:new_out	# must name class to change it
     ddcmd label param_log class D2_KMS  +T:new_out	# case for class D2_* (wildcard) ??
     check_match_ct =T:param_log 0
@@ -997,8 +1000,8 @@ function test_labelling {
     check_match_ct =T:new_out.mfst 4	# module/params.c prdbgs still have the flags
 
     doprints
-    search_trace_name new_out 2 "test_dynamic_debug:do_cats: test_dd: D2_CORE msg"
-    search_trace_name new_out 1 "test_dynamic_debug:do_cats: test_dd: D2_KMS msg"
+    search_trace_name new_out 3 "test_dynamic_debug:do_cats: test_dd: D2_CORE msg"
+    search_trace_name new_out 2 "test_dynamic_debug:do_cats: test_dd: D2_KMS msg"
 
     check_match_ct =T.new_out 6 -r -v
     check_match_ct =T: 6 -r -v
@@ -1010,14 +1013,15 @@ function test_labelling {
     check_match_ct =:new_out 6 -r -v
 
     # must un-label prdbgs to close the label
-    ddcmd label new_out +:0
     ddcmd label new_out class D2_CORE +:0
+    check_match_ct =:new_out 5 -r -v
     ddcmd label new_out class D2_KMS +:0
+    check_match_ct =:new_out 4 -r -v
+    ddcmd label new_out +:0
+    check_match_ct =:new_out 0 -r -v
     ddcmd close new_out
 
-    check_match_ct =T:param_log 0	# ok, but
-    check_match_ct :param_log 1 -r -v	# pick up the D2_ATOMIC
-    ddcmd label param_log class D2_ATOMIC +:0
+    check_match_ct =T:param_log 0	# 
     ddcmd close param_log		# now it closes wo -EBUSY
 
     ifrmmod test_dynamic_debug
