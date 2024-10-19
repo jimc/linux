@@ -2231,15 +2231,15 @@ static int find_module_sections(struct module *mod, struct load_info *info)
 		pr_warn("%s: Ignoring obsolete parameters\n", mod->name);
 
 #ifdef CONFIG_DYNAMIC_DEBUG_CORE
-	mod->dyndbg_info.descs = section_objs(info, "__dyndbg",
-					      sizeof(*mod->dyndbg_info.descs),
-					      &mod->dyndbg_info.num_descs);
-	mod->dyndbg_info.classes = section_objs(info, "__dyndbg_classes",
-						sizeof(*mod->dyndbg_info.classes),
-						&mod->dyndbg_info.num_classes);
-	mod->dyndbg_info.class_users = section_objs(info, "__dyndbg_class_users",
-						    sizeof(*mod->dyndbg_info.class_users),
-						   &mod->dyndbg_info.num_class_users);
+	mod->dyndbg_info.descs.start = section_objs(info, "__dyndbg",
+						    sizeof(*mod->dyndbg_info.descs.start),
+						    &mod->dyndbg_info.descs.len);
+	mod->dyndbg_info.maps.start = section_objs(info, "__dyndbg_classes",
+						   sizeof(*mod->dyndbg_info.maps.start),
+						   &mod->dyndbg_info.maps.len);
+	mod->dyndbg_info.users.start = section_objs(info, "__dyndbg_class_users",
+						    sizeof(*mod->dyndbg_info.users.start),
+						    &mod->dyndbg_info.users.len);
 #endif
 
 	return 0;
