@@ -110,13 +110,34 @@ struct ddebug_class_map {
 		.class_names = _var##_classnames,			\
 	}
 
-/* encapsulate linker provided built-in (or module) dyndbg data */
-struct _ddebug_info {
-	struct _ddebug *descs;
-	struct ddebug_class_map *classes;
-	unsigned int num_descs;
-	unsigned int num_classes;
+struct ddebug_class_user {
+	char *mod_name;
+	struct ddebug_class_map *map;
 };
+
+/*
+ * @_ddebug_info: gathers module/builtin dyndbg_* __sections together.
+ * For builtins, it is used as a cursor, with the inner structs
+ * marking sub-vectors of the builtin __sections in DATA.
+ */
+struct _ddebug_descs {
+	struct _ddebug *start;
+	int len;
+} __packed;
+struct dd_class_maps {
+	struct ddebug_class_map *start;
+	int len;
+} __packed;
+struct dd_class_users {
+	struct ddebug_class_user *start;
+	int len;
+} __packed;
+struct _ddebug_info {
+	struct _ddebug_descs descs;
+	struct dd_class_maps maps;
+	struct dd_class_users users;
+} __packed;
+
 
 struct ddebug_class_param {
 	union {
