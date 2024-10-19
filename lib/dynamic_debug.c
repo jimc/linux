@@ -49,10 +49,7 @@ extern struct ddebug_class_user __stop___dyndbg_class_users[];
 struct ddebug_table {
 	struct list_head link;
 	const char *mod_name;
-	struct _ddebug *ddebugs;
-	struct ddebug_class_map *classes;
-	struct ddebug_class_user *class_users;
-	unsigned int num_ddebugs, num_classes, num_class_users;
+	struct _ddebug_info info;
 };
 
 struct ddebug_query {
@@ -154,8 +151,8 @@ static void vpr_info_dq(const struct ddebug_query *query, const char *msg)
 #define vpr_dt_info(dt_p, msg_p, ...) ({				\
 	struct ddebug_table const *_dt = dt_p;				\
 	v2pr_info(msg_p " module:%s nd:%d nc:%d nu:%d\n", ##__VA_ARGS__, \
-		  _dt->mod_name, _dt->num_ddebugs, _dt->num_classes,	\
-		  _dt->num_class_users);				\
+		  _dt->mod_name, _dt->info.descs.len, _dt->info.maps.len, \
+		  _dt->info.users.len);					\
 	})
 
 /*
@@ -168,8 +165,8 @@ static void vpr_info_dq(const struct ddebug_query *query, const char *msg)
  * @_vec: name of a sub-struct member in _box, with array-ref and length
  */
 #define for_subvec(_i, _sp, _box, _vec)				       \
-	for ((_i) = 0, (_sp) = (_box)->_vec;			       \
-	     (_i) < (_box)->num_##_vec;				       \
+	for ((_i) = 0, (_sp) = (_box)->_vec.start;		       \
+	     (_i) < (_box)->_vec.len;				       \
 	     (_i)++, (_sp)++)
 
 static int ddebug_find_valid_class(struct ddebug_table const *dt, const char *class_string)
@@ -178,14 +175,14 @@ static int ddebug_find_valid_class(struct ddebug_table const *dt, const char *cl
 	struct ddebug_class_user *cli;
 	int i, idx;
 
-	for_subvec(i, map, dt, classes) {
+	for_subvec(i, map, &dt->info, maps) {
 		idx = match_string(map->class_names, map->length, class_string);
 		if (idx >= 0) {
 			vpr_dt_info(dt, "good-class: %s.%s ", map->mod_name, class_string);
 			return idx + map->base;
 		}
 	}
-	for_subvec(i, cli, dt, class_users) {
+	for_subvec(i, cli, &dt->info, users) {
 		idx = match_string(cli->map->class_names, cli->map->length, class_string);
 		if (idx >= 0) {
 			vpr_dt_info(dt, "class-ref: %s -> %s.%s ",
@@ -229,8 +226,8 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 			valid_class = _DPRINTK_CLASS_DFLT;
 		}
 
-		for (i = 0; i < dt->num_ddebugs; i++) {
-			struct _ddebug *dp = &dt->ddebugs[i];
+		for (i = 0; i < dt->info.descs.len; i++) {
+			struct _ddebug *dp = &dt->info.descs.start[i];
 
 			/* match site against query-class */
 			if (dp->class_id != valid_class)
@@ -990,8 +987,8 @@ static struct _ddebug *ddebug_iter_first(struct ddebug_iter *iter)
 	}
 	iter->table = list_entry(ddebug_tables.next,
 				 struct ddebug_table, link);
-	iter->idx = iter->table->num_ddebugs;
-	return &iter->table->ddebugs[--iter->idx];
+	iter->idx = iter->table->info.descs.len;
+	return &iter->table->info.descs.start[--iter->idx];
 }
 
 /*
@@ -1012,10 +1009,10 @@ static struct _ddebug *ddebug_iter_next(struct ddebug_iter *iter)
 		}
 		iter->table = list_entry(iter->table->link.next,
 					 struct ddebug_table, link);
-		iter->idx = iter->table->num_ddebugs;
+		iter->idx = iter->table->info.descs.len;
 		--iter->idx;
 	}
-	return &iter->table->ddebugs[iter->idx];
+	return &iter->table->info.descs.start[iter->idx];
 }
 
 /*
@@ -1064,15 +1061,15 @@ static void *ddebug_proc_next(struct seq_file *m, void *p, loff_t *pos)
 
 static const char *ddebug_class_name(struct ddebug_table *dt, struct _ddebug *dp)
 {
-	struct ddebug_class_map *map = dt->classes;
-	struct ddebug_class_user *cli = dt->class_users;
+	struct ddebug_class_map *map;
+	struct ddebug_class_user *cli;
 	int i;
 
-	for (i = 0; i < dt->num_classes; i++, map++)
+	for_subvec(i, map, &dt->info, maps)
 		if (class_in_range(dp->class_id, map))
 			return map->class_names[dp->class_id - map->base];
 
-	for (i = 0; i < dt->num_class_users; i++, cli++)
+	for_subvec(i, cli, &dt->info, users)
 		if (class_in_range(dp->class_id, cli->map))
 			return cli->map->class_names[dp->class_id - cli->map->base];
 
@@ -1203,8 +1200,7 @@ static void ddebug_apply_params(const struct ddebug_class_map *cm, const char *m
 
 	if (cm->mod) {
 		vpr_cm_info(cm, "loaded classmap: %s", modnm);
-		/* ifdef protects the cm->mod->kp deref */
-		for_subvec(i, kp, cm->mod, kp)
+		for (i = 0, kp = cm->mod->kp; i < cm->mod->num_kp; i++, kp++)
 			ddebug_match_apply_kparam(kp, cm, modnm);
 	}
 #endif
@@ -1226,20 +1222,20 @@ static void ddebug_attach_module_classes(struct ddebug_table *dt,
 	struct ddebug_class_map *cm;
 	int i, nc = 0;
 
-	for_subvec(i, cm, di, classes) {
+	for_subvec(i, cm, di, maps) {
 		if (!strcmp(cm->mod_name, dt->mod_name)) {
 			vpr_cm_info(cm, "classes[%d]:", i);
 			if (!nc++)
-				dt->classes = cm;
+				dt->info.maps.start = cm;
 		}
 	}
 	if (!nc)
 		return;
 
 	vpr_info("module:%s attached %d classes\n", dt->mod_name, nc);
-	dt->num_classes = nc;
+	dt->info.maps.len = nc;
 
-	for_subvec(i, cm, dt, classes)
+	for_subvec(i, cm, &dt->info, maps)
 		ddebug_apply_params(cm, cm->mod_name);
 }
 
@@ -1259,23 +1255,23 @@ static void ddebug_attach_user_module_classes(struct ddebug_table *dt,
 	 * module's refs, save to dt.  For loadables, this is the
 	 * whole array.
 	 */
-	for_subvec(i, cli, di, class_users) {
+	for_subvec(i, cli, di, users) {
 		if (WARN_ON_ONCE(!cli || !cli->map || !cli->mod_name))
 			continue;
 		if (!strcmp(cli->mod_name, dt->mod_name)) {
 			vpr_cm_info(cli->map, "class_ref[%d] %s -> %s", i,
 				    cli->mod_name, cli->map->mod_name);
 			if (!nc++)
-				dt->class_users = cli;
+				dt->info.users.start = cli;
 		}
 	}
 	if (!nc)
 		return;
 
-	dt->num_class_users = nc;
+	dt->info.users.len = nc;
 
 	/* now iterate dt */
-	for_subvec(i, cli, di, class_users)
+	for_subvec(i, cli, di, users)
 		ddebug_apply_params(cli->map, cli->mod_name);
 
 	vpr_dt_info(dt, "attach-client-module: ");
@@ -1291,10 +1287,10 @@ static int ddebug_add_module(struct _ddebug_info *di, const char *modname)
 	struct _ddebug *iter;
 	int i, class_ct = 0;
 
-	if (!di->num_descs)
+	if (!di->descs.len)
 		return 0;
 
-	v3pr_info("add-module: %s %d sites\n", modname, di->num_descs);
+	v3pr_info("add-module: %s %d sites\n", modname, di->descs.len);
 
 	dt = kzalloc(sizeof(*dt), GFP_KERNEL);
 	if (dt == NULL) {
@@ -1308,8 +1304,7 @@ static int ddebug_add_module(struct _ddebug_info *di, const char *modname)
 	 * this struct ddebug_table.
 	 */
 	dt->mod_name = modname;
-	dt->ddebugs = di->descs;
-	dt->num_ddebugs = di->num_descs;
+	dt->info.descs = di->descs;
 
 	INIT_LIST_HEAD(&dt->link);
 
@@ -1317,17 +1312,17 @@ static int ddebug_add_module(struct _ddebug_info *di, const char *modname)
 		if (iter->class_id != _DPRINTK_CLASS_DFLT)
 			class_ct++;
 
-	if (class_ct && di->num_classes)
+	if (class_ct && di->maps.len)
 		ddebug_attach_module_classes(dt, di);
 
 	mutex_lock(&ddebug_lock);
 	list_add_tail(&dt->link, &ddebug_tables);
 	mutex_unlock(&ddebug_lock);
 
-	if (class_ct && di->num_class_users)
+	if (class_ct && di->users.len)
 		ddebug_attach_user_module_classes(dt, di);
 
-	vpr_info("%3u debug prints in module %s\n", di->num_descs, modname);
+	vpr_info("%3u debug prints in module %s\n", di->descs.len, modname);
 	return 0;
 }
 
@@ -1474,12 +1469,12 @@ static int __init dynamic_debug_init(void)
 	char *cmdline;
 
 	struct _ddebug_info di = {
-		.descs = __start___dyndbg,
-		.classes = __start___dyndbg_classes,
-		.class_users = __start___dyndbg_class_users,
-		.num_descs = __stop___dyndbg - __start___dyndbg,
-		.num_classes = __stop___dyndbg_classes - __start___dyndbg_classes,
-		.num_class_users = __stop___dyndbg_class_users - __start___dyndbg_class_users,
+		.descs.start = __start___dyndbg,
+		.maps.start = __start___dyndbg_classes,
+		.users.start = __start___dyndbg_class_users,
+		.descs.len = __stop___dyndbg - __start___dyndbg,
+		.maps.len = __stop___dyndbg_classes - __start___dyndbg_classes,
+		.users.len = __stop___dyndbg_class_users - __start___dyndbg_class_users,
 	};
 
 #ifdef CONFIG_MODULES
@@ -1508,8 +1503,8 @@ static int __init dynamic_debug_init(void)
 
 		if (strcmp(modname, iter->modname)) {
 			mod_ct++;
-			di.num_descs = mod_sites;
-			di.descs = iter_mod_start;
+			di.descs.len = mod_sites;
+			di.descs.start = iter_mod_start;
 			ret = ddebug_add_module(&di, modname);
 			if (ret)
 				goto out_err;
@@ -1519,8 +1514,8 @@ static int __init dynamic_debug_init(void)
 			iter_mod_start = iter;
 		}
 	}
-	di.num_descs = mod_sites;
-	di.descs = iter_mod_start;
+	di.descs.len = mod_sites;
+	di.descs.start = iter_mod_start;
 	ret = ddebug_add_module(&di, modname);
 	if (ret)
 		goto out_err;
@@ -1530,8 +1525,8 @@ static int __init dynamic_debug_init(void)
 		 i, mod_ct, (int)((mod_ct * sizeof(struct ddebug_table)) >> 10),
 		 (int)((i * sizeof(struct _ddebug)) >> 10));
 
-	if (di.num_classes)
-		v2pr_info("  %d builtin ddebug class-maps\n", di.num_classes);
+	if (di.maps.len)
+		v2pr_info("  %d builtin ddebug class-maps\n", di.maps.len);
 
 	/* now that ddebug tables are loaded, process all boot args
 	 * again to find and activate queries given in dyndbg params.
