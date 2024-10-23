@@ -582,6 +582,7 @@ static __always_inline void mas_reset(struct ma_state *mas)
 enum mt_dump_format {
 	mt_dump_dec,
 	mt_dump_hex,
+	mt_dump_str,
 };
 
 extern atomic_t maple_tree_tests_run;

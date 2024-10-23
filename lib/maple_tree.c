@@ -7093,6 +7093,7 @@ static void mt_dump_range(unsigned long min, unsigned long max,
 	static const char spaces[] = "                                ";
 
 	switch(format) {
+	case mt_dump_str:
 	case mt_dump_hex:
 		if (min == max)
 			pr_info("%.*s%lx: ", depth * 2, spaces, min);
@@ -7112,13 +7113,23 @@ static void mt_dump_entry(void *entry, unsigned long min, unsigned long max,
 {
 	mt_dump_range(min, max, depth, format);
 
-	if (xa_is_value(entry))
-		pr_cont("value %ld (0x%lx) [%p]\n", xa_to_value(entry),
+	if (xa_is_value(entry)) {
+		switch (format) {
+		case mt_dump_str:
+			pr_cont("value %ld (0x%lx) [%p] %s\n", xa_to_value(entry),
+				xa_to_value(entry), entry, (char*)entry);
+			break;
+		default:
+			pr_cont("value %ld (0x%lx) [%p]\n", xa_to_value(entry),
 				xa_to_value(entry), entry);
+		}
+	}
 	else if (xa_is_zero(entry))
 		pr_cont("zero (%ld)\n", xa_to_internal(entry));
 	else if (mt_is_reserved(entry))
 		pr_cont("UNKNOWN ENTRY (%p)\n", entry);
+	else if (format == mt_dump_str)
+		pr_cont("%s\n", (char*)entry);
 	else
 		pr_cont("%p\n", entry);
 }
@@ -7132,9 +7143,10 @@ static void mt_dump_range64(const struct maple_tree *mt, void *entry,
 	unsigned long first = min;
 	int i;
 
-	pr_cont(" contents: ");
+	pr_cont(" r64-contents: ");
 	for (i = 0; i < MAPLE_RANGE64_SLOTS - 1; i++) {
 		switch(format) {
+		case mt_dump_str:
 		case mt_dump_hex:
 			pr_cont("%p %lX ", node->slot[i], node->pivot[i]);
 			break;
@@ -7164,6 +7176,7 @@ static void mt_dump_range64(const struct maple_tree *mt, void *entry,
 		if (last > max) {
 			switch(format) {
 			case mt_dump_hex:
+			case mt_dump_str:
 				pr_err("node %p last (%lx) > max (%lx) at pivot %d!\n",
 					node, last, max, i);
 				break;
@@ -7185,11 +7198,14 @@ static void mt_dump_arange64(const struct maple_tree *mt, void *entry,
 	unsigned long first = min;
 	int i;
 
-	pr_cont(" contents: ");
+	pr_cont(" a64-contents: ");
 	for (i = 0; i < MAPLE_ARANGE64_SLOTS; i++) {
 		switch (format) {
 		case mt_dump_hex:
 			pr_cont("%lx ", node->gap[i]);
+			break;
+		case mt_dump_str:
+			pr_cont("%s ", (char*) node->gap[i]);
 			break;
 		case mt_dump_dec:
 			pr_cont("%lu ", node->gap[i]);
@@ -7198,6 +7214,9 @@ static void mt_dump_arange64(const struct maple_tree *mt, void *entry,
 	pr_cont("| %02X %02X| ", node->meta.end, node->meta.gap);
 	for (i = 0; i < MAPLE_ARANGE64_SLOTS - 1; i++) {
 		switch (format) {
+		case mt_dump_str:
+			pr_cont("%p %lX ", node->slot[i], node->pivot[i]);
+			break;
 		case mt_dump_hex:
 			pr_cont("%p %lX ", node->slot[i], node->pivot[i]);
 			break;
