@@ -91,7 +91,7 @@ static DEFINE_MTREE(mt_mods);
 static void ddebug_mt_scan(struct maple_tree *mt, const char *kind)
 {
 	pr_info("mt-%s:\n", kind);
-	mt_dump(mt, mt_dump_hex);
+	mt_dump(mt, mt_dump_str);
 }
 
 static int param_set_do_scan(const char *instr, const struct kernel_param *kp)
