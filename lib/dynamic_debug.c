@@ -1253,32 +1253,28 @@ ddebug_class_range_overlap(struct ddebug_class_map *cm,
 	(_dst)->info._vec.len = nc;					\
 })
 
-static int ddebug_module_apply_class_maps(struct ddebug_table *dt,
+static void ddebug_module_apply_class_maps(struct ddebug_table *dt,
 					  u64 *reserved_ids)
 {
 	struct ddebug_class_map *cm;
 	int i;
 
-	for_subvec(i, cm, &dt->info, maps) {
+	for_subvec(i, cm, &dt->info, maps)
 		ddebug_apply_params(cm, cm->mod_name);
-		ddebug_class_range_overlap(cm, reserved_ids);
-	}
+
 	vpr_info("module:%s attached %d classmaps\n", dt->mod_name, dt->info.maps.len);
-	return 0;
 }
 
-static int ddebug_module_apply_class_users(struct ddebug_table *dt,
+static void ddebug_module_apply_class_users(struct ddebug_table *dt,
 					   u64 *reserved_ids)
 {
 	struct ddebug_class_user *cli;
 	int i;
 
-	for_subvec(i, cli, &dt->info, users) {
+	for_subvec(i, cli, &dt->info, users)
 		ddebug_apply_params(cli->map, cli->mod_name);
-		ddebug_class_range_overlap(cli->map, reserved_ids);
-	}
+
 	vpr_info("module:%s attached %d classmap uses\n", dt->mod_name, dt->info.users.len);
-	return 0;
 }
 
 /*
@@ -1322,7 +1318,14 @@ static int ddebug_add_module(struct _ddebug_info *di, const char *modname)
 	dd_mark_vector_subrange(i, dt, cm, di, maps);
 	dd_mark_vector_subrange(i, dt, cli, di, users);
 
-	if (di->maps.len)
+	for_subvec(i, cm, &dt->info, maps)
+		if (ddebug_class_range_overlap(cm, &reserved_ids))
+			return -EINVAL;
+	for_subvec(i, cli, &dt->info, users)
+		if (ddebug_class_range_overlap(cli->map, &reserved_ids))
+			return -EINVAL;
+
+	if (dt->info.maps.len)
 		ddebug_module_apply_class_maps(dt, &reserved_ids);
 
 	mutex_lock(&ddebug_lock);
