@@ -1277,6 +1277,7 @@ static int ddebug_module_apply_class_users(struct ddebug_table *dt,
 	return 0;
 }
 
+static int ddebug_remove_module(const char *mod_name);
 /*
  * Allocate a new ddebug_table for the given module
  * and add it to the global list.
@@ -1318,32 +1319,37 @@ static int ddebug_add_module(struct _ddebug_info *di, const char *modname)
 	dd_mark_vector_subrange(i, dt, cm, di, maps);
 	dd_mark_vector_subrange(i, dt, cli, di, users);
 
-	for_subvec(i, cm, &dt->info, maps)
-		if (ddebug_class_range_overlap(cm, &reserved_ids))
-			return -EINVAL;
-	for_subvec(i, cli, &dt->info, users)
-		if (ddebug_class_range_overlap(cli->map, &reserved_ids))
-			return -EINVAL;
+	for_subvec(i, cm, &dt->info, maps) {
+		rc = ddebug_class_range_overlap(cm, &reserved_ids);
+		if (rc)
+			goto cleanup;
+	}
+	for_subvec(i, cli, &dt->info, users) {
+		rc = ddebug_class_range_overlap(cli->map, &reserved_ids);
+		if (rc)
+			goto cleanup;
+	}
 
 	if (dt->info.maps.len) {
 		rc = ddebug_module_apply_class_maps(dt, &reserved_ids);
-		if (rc) {
-			kfree(dt);
-			return rc;
-		}
+		if (rc)
+			goto cleanup;
 	}
-
 	mutex_lock(&ddebug_lock);
 	list_add_tail(&dt->link, &ddebug_tables);
 	mutex_unlock(&ddebug_lock);
 
 	if (dt->info.users.len) {
+		/* this needs to find the ref'd class on the ddebug-tables list */
 		rc = ddebug_module_apply_class_users(dt, &reserved_ids);
 		if (rc)
-			return rc;
+			return ddebug_remove_module(dt->mod_name);
 	}
 	vpr_info("%3u debug prints in module %s\n", di->descs.len, modname);
 	return 0;
+cleanup:
+	kfree(dt);
+	return rc; /* tbd might conflict w notify chain */
 }
 
 /* helper for ddebug_dyndbg_(boot|module)_param_cb */
