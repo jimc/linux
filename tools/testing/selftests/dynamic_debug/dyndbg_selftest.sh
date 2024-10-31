@@ -1056,13 +1056,13 @@ function self_start {
     check_trace_instance_dir selftest 1
     is_trace_instance_opened selftest
     modprobe test_dynamic_debug dyndbg=+T:selftest.mf
-    check_match_ct =T:selftest.mf 5
+    check_match_ct =T:selftest.mf $NUM_SITES
 }
 
 function self_end_normal {
     echo \# disable -T:selftest, rmmod, close
     ddcmd module test_dynamic_debug -T:selftest # leave mf
-    check_match_ct =:selftest.mf 5 -v
+    check_match_ct =:selftest.mf $NUM_SITES
     ddcmd module test_dynamic_debug +:0
     ddcmd close selftest
     is_trace_instance_closed selftest
@@ -1072,7 +1072,7 @@ function self_end_normal {
 function self_end_disable_anon {
     echo \# disable, close, rmmod
     ddcmd module test_dynamic_debug -T
-    check_match_ct =:selftest.mf 5
+    check_match_ct =:selftest.mf $NUM_SITES
     ddcmd module test_dynamic_debug +:0
     ddcmd close selftest
     is_trace_instance_closed selftest
@@ -1082,7 +1082,7 @@ function self_end_disable_anon {
 function self_end_disable_anon_mf {
     echo \# disable, close, rmmod
     ddcmd module test_dynamic_debug -Tf
-    check_match_ct =:selftest.m 5
+    check_match_ct =:selftest.m $NUM_SITES
     ddcmd module test_dynamic_debug +:0
     ddcmd close selftest
     is_trace_instance_closed selftest
@@ -1093,7 +1093,7 @@ function self_end_nodisable {
     echo \# SKIPPING: ddcmd module test_dynamic_debug -T:selftest
     ddcmd close selftest fail # close fails because selftest is still being used
     check_err_msg "Device or resource busy"
-    check_match_ct =T:selftest.mf 5
+    check_match_ct =T:selftest.mf $NUM_SITES
     rmmod test_dynamic_debug
     ddcmd close selftest # now selftest can be closed because rmmod removed
                          # all callsites which were using it
@@ -1104,7 +1104,7 @@ function self_end_delete_directory {
     del_trace_instance_dir selftest 0
     check_err_msg "Device or resource busy"
     ddcmd module test_dynamic_debug -mT:selftest
-    check_match_ct =:selftest.f 5
+    check_match_ct =:selftest.f $NUM_SITES
     del_trace_instance_dir selftest 0
     check_err_msg "Device or resource busy"
     ddcmd module test_dynamic_debug +:0
@@ -1313,15 +1313,15 @@ function test_private_trace_mixed_class {
     check_match_ct =T:bupkus.mf 3		# the 3 classes enabled above
     # enable the 5 non-class'd pr_debug()s
     ddcmd "module test_dynamic_debug =T:bupkus"
-    check_match_ct =T:bupkus 8 -r		# 8=5+3
+    check_match_ct =T:bupkus $NUM_SITES 	# 8=5+3
 
     doprints
     ddcmd close,bupkus fail
     check_err_msg "Device or resource busy"
-    ddcmd "module * -T:0"			# misses class'd ones
-    ddcmd close,bupkus fail
 
-    ddcmd class,D2_CORE,-T:0%class,D2_KMS,-T:0%class,V3,-T:0 # turn off class'd and set dest to 0
+    ddcmd "module * -T:0"			# clears class'd sites too
+    # ddcmd close,bupkus fail
+    # ddcmd class,D2_CORE,-T:0%class,D2_KMS,-T:0%class,V3,-T:0 # turn off class'd and set dest to 0
     ddcmd close,bupkus
     is_trace_instance_closed bupkus
 
@@ -1351,7 +1351,7 @@ EOD
     check_trace_instance_dir bupkus 1
 
     ddcmd "module test_dynamic_debug =T:bupkus"	# rearm the 5 plain-old prdbgs
-    check_match_ct =T:bupkus 5
+    check_match_ct =T:bupkus $NUM_SITES
 
     doprints # 2nd time
     search_trace_name bupkus 0 "test_dd: doing categories"
