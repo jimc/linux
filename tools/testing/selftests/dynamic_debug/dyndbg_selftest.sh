@@ -365,7 +365,7 @@ function test_flags {
     echo -e "${GREEN}# TEST_FLAGS ${NC}"
 
     modprobe test_dynamic_debug dyndbg=+Tlm
-    check_match_ct =Tml $NUM_SITES -v
+    check_match_ct =Tml $NUM_SITES
 
     ddcmd open selftest
     check_trace_instance_dir selftest 1
@@ -465,7 +465,7 @@ function test_default_destination {
     modprobe test_dynamic_debug
 
     ddcmd class,D2_CORE,+T	# default dest is 0
-    check_match_ct =T 1 -v
+    check_match_ct =T 1
 
     ddcmd open foo		# foo becomes default dest
     is_trace_instance_opened foo
@@ -473,17 +473,17 @@ function test_default_destination {
     check_default_dst foo
 
     ddcmd class,D2_CORE,+T	# default dest is foo
-    check_match_ct =T:foo 1 -v
+    check_match_ct =T:foo 1
 
     ddcmd open,0		# reopening sets default dest to 0
     check_default_dst 0
 
     ddcmd class,D2_CORE,-T
-    check_match_ct =:foo 1 -v
+    check_match_ct =:foo 1
 
     ddcmd class,D2_CORE,+T      # default dest is 0 but since callsite was already labelled
                                 # then reuse label
-    check_match_ct =T:foo 1 -v
+    check_match_ct =T:foo 1
 
     ddcmd open bar		# bar becomes default dest
     is_trace_instance_opened bar
@@ -491,10 +491,10 @@ function test_default_destination {
     check_default_dst bar
 
     ddcmd class,D2_KMS,+T	# default dest is bar
-    check_match_ct =T:bar 1 -v
+    check_match_ct =T:bar 1
 
     ddcmd class,D2_KMS,+T:0	# set 0 dest explicitly
-    check_match_ct =T 1 -v
+    check_match_ct =T 1
 
     ddcmd class,D2_KMS,-T
 
@@ -503,7 +503,7 @@ function test_default_destination {
 
     ddcmd class,D2_KMS,+T       # default dest is 0 but since callsite was already labelled
                                 # then reuse label
-    check_match_ct =T:foo 2 -v
+    check_match_ct =T:foo 2
 
     ddcmd "class D2_CORE -T:0"
     ddcmd "class D2_KMS -T:0"
@@ -550,7 +550,7 @@ function self_start {
 function self_end_normal {
     echo \# disable -T:selftest, rmmod, close
     ddcmd module test_dynamic_debug -T:selftest # leave mf
-    check_match_ct =:selftest.mf 23 -v
+    check_match_ct =:selftest.mf 23
     ddcmd module test_dynamic_debug +:0
     ddcmd close selftest
     is_trace_instance_closed selftest
@@ -714,7 +714,7 @@ function test_private_trace_syntax_rmmod {
     ddcmd "class,D2_CORE,+T:foo;,class,D2_KMS,+T:foo"
     ddcmd class,D2_CORE,+T:foo\;class,D2_KMS,+T:foo
 
-    check_match_ct =T:foo 2 -v
+    check_match_ct =T:foo 2
     check_match_ct =Tl 0
     check_match_ct =Tmf 0
 
@@ -756,7 +756,7 @@ function test_private_trace_syntax_delete_in_use_rmmod {
     modprobe test_dynamic_debug dyndbg=class,D2_CORE,+T:foo%class,D2_KMS,+T:foo
     check_match_ct =Tl 0
     check_match_ct =Tmf 0
-    check_match_ct =T:foo 2 -v
+    check_match_ct =T:foo 2
 
     tmark should be ready
     search_trace_name "0" 0 "should be ready"	# search in global trace
@@ -906,6 +906,8 @@ function test_private_trace_overlong_name {
 
 function test_private_trace_fill_trace_index {
     echo -e "${GREEN}# TEST_PRIVATE_TRACE_fill_trace_index ${NC}"
+    ifrmmod test_dynamic_debug_submod
+    ifrmmod test_dynamic_debug
     ddcmd =_
     name="trace_instance_"
     for i in {1..63}
@@ -940,9 +942,9 @@ function setup_env_for_tests {
     echo -e "${GREEN}# SETUP_ENV_FOR_TESTS ${NC}"
 
     echo "MODULES"
-    ifrmmod test_dynamic_debug_submod -v	# unload test_dynamic_debug_submod module
-                                                # if it is loaded
-    ifrmmod test_dynamic_debug -v	# unload test_dynamic_debug module it if is loaded
+    ifrmmod test_dynamic_debug_submod	# unload test_dynamic_debug_submod module
+					# if it is loaded
+    ifrmmod test_dynamic_debug		# unload test_dynamic_debug module it if is loaded
     echo
 
     # display all callsites which have flags != "_"
@@ -973,7 +975,7 @@ function test_labelling {
 
     # trace params processing of the modprobe
     ddcmd open,param_log%module,params,+T:param_log.tmfs
-    check_match_ct =T:param_log 4 -r -v
+    check_match_ct =T:param_log 4 -r
 
     # modprobe with params.  This uses the default_dest :param_log
     modprobe test_dynamic_debug \
@@ -1003,22 +1005,22 @@ function test_labelling {
     search_trace_name new_out 3 "test_dynamic_debug:do_cats: test_dd: D2_CORE msg"
     search_trace_name new_out 2 "test_dynamic_debug:do_cats: test_dd: D2_KMS msg"
 
-    check_match_ct =T.new_out 6 -r -v
-    check_match_ct =T: 6 -r -v
+    check_match_ct =T.new_out 6 -r
+    check_match_ct =T: 6 -r
 
     # its not enough to turn off T
     ddcmd -T
     ddcmd class D2_CORE -T % class D2_KMS -T
     check_match_ct =T 0
-    check_match_ct =:new_out 6 -r -v
+    check_match_ct =:new_out 6 -r
 
     # must un-label prdbgs to close the label
     ddcmd label new_out class D2_CORE +:0
-    check_match_ct =:new_out 5 -r -v
+    check_match_ct =:new_out 5 -r
     ddcmd label new_out class D2_KMS +:0
-    check_match_ct =:new_out 4 -r -v
+    check_match_ct =:new_out 4 -r
     ddcmd label new_out +:0
-    check_match_ct =:new_out 0 -r -v
+    check_match_ct =:new_out 0 -r
     ddcmd close new_out
 
     check_match_ct =T:param_log 0	# 
@@ -1219,7 +1221,7 @@ function test_private_trace_3 {
     ddcmd class D2_CORE +T:foo \; class D2_KMS +T:foo
     ddcmd "class,D2_CORE,+T:foo;,class,D2_KMS,+T:foo"
     ddcmd class,D2_CORE,+T:foo\;class,D2_KMS,+T:foo
-    check_match_ct =T 2 -v
+    check_match_ct =T 2
     check_match_ct =Tl 0
     check_match_ct =Tmf 0
     echo 1 >/sys/kernel/tracing/tracing_on
@@ -1400,6 +1402,7 @@ function test_private_trace_overlong_name {
 
 function test_private_trace_fill_trace_index {
     echo -e "${GREEN}# TEST_PRIVATE_TRACE_fill_trace_index ${NC}"
+    ifrmmod test_dynamic_debug
     ddcmd =_
     name="trace_instance_"
     for i in {1..63}
