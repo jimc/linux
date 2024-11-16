@@ -1,0 +1,28 @@
+drm drm-fixes 21c1c6c7d732c2f6f4c5ffc77e103aa3ae8bff1d
+	Merge tag 'drm-xe-fixes-2024-11-14' of https://gitlab.freedesktop.org/drm/xe/kernel into drm-fixes
+drm-misc drm-misc-fixes fe52c649438b8489c9456681d93a9b3de3d38263
+	dma-fence: Use kernel's sort for merging fences
+drm-intel drm-intel-fixes 67e023b93d69e5a21b16f9602656a803d314e825
+	drm/i915: Grab intel_display from the encoder to avoid potential oopsies
+drm-xe drm-xe-fixes c0403e4ceecaefbeaf78263dffcd3e3f06a19f6b
+	drm/xe/oa: Fix "Missing outer runtime PM protection" warning
+drm drm-next 56b70bf9ec460ad7d7d94dfb7a54a8829741e16e
+	Merge tag 'drm-misc-next-2024-11-08' of https://gitlab.freedesktop.org/drm/misc/kernel into drm-next
+drm-misc drm-misc-next-fixes ba2b9de0c1ac2abfbe663414a292c5881e64c361
+	drm/tegra: fix potential uninitialized variable use
+drm-intel drm-intel-next-fixes 56b70bf9ec460ad7d7d94dfb7a54a8829741e16e
+	Merge tag 'drm-misc-next-2024-11-08' of https://gitlab.freedesktop.org/drm/misc/kernel into drm-next
+drm-xe drm-xe-next-fixes 6d9f9115c091c88cacf78734d8ea34c8609e8680
+	drm/xe/guc: Fix dereference before NULL check
+drm-misc drm-misc-next 7d2faa8dbb7055a115fe0cd6068d7090094a573d
+	drm/fbdev-client: Unexport drm_fbdev_client_setup()
+drm-intel drm-intel-next a594f284ddce5b152ffe4d938708ed714f796887
+	drm/{i915, xe}: Move power_domains suspend/resume to display_power
+drm-intel drm-intel-gt-next b939a08bc378a7c716ad7a9486b48794b95d22f5
+	drm/i915/guc: Flush ct receive tasklet during reset preparation
+drm-xe drm-xe-next 2d4993e163401c81e138c6e0e6223752c2e90402
+	drm/xe: Split xe_gt_stat.h
+drm-intel topic/core-for-CI c63b2aff736fc2bdfb22ddd7520a1022f0936b55
+	cpufreq: intel_pstate: Rearrange locking in hybrid_init_cpu_capacity_scaling()
+drm-xe topic/xe-for-CI fefe873265210efca14d239382df9243cb6387b9
+	drm/xe/ptl: Define HuC FW version for PTL
