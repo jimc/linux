@@ -157,7 +157,7 @@ int xe_display_init_noirq(struct xe_device *xe)
 
 	intel_bw_init_hw(xe);
 
-	intel_display_device_info_runtime_init(xe);
+	intel_display_device_info_runtime_init(display);
 
 	err = intel_display_driver_probe_noirq(xe);
 	if (err) {
@@ -219,8 +219,8 @@ void xe_display_register(struct xe_device *xe)
 		return;
 
 	intel_display_driver_register(xe);
-	intel_register_dsm_handler();
 	intel_power_domains_enable(xe);
+	intel_register_dsm_handler();
 }
 
 void xe_display_unregister(struct xe_device *xe)
@@ -334,9 +334,6 @@ static void __xe_display_pm_suspend(struct xe_device *xe, bool runtime)
 
 	xe_display_flush_cleanup_work(xe);
 
-	if (!runtime)
-		intel_dp_mst_suspend(xe);
-
 	intel_hpd_cancel_work(xe);
 
 	if (!runtime && has_display(xe)) {
@@ -403,12 +400,11 @@ void xe_display_pm_runtime_suspend(struct xe_device *xe)
 void xe_display_pm_suspend_late(struct xe_device *xe)
 {
 	bool s2idle = suspend_to_idle();
+
 	if (!xe->info.probe_display)
 		return;
 
-	intel_power_domains_suspend(xe, s2idle);
-
-	intel_display_power_suspend_late(xe);
+	intel_display_power_suspend_late(xe, s2idle);
 }
 
 void xe_display_pm_shutdown_late(struct xe_device *xe)
@@ -430,8 +426,6 @@ void xe_display_pm_resume_early(struct xe_device *xe)
 		return;
 
 	intel_display_power_resume_early(xe);
-
-	intel_power_domains_resume(xe);
 }
 
 static void __xe_display_pm_resume(struct xe_device *xe, bool runtime)
@@ -447,14 +441,11 @@ static void __xe_display_pm_resume(struct xe_device *xe, bool runtime)
 		drm_mode_config_reset(&xe->drm);
 
 	intel_display_driver_init_hw(xe);
-	intel_hpd_init(xe);
 
 	if (!runtime && has_display(xe))
 		intel_display_driver_resume_access(xe);
 
-	/* MST sideband requires HPD interrupts enabled */
-	if (!runtime)
-		intel_dp_mst_resume(xe);
+	intel_hpd_init(xe);
 
 	if (!runtime && has_display(xe)) {
 		intel_display_driver_resume(xe);
@@ -495,21 +486,23 @@ void xe_display_pm_runtime_resume(struct xe_device *xe)
 
 static void display_device_remove(struct drm_device *dev, void *arg)
 {
-	struct xe_device *xe = arg;
+	struct intel_display *display = arg;
 
-	intel_display_device_remove(xe);
+	intel_display_device_remove(display);
 }
 
 int xe_display_probe(struct xe_device *xe)
 {
+	struct pci_dev *pdev = to_pci_dev(xe->drm.dev);
+	struct intel_display *display;
 	int err;
 
 	if (!xe->info.probe_display)
 		goto no_display;
 
-	intel_display_device_probe(xe);
+	display = intel_display_device_probe(pdev);
 
-	err = drmm_add_action_or_reset(&xe->drm, display_device_remove, xe);
+	err = drmm_add_action_or_reset(&xe->drm, display_device_remove, display);
 	if (err)
 		return err;
 
