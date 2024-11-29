@@ -1,0 +1,28 @@
+drm drm-fixes adc218676eef25575469234709c2d87185ca223a
+	Linux 6.12
+drm-misc drm-misc-fixes 86e8f94789dd6f3e705bfa821e1e416f97a2f863
+	drm/sti: Add __iomem for mixer_dbg_mxn's parameter
+drm-intel drm-intel-fixes adc218676eef25575469234709c2d87185ca223a
+	Linux 6.12
+drm-xe drm-xe-fixes adc218676eef25575469234709c2d87185ca223a
+	Linux 6.12
+drm drm-next 9794b89c50f7fc972c6b4ddc69693c9f9d1ae7d7
+	Merge tag 'drm-xe-next-fixes-2024-11-28' of https://gitlab.freedesktop.org/drm/xe/kernel into drm-next
+drm-misc drm-misc-next-fixes 818956c76517e127fad8cf02cd29866e0a852072
+	drm/rockchip: avoid 64-bit division
+drm-intel drm-intel-next-fixes 376a33c4a0d8344bb575e1a6eeb748ee4d4675d3
+	drm/i915/hdcp: Fix when the first read and write are retried
+drm-xe drm-xe-next-fixes aef0b4a07277f715bfc2a0d76a16da2bc4e89205
+	drm/xe: Take PM ref in delayed snapshot capture worker
+drm-misc drm-misc-next 44cff6c5b0b17a78bc0b30372bcd816cf6dd282a
+	drm/hibmc: Drop dependency on ARM64
+drm-intel drm-intel-next 810f3bf22ca75b1b4b42743275f96ae781473765
+	drm/i915/dp: use seq buf for printing rates
+drm-intel drm-intel-gt-next b939a08bc378a7c716ad7a9486b48794b95d22f5
+	drm/i915/guc: Flush ct receive tasklet during reset preparation
+drm-xe drm-xe-next 54254727837440966c3381ea688df002ff14f269
+	drm/xe: Only allow contiguous BOs to use xe_bo_vmap
+drm-intel topic/core-for-CI c63b2aff736fc2bdfb22ddd7520a1022f0936b55
+	cpufreq: intel_pstate: Rearrange locking in hybrid_init_cpu_capacity_scaling()
+drm-xe topic/xe-for-CI d77237d345ac4fdce6558605acb84aa7a76dc9a1
+	drm/xe/ptl: Define HuC FW version for PTL
