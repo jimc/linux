@@ -2630,6 +2630,15 @@ static int find_module_sections(struct module *mod, struct load_info *info)
 	mod->dyndbg_info.users.start = section_objs(info, "__dyndbg_class_users",
 						   sizeof(*mod->dyndbg_info.users.start),
 						   &mod->dyndbg_info.users.len);
+	mod->dyndbg_info.sites.start = section_objs(info, "__dyndbg_sites",
+						    sizeof(*mod->dyndbg_info.sites.start),
+						    &mod->dyndbg_info.sites.len);
+	/* these 2 sections must match */
+	if (!!mod->dyndbg_info.descs.start ^ !!mod->dyndbg_info.sites.start)
+		pr_err("module: %s missing one-of __dyndbg_{descriptors,codeorgs} sections\n", mod->name);
+	if (mod->dyndbg_info.descs.len != mod->dyndbg_info.sites.len)
+		pr_err("module: %s section-pair lengths: %d != %d: __dyndbg_{descriptors,codeorgs}\n",
+		       mod->name, mod->dyndbg_info.descs.len, mod->dyndbg_info.sites.len);
 #endif
 
 	return 0;

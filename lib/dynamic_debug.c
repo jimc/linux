@@ -42,6 +42,8 @@
 
 extern struct _ddebug __start___dyndbg_descs[];
 extern struct _ddebug __stop___dyndbg_descs[];
+extern struct _ddebug_site __start___dyndbg_sites[];
+extern struct _ddebug_site __stop___dyndbg_sites[];
 extern struct _ddebug_class_map __start___dyndbg_class_maps[];
 extern struct _ddebug_class_map __stop___dyndbg_class_maps[];
 extern struct _ddebug_class_user __start___dyndbg_class_users[];
@@ -226,9 +228,9 @@ static inline bool ddebug_class_has_param(const struct _ddebug_class_map *map)
 #define ddebug_class_wants_protection(map) \
 	ddebug_class_has_param(map)
 
-#define desc_modname(d)		((d)->modname)
-#define desc_filename(d)	((d)->filename)
-#define desc_function(d)	((d)->function)
+#define desc_modname(d)		((d)->site->modname)
+#define desc_filename(d)	((d)->site->filename)
+#define desc_function(d)	((d)->site->function)
 
 /*
  * Search the tables for _ddebug's which match the given `query' and
@@ -1597,6 +1599,7 @@ static int __init dynamic_debug_init_control(void)
 
 static int __init dynamic_debug_init(void)
 {
+	struct _ddebug_site *site, *site_mod_start;
 	struct _ddebug *iter, *iter_mod_start;
 	int ret, i, mod_sites, mod_ct;
 	const char *modname;
@@ -1604,9 +1607,11 @@ static int __init dynamic_debug_init(void)
 
 	struct _ddebug_info di = {
 		.descs.start = __start___dyndbg_descs,
+		.sites.start = __start___dyndbg_sites,
 		.maps.start  = __start___dyndbg_class_maps,
 		.users.start = __start___dyndbg_class_users,
 		.descs.len = __stop___dyndbg_descs - __start___dyndbg_descs,
+		.sites.len = __stop___dyndbg_sites - __start___dyndbg_sites,
 		.maps.len  = __stop___dyndbg_class_maps - __start___dyndbg_class_maps,
 		.users.len = __stop___dyndbg_class_users - __start___dyndbg_class_users,
 	};
@@ -1629,15 +1634,22 @@ static int __init dynamic_debug_init(void)
 		return 0;
 	}
 
+	site = site_mod_start = di.sites.start;
 	iter = iter_mod_start = __start___dyndbg_descs;
 	modname = desc_modname(iter);
 	i = mod_sites = mod_ct = 0;
 
-	for (; iter < __stop___dyndbg_descs; iter++, i++, mod_sites++) {
+	for (; iter < __stop___dyndbg_descs; iter++, site++, i++, mod_sites++) {
+
+		BUG_ON(site != iter->site);
+
 		if (strcmp(modname, desc_modname(iter))) {
 			mod_ct++;
+
 			di.descs.len = mod_sites;
 			di.descs.start = iter_mod_start;
+			di.sites.len = mod_sites;
+			di.sites.start = site_mod_start;
 			di.mod_name = modname;
 			ret = ddebug_add_module(&di);
 			if (ret)
@@ -1646,10 +1658,13 @@ static int __init dynamic_debug_init(void)
 			mod_sites = 0;
 			modname = desc_modname(iter);
 			iter_mod_start = iter;
+			site_mod_start = site;
 		}
 	}
 	di.descs.len = mod_sites;
 	di.descs.start = iter_mod_start;
+	di.sites.len = mod_sites;
+	di.sites.start = site_mod_start;
 	di.mod_name = modname;
 	ret = ddebug_add_module(&di);
 	if (ret)
