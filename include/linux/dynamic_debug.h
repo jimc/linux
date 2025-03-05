@@ -198,6 +198,7 @@ struct _ddebug_class_users {
 } __packed;
 
 struct _ddebug_info {
+	const char *mod_name;
 	struct _ddebug_descs descs;
 	struct _ddebug_class_maps maps;
 	struct _ddebug_class_users users;
