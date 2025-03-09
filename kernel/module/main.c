@@ -2635,9 +2635,10 @@ static int find_module_sections(struct module *mod, struct load_info *info)
 						    &mod->dyndbg_info.sites.len);
 	/* these 2 sections must match */
 	if (!!mod->dyndbg_info.descs.start ^ !!mod->dyndbg_info.sites.start)
-		pr_err("module: %s missing one-of __dyndbg_{descriptors,codeorgs} sections\n", mod->name);
+		pr_err("module: %s missing 1 of __dyndbg_{descriptors,sites} sections\n",
+		       mod->name);
 	if (mod->dyndbg_info.descs.len != mod->dyndbg_info.sites.len)
-		pr_err("module: %s section-pair lengths: %d != %d: __dyndbg_{descriptors,codeorgs}\n",
+		pr_err("module: %s section-lengths: %d != %d: __dyndbg_{descriptors,sites}\n",
 		       mod->name, mod->dyndbg_info.descs.len, mod->dyndbg_info.sites.len);
 #endif
 

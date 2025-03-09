@@ -490,7 +490,42 @@ static inline int param_get_dyndbg_classes(char *buffer, const struct kernel_par
 
 #endif
 
-
 extern const struct kernel_param_ops param_ops_dyndbg_classes;
+
+/*
+ * @_ddebug_header is a "special" descriptor, placed (once) at the
+ * front of the descriptors section.  The uplink, once initialized,
+ * will point back at the _ddebug_info for the module(s).  This gives
+ * us access to the codetree record containing the dedup'd site-info
+ * for the module(s).
+ */
+struct _ddebug_header {
+        union {
+                struct _ddebug __dummy; /* force size of our "type" */
+                struct {
+                        struct _ddebug_info *uplink;
+			const char* _id; /* aligns with _ddebug.format */
+			int num_descs;
+			/* room for more descriptor commons stuff */
+                };
+        };
+};
+
+/*
+ * invoked by lib/dynamic_debug.c to create the header record (in the
+ * section's header slot), for all the builtin modules. We need
+ * something similar for loadable modules.
+ */
+#define DYNAMIC_DEBUG_DESCRIPTORS_HEADER(_ID_)			\
+	static struct _ddebug_header  __aligned(8) __used	\
+	__section(".gnu.linkonce.__dyndbg_descriptors")		\
+		descs_anchor = {				\
+		.uplink = NULL,	._id = _ID_ }
+
+/* encapsulate the headered section */
+struct _ddebug_descriptors_vector {
+        struct _ddebug_header header;
+        struct _ddebug descriptors[]; /* counted_by header.num_descs */
+};
 
 #endif /* _DYNAMIC_DEBUG_H */
