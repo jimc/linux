@@ -49,6 +49,12 @@ extern struct _ddebug_class_map __stop___dyndbg_class_maps[];
 extern struct _ddebug_class_user __start___dyndbg_class_users[];
 extern struct _ddebug_class_user __stop___dyndbg_class_users[];
 
+/*
+ * create the descriptor header record for all the builtin pr_debugs.
+ */
+extern struct _ddebug __hdr___dyndbg_descs[];
+DYNAMIC_DEBUG_DESCRIPTORS_HEADER("builtin-header");
+
 struct ddebug_table {
 	struct list_head link;
 	struct _ddebug_info info;
@@ -1597,8 +1603,11 @@ static int __init dynamic_debug_init_control(void)
 	return 0;
 }
 
+static struct _ddebug_info _dd_builtins_info;
+
 static int __init dynamic_debug_init(void)
 {
+	struct _ddebug_descriptors_vector *ddvec;
 	struct _ddebug_site *site, *site_mod_start;
 	struct _ddebug *iter, *iter_mod_start;
 	int ret, i, mod_sites, mod_ct;
@@ -1615,6 +1624,17 @@ static int __init dynamic_debug_init(void)
 		.maps.len  = __stop___dyndbg_class_maps - __start___dyndbg_class_maps,
 		.users.len = __stop___dyndbg_class_users - __start___dyndbg_class_users,
 	};
+	BUG_ON(di.sites.len != di.descs.len);
+	BUILD_BUG_ON(sizeof(struct _ddebug_header) != sizeof(struct _ddebug));
+
+	_dd_builtins_info = di;
+
+	ddvec = (struct _ddebug_descriptors_vector *) __hdr___dyndbg_descs;
+	ddvec->header.uplink = &_dd_builtins_info;
+	ddvec->header.num_descs = di.descs.len;
+
+	vpr_info("ddebug: header for %s, %d descriptors\n",
+		 ddvec->header._id,  ddvec->header.num_descs);
 
 #ifdef CONFIG_MODULES
 	ret = register_module_notifier(&ddebug_module_nb);

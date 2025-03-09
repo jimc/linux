@@ -366,9 +366,9 @@ defined(CONFIG_AUTOFDO_CLANG) || defined(CONFIG_PROPELLER_CLANG)
 	*(__tracepoints)						\
 	/* implement dynamic printk debug */				\
 	. = ALIGN(8);							\
+	HEADERED_SECTION_BY(__dyndbg_descriptors, ___dyndbg_descs, __hdr) \
 	BOUNDED_SECTION_BY(__dyndbg_class_maps, ___dyndbg_class_maps)	\
 	BOUNDED_SECTION_BY(__dyndbg_class_users, ___dyndbg_class_users)	\
-	BOUNDED_SECTION_BY(__dyndbg_descriptors, ___dyndbg_descs)	\
 	BOUNDED_SECTION_BY(__dyndbg_sites, ___dyndbg_sites)		\
 	CODETAG_SECTIONS()						\
 	LIKELY_PROFILE()		       				\
