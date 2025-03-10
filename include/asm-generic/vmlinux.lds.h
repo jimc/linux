@@ -219,10 +219,11 @@ defined(CONFIG_AUTOFDO_CLANG) || defined(CONFIG_PROPELLER_CLANG)
 	KEEP(*(.gnu.linkonce.##_sec_))					\
 	BOUNDED_SECTION_POST_LABEL(_sec_, _label_, _BEGIN_, _END_)
 
-#define HEADERED_SECTION_BY(_sec_, _label_)				\
-	HEADERED_SECTION_PRE_LABEL(_sec_, _label_, __start, __stop)
+#define HEADERED_SECTION_BY(_sec_, _label_, _front)			\
+	HEADERED_SECTION_PRE_LABEL(_sec_, _label_, __start, __stop, _front)
 
-#define HEADERED_SECTION(_sec)	 HEADERED_SECTION_BY(_sec, _sec)
+#define HEADERED_SECTION(_sec, _front) \
+	HEADERED_SECTION_BY(_sec, _sec, _front)
 
 #ifdef CONFIG_TRACE_BRANCH_PROFILING
 #define LIKELY_PROFILE()						\
