@@ -30,6 +30,12 @@
 
 #include <linux/module.h>
 
+static struct _ddebug  __aligned(8) __used
+__section(".gnu.linkonce.__dyndbg_descriptors")
+	my_desc_header2 = {
+	.format = "placeholder for descriptors' uplink in module",
+};
+
 /* re-trigger debug output by reading or writing sysfs node: do_prints */
 #define PRINT_CLAMP 10000
 static void do_prints(unsigned int); /* device under test */

@@ -29,7 +29,8 @@ struct _ddebug_site {
 struct _ddebug {
 	struct _ddebug_site *site;
 	const char *format;
-	unsigned int lineno:18;
+	//unsigned int lineno:18;
+	unsigned short int lineno, pr_idx, fn_idx, fl_idx, mod_idx;
 #define CLS_BITS 6
 	unsigned int class_id:CLS_BITS;
 #define _DPRINTK_CLASS_DFLT		((1 << CLS_BITS) - 1)
@@ -210,13 +211,29 @@ struct _ddebug_class_users {
 	int len;
 } __packed;
 
+struct _ddebug_codetree;
 struct _ddebug_info {
 	const char *mod_name;
 	struct _ddebug_descs descs;
 	struct _ddebug_sites sites;
 	struct _ddebug_class_maps maps;
 	struct _ddebug_class_users users;
+	struct _ddebug_codetree *tree;
 } __packed;
+
+struct _ddebug_namevec {
+	const char **start;
+	int len;
+};
+
+/* to contain de-duplicated copy of raw _sites */
+struct _ddebug_codetree {
+	struct _ddebug_namevec funcs;
+	struct _ddebug_namevec files;
+	struct _ddebug_namevec mods;
+	struct _ddebug_namevec _impl;
+	const char *_storage[];
+};
 
 struct _ddebug_class_param {
 	union {

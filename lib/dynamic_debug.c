@@ -1407,6 +1407,149 @@ ddebug_class_range_overlap(struct _ddebug_class_map *cm,
 }
 
 /*
+ * @struct _ddebug_codetree: is composed of 4 struct _ddebug_namevecs,
+ * and a flex-array char *_storage[] array.
+ *
+ * 3 of the structs track the stack allocation of entries for
+ * de-duplicated copies of the modname, filename, function columns of
+ * the sites vector.  A simple top-of-stack duplicate check suffices
+ * here because the sites vector is ordered by compiler/linker, giving
+ * us a cheap and sufficient de-duplication of each of the 3 vectors.
+ *
+ * The 4th struct, named _impl, tracks the block-wize allocation of
+ * _storage to the other 3 columns.  The sequential block filling of
+ * these 3 stacks yields ~91%,90%,45% compression by RLE (run-length
+ * encoding).
+ *
+ * The codetree record is created with enough _storage for 1/3 the
+ * total "unique" (low-cost approx dedup'd), then shrunk to fit whats
+ * actually needed.
+ */
+
+struct str_vec {
+	const char **start;
+	unsigned int len;
+};
+struct str_stk {
+	const char **start;
+	unsigned int len;
+	int tosi;
+};
+
+static void set_STK(struct str_stk *stk, struct _ddebug_namevec *_vec)
+{
+	(stk)->start = (_vec)->start;
+	(stk)->len = (_vec)->len;
+	stk->tosi = 0;
+}
+
+/* tosi refs 1st free slot, push sentinel so */
+#define tos_STK(stk)		((stk)->start[ (stk)->tosi - 1 ])
+#define push_STK(stk, val)	((stk)->start[ (stk)->tosi++ ] = val)
+#define idx_STK(stk)		((stk)->tosi - 1)
+
+static int push_STK_ifnew(struct str_stk *stk, const char *val)
+{
+	if (val != tos_STK(stk)) {
+		//vpr_info("new val %s != %s\n", val, tos_STK(stk));
+		push_STK(stk, val);
+		//vpr_info("new val %s, pushed to %d & checked %s\n", val, idx_STK(stk), tos_STK(stk));
+	}
+	return idx_STK(stk);
+}
+
+static void freeze_STK_to_tree(struct str_stk *stk,
+			       struct _ddebug_namevec *kind,
+			       struct _ddebug_codetree *tree)
+{
+	kind->start = stk->start;
+	kind->len = stk->tosi;
+	/* append kind to _impl */
+	tree->_impl.start += kind->len;
+	tree->_impl.len -= kind->len;
+}
+
+/*
+ * @ddebug_squeeze_codeorg(&_ddebug_info) scans the sites/org vector,
+ * examines the 3 fields, and saves the "unique" (char*) vals of each
+ * to separate "allocations" within the codetree record (more below).
+ * Since descs,sites are ordered (by the code & compiler),
+ * top-of-stack check is sufficient.
+ */
+static int ddebug_squeeze_codeorg(struct _ddebug_info *di)
+{
+	struct _ddebug_site *code;
+	struct _ddebug_codetree *tree, *trimmed;
+	struct str_stk stk;
+	const char** p;
+	int i; //, saved;
+
+	if (di->tree) {
+		pr_info("dyndbg: squeeze already done!!\n");
+		return 0;
+	}
+	/* allocate enough for everything */
+	tree = kzalloc(sizeof(struct _ddebug_codetree)
+		       + di->descs.len * sizeof(char*), GFP_KERNEL);
+	if (!tree)
+		return -ENOMEM;
+
+	/* start codetree's stack of stacks */
+	tree->_impl.start = tree->_storage;
+	tree->_impl.len = di->descs.len;
+
+	/* set 1st on _impl */
+	set_STK(&stk, &tree->_impl);
+	push_STK(&stk, "_no_such_FUNC_");
+	for_subvec(i, code, di, sites) {
+		di->descs.start[i].fn_idx = push_STK_ifnew(&stk, code->function);
+	}
+	/* freeze stack on _impl */
+	freeze_STK_to_tree(&stk, &tree->funcs, tree);
+
+	set_STK(&stk, &tree->_impl);
+	push_STK(&stk, "_no_such_FILE_");
+	for_subvec(i, code, di, sites) {
+		di->descs.start[i].fl_idx = push_STK_ifnew(&stk, code->filename);
+	}
+	freeze_STK_to_tree(&stk, &tree->files, tree);
+
+	set_STK(&stk, &tree->_impl);
+	push_STK(&stk, "_no_such_MOD_");
+	for_subvec(i, code, di, sites) {
+		di->descs.start[i].mod_idx = push_STK_ifnew(&stk, code->modname);
+	}
+	freeze_STK_to_tree(&stk, &tree->mods, tree);
+
+	/*
+	 * finalize the packed array (segmented by func,file,mod).
+	 * enumerated from descriptors.
+	 */
+	tree->_impl.start = tree->_storage;
+	tree->_impl.len = di->descs.len - tree->_impl.len;
+
+	for (i = 0, p = &tree->_storage[0]; i < tree->_impl.len; i++, p++)
+		v4pr_info("%d %s\n", i, *p);
+
+	/* shrink to fit and attach */
+	trimmed = krealloc(tree, sizeof(struct _ddebug_codetree)
+			    + tree->_impl.len * sizeof(char*), GFP_KERNEL);
+	if (trimmed)
+		di->tree = trimmed;
+
+	vpr_info("squeeze done: %d mods, %d files, %d funcs, %d descs\n",
+		 tree->mods.len, tree->files.len, tree->funcs.len, di->descs.len);
+
+#define kept (tree->mods.len + tree->files.len + tree->funcs.len)
+#define total (3 * di->descs.len)
+
+	vpr_info("squeeze kept %d saved %d of total %d ptrs\n",
+		 kept, total - kept, total);
+
+	return 0;
+}
+
+/*
  * Allocate a new ddebug_table for the given module
  * and add it to the global list.
  */
@@ -1435,11 +1578,13 @@ static int ddebug_add_module(struct _ddebug_info *di)
 	 * which lives at least as long as this struct ddebug_table.
 	 */
 	dt->info = *di;
-
 	INIT_LIST_HEAD(&dt->link);
 
 	dd_mark_vector_subrange(i, dt, cm, di, maps);
 	dd_mark_vector_subrange(i, dt, cli, di, users);
+
+	if (!di->tree)
+		ddebug_squeeze_codeorg(di);
 
 	for_subvec(i, cm, &dt->info, maps)
 		if (ddebug_class_range_overlap(cm, &reserved_ids))
@@ -1510,6 +1655,8 @@ int ddebug_dyndbg_module_param_cb(char *param, char *val, const char *module)
 static void ddebug_table_free(struct ddebug_table *dt)
 {
 	list_del_init(&dt->link);
+	if (dt->info.tree)
+		kfree(dt->info.tree);
 	kfree(dt);
 }
 
@@ -1624,6 +1771,8 @@ static int __init dynamic_debug_init(void)
 		.maps.len  = __stop___dyndbg_class_maps - __start___dyndbg_class_maps,
 		.users.len = __stop___dyndbg_class_users - __start___dyndbg_class_users,
 	};
+	pr_info("builtin descs:%d sites:%d maps:%d users:%d\n",
+		di.descs.len, di.sites.len, di.maps.len, di.users.len);
 	BUG_ON(di.sites.len != di.descs.len);
 	BUILD_BUG_ON(sizeof(struct _ddebug_header) != sizeof(struct _ddebug));
 
@@ -1635,6 +1784,8 @@ static int __init dynamic_debug_init(void)
 
 	vpr_info("ddebug: header for %s, %d descriptors\n",
 		 ddvec->header._id,  ddvec->header.num_descs);
+
+	ddebug_squeeze_codeorg(&di);
 
 #ifdef CONFIG_MODULES
 	ret = register_module_notifier(&ddebug_module_nb);
