@@ -234,9 +234,47 @@ static inline bool ddebug_class_has_param(const struct _ddebug_class_map *map)
 #define ddebug_class_wants_protection(map) \
 	ddebug_class_has_param(map)
 
-#define desc_modname(d)		((d)->site->modname)
-#define desc_filename(d)	((d)->site->filename)
-#define desc_function(d)	((d)->site->function)
+static __inline struct _ddebug_header *get_ddebug_header(const struct _ddebug *desc)
+{
+        struct _ddebug_descriptors_vector *container = container_of(
+                desc - desc->mod_idx,
+                struct _ddebug_descriptors_vector,
+                descriptors[0]
+        );
+        return &container->header;
+}
+static __inline struct _ddebug_info *to_info(const struct _ddebug *desc)
+{
+	struct _ddebug_header *dh = get_ddebug_header(desc);
+        struct _ddebug_info *di = dh->uplink;
+
+	if (!di)
+		pr_info("yikes\n");
+
+        return di;
+}
+
+static const char* desc_modname(const struct _ddebug *dp)
+{
+	return (dp)->site->modname;
+}
+
+static const char* desc_filename(const struct _ddebug *dp)
+{
+	struct _ddebug_info *di = to_info(dp);
+
+	if (di && di->tree) {
+		if (dp->site->filename == di->tree->files.start[dp->fl_idx])
+			pr_info("huzzah: %s\n", di->tree->files.start[dp->fl_idx]);
+		else
+			pr_info("mismatch vs: %s\n", dp->site->filename);
+	}
+	return (dp)->site->filename;
+}
+static const char* desc_function(const struct _ddebug *dp)
+{
+	return (dp)->site->function;
+}
 
 /*
  * Search the tables for _ddebug's which match the given `query' and
