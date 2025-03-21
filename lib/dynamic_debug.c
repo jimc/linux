@@ -1534,8 +1534,20 @@ static int ddebug_squeeze_codeorg(struct _ddebug_info *di)
 	/* shrink to fit and attach */
 	trimmed = krealloc(tree, sizeof(struct _ddebug_codetree)
 			    + tree->_impl.len * sizeof(char*), GFP_KERNEL);
-	if (trimmed)
-		di->tree = trimmed;
+	if (!trimmed)
+		return -ENOMEM;  /* this would be weird */
+
+	if (trimmed != tree) {
+		/* adjust the self-referencing namevecs in the codetree */
+		unsigned long int offset = (unsigned long int)trimmed - (unsigned long int)tree;
+
+		trimmed->mods.start += offset;
+		trimmed->files.start += offset;
+		trimmed->funcs.start += offset;
+		trimmed->_impl.start = trimmed->_storage;
+		pr_notice("ddebug: krealloc moved codetree, adjusted vector starts\n");
+	}
+	di->tree = trimmed;
 
 	vpr_info("squeeze done: %d mods, %d files, %d funcs, %d descs\n",
 		 tree->mods.len, tree->files.len, tree->funcs.len, di->descs.len);
