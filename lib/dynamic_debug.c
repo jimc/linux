@@ -284,19 +284,29 @@ static int codetree_sanity_check_namevec(const struct _ddebug_codetree *tree,
 	return 0;
 }
 
-static inline void codetree_sanity_check(const struct _ddebug_codetree *tree,
-					 unsigned long stor_len, char *id)
+static inline int codetree_sanity_check(const struct _ddebug_codetree *tree,
+					unsigned long stor_len, char *id)
 {
+	int rc = 0;
+
 	if (!tree) {
 		pr_err("codetree_sanity_check: tree is NULL\n");
-		return;
+		return 6;
 	}
-	/* XXX: hardcoded limits from squeeze output */
-	codetree_sanity_check_namevec(tree, &tree->funcs, "funcs", id, stor_len, 2384);
-	codetree_sanity_check_namevec(tree, &tree->files, "files", id, stor_len, 540);
-	codetree_sanity_check_namevec(tree, &tree->mods, "mods",   id, stor_len, 236);
-	codetree_sanity_check_namevec(tree, &tree->_impl, "_impl", id, stor_len, 3160);
+	/*
+	 * XXX: hardcoded limits from squeeze output.
+	 * for vng-config: 2384, 540, 236, 3160
+	 * for fedora-cf: 338 mods, 566 files, 2223 funcs, 3708 descs, 3127 unique
+	 */
+	rc += codetree_sanity_check_namevec(tree, &tree->funcs, "funcs", id, stor_len, 2384);
+	rc += codetree_sanity_check_namevec(tree, &tree->files, "files", id, stor_len, 566);
+	rc += codetree_sanity_check_namevec(tree, &tree->mods, "mods",   id, stor_len, 338);
+	rc += codetree_sanity_check_namevec(tree, &tree->_impl, "_impl", id, stor_len, 3160);
+
+	codetree_scan(tree, id);
+	return rc;
 }
+
 
 /* WIP 5000 is enough 3160 is not */
 #define CODETREE_SANITY_CHECK(tree, str)  codetree_sanity_check(tree, 5000, str)
@@ -319,9 +329,7 @@ static __inline struct _ddebug_info *to_info(const struct _ddebug *dp)
 	struct _ddebug_header *dh = get_ddebug_header(dp);
         struct _ddebug_info *di = dh->uplink;
 
-	if (!di)
-		pr_info("yikes\n");
-
+	BUG_ON(!di);
         return di;
 }
 
@@ -345,26 +353,18 @@ static __inline struct _ddebug_info *to_info(const struct _ddebug *dp)
 
 static const char* desc_modname(const struct _ddebug *dp)
 {
+	access_check(dp, modname, mods, mods_idx);
 	return (dp)->site->modname;
 }
 
 static const char* desc_filename(const struct _ddebug *dp)
 {
-	struct _ddebug_info *di = to_info(dp);
-
-	if (di && di->tree) {
-
-		CODETREE_SANITY_CHECK(di->tree, "desc_filename");
-
-		if (dp->site->filename == di->tree->files.start[dp->fl_idx])
-			pr_info("huzzah: %s\n", di->tree->files.start[dp->fl_idx]);
-		else
-			pr_info("mismatch vs: %s\n", dp->site->filename);
-	}
+	access_check(dp, filename, files, files_idx);
 	return (dp)->site->filename;
 }
 static const char* desc_function(const struct _ddebug *dp)
 {
+	access_check(dp, function, funcs, funcs_idx);
 	return (dp)->site->function;
 }
 
@@ -1556,10 +1556,6 @@ ddebug_class_range_overlap(struct _ddebug_class_map *cm,
  * actually needed.
  */
 
-struct str_vec {
-	const char **start;
-	unsigned int len;
-};
 struct str_stk {
 	const char **start;
 	unsigned int len;
@@ -1568,8 +1564,8 @@ struct str_stk {
 
 static void set_STK(struct str_stk *stk, struct _ddebug_namevec *_vec)
 {
-	(stk)->start = (_vec)->start;
-	(stk)->len = (_vec)->len;
+	stk->start = _vec->start;
+	stk->len = _vec->len;
 	stk->tosi = 0;
 }
 
@@ -1581,9 +1577,7 @@ static void set_STK(struct str_stk *stk, struct _ddebug_namevec *_vec)
 static int push_STK_ifnew(struct str_stk *stk, const char *val)
 {
 	if (val != tos_STK(stk)) {
-		//vpr_info("new val %s != %s\n", val, tos_STK(stk));
 		push_STK(stk, val);
-		//vpr_info("new val %s, pushed to %d & checked %s\n", val, idx_STK(stk), tos_STK(stk));
 	}
 	return idx_STK(stk);
 }
@@ -1611,8 +1605,7 @@ static int ddebug_squeeze_codeorg(struct _ddebug_info *di)
 	struct _ddebug_site *code;
 	struct _ddebug_codetree *tree, *trimmed;
 	struct str_stk stk;
-	const char** p;
-	int i; //, saved;
+	int i;
 
 	if (di->tree) {
 		pr_info("dyndbg: squeeze already done!!\n");
@@ -1628,38 +1621,27 @@ static int ddebug_squeeze_codeorg(struct _ddebug_info *di)
 	tree->_impl.start = tree->_storage;
 	tree->_impl.len = di->descs.len;
 
-	/* set 1st on _impl */
-	set_STK(&stk, &tree->_impl);
-	push_STK(&stk, "_no_such_FUNC_");
-	for_subvec(i, code, di, sites) {
-		di->descs.start[i].fn_idx = push_STK_ifnew(&stk, code->function);
-	}
-	/* freeze stack on _impl */
-	freeze_STK_to_tree(&stk, &tree->funcs, tree);
+#define load_vec_and_index(_vec, _field)				\
+	do {								\
+		set_STK(&stk, &tree->_impl);				\
+		push_STK(&stk, "_NO_SUCH_" # _field);			\
+		for_subvec(i, code, di, sites) {			\
+			di->descs.start[i]._vec##_idx =			\
+				push_STK_ifnew(&stk, code->_field);	\
+		}							\
+		/* freeze stack on _impl */				\
+		freeze_STK_to_tree(&stk, &tree->_vec, tree);		\
+	} while (0)
 
-	set_STK(&stk, &tree->_impl);
-	push_STK(&stk, "_no_such_FILE_");
-	for_subvec(i, code, di, sites) {
-		di->descs.start[i].fl_idx = push_STK_ifnew(&stk, code->filename);
-	}
-	freeze_STK_to_tree(&stk, &tree->files, tree);
-
-	set_STK(&stk, &tree->_impl);
-	push_STK(&stk, "_no_such_MOD_");
-	for_subvec(i, code, di, sites) {
-		di->descs.start[i].mod_idx = push_STK_ifnew(&stk, code->modname);
-	}
-	freeze_STK_to_tree(&stk, &tree->mods, tree);
-
+	load_vec_and_index(funcs, function);
+	load_vec_and_index(files, filename);
+	load_vec_and_index(mods, modname);
 	/*
 	 * finalize the packed array (segmented by func,file,mod).
 	 * enumerated from descriptors.
 	 */
 	tree->_impl.start = tree->_storage;
 	tree->_impl.len = di->descs.len - tree->_impl.len;
-
-	for (i = 0, p = &tree->_storage[0]; i < tree->_impl.len; i++, p++)
-		v4pr_info("%d %s\n", i, *p);
 
 	CODETREE_SANITY_CHECK(tree, "tree");
 
@@ -1672,16 +1654,26 @@ static int ddebug_squeeze_codeorg(struct _ddebug_info *di)
 	CODETREE_SANITY_CHECK(trimmed, "trimmed");
 
 	if (trimmed != tree) {
-		/* adjust the self-referencing namevecs in the codetree */
-		unsigned long int offset = (unsigned long int)trimmed - (unsigned long int)tree;
+		/*
+		 * krealloc moved the tree while shrinking it.  While
+		 * this is *unlikely* its not impossible?  If it
+		 * happens, fixup the 4 vectors (subranges) with
+		 * pointers into the _storage
+		 */
+		unsigned long int offset = (trimmed - tree);
 
 		trimmed->mods.start += offset;
 		trimmed->files.start += offset;
 		trimmed->funcs.start += offset;
 		trimmed->_impl.start = trimmed->_storage;
-		pr_notice("ddebug: krealloc moved codetree, adjusted vector starts\n");
+		pr_info("ddebug: krealloc moved codetree\n");
 	}
 	di->tree = trimmed;
+
+	/* set self-index in the descriptors, this gives access to header */
+	for_subvec(i, code, di, sites) {
+		di->descs.start[i].self_idx = i;
+	}
 
 	vpr_info("squeeze done: %d mods, %d files, %d funcs, %d descs\n",
 		 tree->mods.len, tree->files.len, tree->funcs.len, di->descs.len);
@@ -1731,12 +1723,12 @@ static int ddebug_add_module(struct _ddebug_info *di)
 	dd_mark_vector_subrange(i, dt, cm, di, maps);
 	dd_mark_vector_subrange(i, dt, cli, di, users);
 
-	CODETREE_SANITY_CHECK(di->tree, "add_module");
-
-	if (!di->tree)
+	if (!di->tree) {
+		vpr_info("re-squeeze?\n");
 		ddebug_squeeze_codeorg(di);
-
-	CODETREE_SANITY_CHECK(di->tree, "add_module 2");
+		CODETREE_SANITY_CHECK(di->tree, "add_module refresh");
+	}
+	else CODETREE_SANITY_CHECK(di->tree, "add_module same-old");
 
 	for_subvec(i, cm, &dt->info, maps)
 		if (ddebug_class_range_overlap(cm, &reserved_ids))
@@ -1923,13 +1915,23 @@ static int __init dynamic_debug_init(void)
 		.maps.len  = __stop___dyndbg_class_maps - __start___dyndbg_class_maps,
 		.users.len = __stop___dyndbg_class_users - __start___dyndbg_class_users,
 	};
-	pr_info("builtin descs:%d sites:%d maps:%d users:%d\n",
-		di.descs.len, di.sites.len, di.maps.len, di.users.len);
 	BUG_ON(di.sites.len != di.descs.len);
 	BUILD_BUG_ON(sizeof(struct _ddebug_header) != sizeof(struct _ddebug));
 
 	ddebug_squeeze_codeorg(&di);
 	CODETREE_SANITY_CHECK(di.tree, "dynamic_debug_init");
+
+	pr_info("builtin descs:%d sites:%d maps:%d users:%d\n",
+		di.descs.len, di.sites.len, di.maps.len, di.users.len);
+
+	BUG_ON(di.sites.len != di.descs.len);
+	BUG_ON(di.descs.len > (1 << _DD_BI_DESCS_MAX));
+	BUG_ON(di.tree->files.len > (1 << _DD_BI_FILES_MAX));
+	BUG_ON(di.tree->funcs.len > (1 << _DD_BI_FUNCS_MAX));
+
+	if (di.tree->funcs.len > (1 << (_DD_BI_FUNCS_MAX)))
+		pr_info("builtin overflow: %d vs %d\n",
+			di.tree->funcs.len, (1 << (_DD_BI_FUNCS_MAX)));
 
 	/* save the state before using the cursor to iterate the modules */
 	_dd_builtins_info = di;
