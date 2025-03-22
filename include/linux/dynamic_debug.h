@@ -29,8 +29,22 @@ struct _ddebug_site {
 struct _ddebug {
 	struct _ddebug_site *site;
 	const char *format;
-	//unsigned int lineno:18;
-	unsigned short int lineno, self_idx, fn_idx, fl_idx, mod_idx;
+/*
+ * XXX: these indexing limits cover a fedora-based config. YMMV.
+ */
+#define _DD_BI_DESCS_MAX 14
+#define _DD_BI_FUNCS_MAX 12
+#define _DD_BI_FILES_MAX 10
+#define _DD_BI_MODS_MAX 9
+	/*
+	 * in prep to drop site ptr, add _idx fields. these are init'd
+	 * early.  also shorten lineno, 64k is "big enough"
+	 */
+	unsigned short int lineno:16;
+	unsigned int  self_idx:_DD_BI_DESCS_MAX;
+	unsigned int funcs_idx:_DD_BI_FUNCS_MAX;
+	unsigned int files_idx:_DD_BI_FILES_MAX;
+	unsigned int  mods_idx:_DD_BI_MODS_MAX;
 #define CLS_BITS 6
 	unsigned int class_id:CLS_BITS;
 #define _DPRINTK_CLASS_DFLT		((1 << CLS_BITS) - 1)
