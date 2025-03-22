@@ -234,18 +234,89 @@ static inline bool ddebug_class_has_param(const struct _ddebug_class_map *map)
 #define ddebug_class_wants_protection(map) \
 	ddebug_class_has_param(map)
 
-static __inline struct _ddebug_header *get_ddebug_header(const struct _ddebug *desc)
+/*
+ * validate codetree construction manual helpers
+ */
+__maybe_unused
+static void codetree_scan(const struct _ddebug_codetree *tree, char *id)
 {
-        struct _ddebug_descriptors_vector *container = container_of(
-                desc - desc->mod_idx,
-                struct _ddebug_descriptors_vector,
-                descriptors[0]
-        );
-        return &container->header;
+	const char **p;
+	int i;
+
+	v4pr_info("scan: %s\n", id);
+
+	for (i = 0, p = tree->mods.start; i < tree->mods.len; i++, p++)
+		v4pr_info("mods: %d %s\n", i, *p);
+
+	for (i = 0, p = tree->files.start; i < tree->files.len; i++, p++)
+		v4pr_info("files: %d %s\n", i, *p);
+
+	for (i = 0, p = tree->funcs.start; i < tree->funcs.len; i++, p++)
+		v4pr_info("funcs: %d %s\n", i, *p);
+
+	for (i = 0, p = tree->_impl.start; i < tree->_impl.len; i++, p++)
+		v4pr_info("impl: %d %s\n", i, *p);
 }
-static __inline struct _ddebug_info *to_info(const struct _ddebug *desc)
+
+static int codetree_sanity_check_namevec(const struct _ddebug_codetree *tree,
+					 const struct _ddebug_namevec *vec,
+					 const char *vec_name, const char *id,
+					 int stor_len, int max_len)
 {
-	struct _ddebug_header *dh = get_ddebug_header(desc);
+	if (vec->len < 0) {
+		pr_err("chk:%s %s.len is negative\n", id, vec_name);
+		return 1;
+	} else if (vec->len > max_len) {
+		pr_err("chk:%s %s.len %d exceeds max length\n", id, vec_name, vec->len);
+		return 2;
+	}
+	if (!vec->start) {
+		pr_err(":%s %s.start is NULL\n", id, vec_name);
+		return 3;
+	} else if (vec->start < &tree->_storage[0]) {
+		pr_err(":%s %s.start below _storage\n", id, vec_name);
+		return 4;
+	} else if (&vec->start[vec->len] >= &tree->_storage[stor_len]) {
+		v2pr_info(":%s %s %d is past _storage\n",
+			  id, vec_name, vec->len);
+		return 5;
+	}
+	return 0;
+}
+
+static inline void codetree_sanity_check(const struct _ddebug_codetree *tree,
+					 unsigned long stor_len, char *id)
+{
+	if (!tree) {
+		pr_err("codetree_sanity_check: tree is NULL\n");
+		return;
+	}
+	/* XXX: hardcoded limits from squeeze output */
+	codetree_sanity_check_namevec(tree, &tree->funcs, "funcs", id, stor_len, 2384);
+	codetree_sanity_check_namevec(tree, &tree->files, "files", id, stor_len, 540);
+	codetree_sanity_check_namevec(tree, &tree->mods, "mods",   id, stor_len, 236);
+	codetree_sanity_check_namevec(tree, &tree->_impl, "_impl", id, stor_len, 3160);
+}
+
+/* WIP 5000 is enough 3160 is not */
+#define CODETREE_SANITY_CHECK(tree, str)  codetree_sanity_check(tree, 5000, str)
+
+static __inline struct _ddebug_header *get_ddebug_header(const struct _ddebug *dp)
+{
+	struct _ddebug_descriptors_vector *box;
+	/*
+	 * BIG-RED-FLAG: we are negative indexing from dp[N] back to dp[0]
+	 */
+	box = container_of(&dp[-(dp->self_idx)],
+			   struct _ddebug_descriptors_vector,
+			   descriptors[0]);
+
+	return &box->header;
+}
+
+static __inline struct _ddebug_info *to_info(const struct _ddebug *dp)
+{
+	struct _ddebug_header *dh = get_ddebug_header(dp);
         struct _ddebug_info *di = dh->uplink;
 
 	if (!di)
@@ -253,6 +324,24 @@ static __inline struct _ddebug_info *to_info(const struct _ddebug *desc)
 
         return di;
 }
+
+/*
+ * break some macro rules - this is a temporary use, once ->site->
+ * goes away so does validation against it
+ */
+#define access_check(_dp, _field, _arr, _idx)				\
+	struct _ddebug_info *di = to_info(_dp);				\
+									\
+	if (di && di->tree) {						\
+		CODETREE_SANITY_CHECK(di->tree, "desc_"#_field);	\
+		if (_dp->site->_field != di->tree->_arr.start[_dp->_idx]) \
+			pr_info("mismatch %d %s vs %s\n",		\
+				_dp->_idx,				\
+				di->tree->_arr.start[_dp->_idx],	\
+				_dp->site->_field);			\
+	} else {							\
+		pr_warn("no ddebug-info ??: %s\n", _dp->site->_field);	\
+	}
 
 static const char* desc_modname(const struct _ddebug *dp)
 {
@@ -264,6 +353,9 @@ static const char* desc_filename(const struct _ddebug *dp)
 	struct _ddebug_info *di = to_info(dp);
 
 	if (di && di->tree) {
+
+		CODETREE_SANITY_CHECK(di->tree, "desc_filename");
+
 		if (dp->site->filename == di->tree->files.start[dp->fl_idx])
 			pr_info("huzzah: %s\n", di->tree->files.start[dp->fl_idx]);
 		else
@@ -1569,11 +1661,15 @@ static int ddebug_squeeze_codeorg(struct _ddebug_info *di)
 	for (i = 0, p = &tree->_storage[0]; i < tree->_impl.len; i++, p++)
 		v4pr_info("%d %s\n", i, *p);
 
+	CODETREE_SANITY_CHECK(tree, "tree");
+
 	/* shrink to fit and attach */
 	trimmed = krealloc(tree, sizeof(struct _ddebug_codetree)
 			    + tree->_impl.len * sizeof(char*), GFP_KERNEL);
 	if (!trimmed)
 		return -ENOMEM;  /* this would be weird */
+
+	CODETREE_SANITY_CHECK(trimmed, "trimmed");
 
 	if (trimmed != tree) {
 		/* adjust the self-referencing namevecs in the codetree */
@@ -1595,6 +1691,8 @@ static int ddebug_squeeze_codeorg(struct _ddebug_info *di)
 
 	vpr_info("squeeze kept %d saved %d of total %d ptrs\n",
 		 kept, total - kept, total);
+
+	CODETREE_SANITY_CHECK(di->tree, "saved");
 
 	return 0;
 }
@@ -1633,8 +1731,12 @@ static int ddebug_add_module(struct _ddebug_info *di)
 	dd_mark_vector_subrange(i, dt, cm, di, maps);
 	dd_mark_vector_subrange(i, dt, cli, di, users);
 
+	CODETREE_SANITY_CHECK(di->tree, "add_module");
+
 	if (!di->tree)
 		ddebug_squeeze_codeorg(di);
+
+	CODETREE_SANITY_CHECK(di->tree, "add_module 2");
 
 	for_subvec(i, cm, &dt->info, maps)
 		if (ddebug_class_range_overlap(cm, &reserved_ids))
@@ -1826,6 +1928,10 @@ static int __init dynamic_debug_init(void)
 	BUG_ON(di.sites.len != di.descs.len);
 	BUILD_BUG_ON(sizeof(struct _ddebug_header) != sizeof(struct _ddebug));
 
+	ddebug_squeeze_codeorg(&di);
+	CODETREE_SANITY_CHECK(di.tree, "dynamic_debug_init");
+
+	/* save the state before using the cursor to iterate the modules */
 	_dd_builtins_info = di;
 
 	ddvec = (struct _ddebug_descriptors_vector *) __hdr___dyndbg_descs;

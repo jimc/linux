@@ -30,7 +30,7 @@ struct _ddebug {
 	struct _ddebug_site *site;
 	const char *format;
 	//unsigned int lineno:18;
-	unsigned short int lineno, pr_idx, fn_idx, fl_idx, mod_idx;
+	unsigned short int lineno, self_idx, fn_idx, fl_idx, mod_idx;
 #define CLS_BITS 6
 	unsigned int class_id:CLS_BITS;
 #define _DPRINTK_CLASS_DFLT		((1 << CLS_BITS) - 1)
