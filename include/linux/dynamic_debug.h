@@ -89,8 +89,9 @@ enum ddebug_class_map_type {
  * usually by stringifying the enum-vals.  Modules with multiple
  * classmaps must arrange to share the 0..62 class_id space.
  */
-
+struct _ddebug_class_param;
 struct _ddebug_class_map {
+	struct _ddebug_class_param *controlling_param;
 	const struct module *mod;		/* NULL for builtins */
 	const char *mod_name;
 	const char **class_names;
