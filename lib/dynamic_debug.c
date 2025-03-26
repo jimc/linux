@@ -162,30 +162,30 @@ static void vpr_info_dq(const struct ddebug_query *query, const char *msg)
 		  query->first_lineno, query->last_lineno, query->class_string);
 }
 
-#define vpr_dt_info(dt_p, msg_p, ...) ({				\
-	struct ddebug_table const *_dt = dt_p;				\
+#define vpr_di_info(di_p, msg_p, ...) ({				\
+	struct _ddebug_info const *_di = di_p;				\
 	v2pr_info(msg_p " module:%s nd:%d nc:%d nu:%d\n", ##__VA_ARGS__, \
-		  _dt->info.mod_name, _dt->info.descs.len, _dt->info.maps.len, \
-		  _dt->info.users.len);					\
+		  _di->mod_name, _di->descs.len, _di->maps.len,		\
+		  _di->users.len);					\
 	})
 
-static int ddebug_find_valid_class(struct ddebug_table const *dt, const char *class_string)
+static int ddebug_find_valid_class(const struct _ddebug_info *di, const char *class_string)
 {
 	struct _ddebug_class_map *map;
 	struct _ddebug_class_user *cli;
 	int i, idx;
 
-	for_subvec(i, map, &dt->info, maps) {
+	for_subvec(i, map, di, maps) {
 		idx = match_string(map->class_names, map->length, class_string);
 		if (idx >= 0) {
-			vpr_dt_info(dt, "good-class: %s.%s ", map->mod_name, class_string);
+			vpr_di_info(di, "good-class: %s.%s ", map->mod_name, class_string);
 			return idx + map->base;
 		}
 	}
-	for_subvec(i, cli, &dt->info, users) {
+	for_subvec(i, cli, di, users) {
 		idx = match_string(cli->map->class_names, cli->map->length, class_string);
 		if (idx >= 0) {
-			vpr_dt_info(dt, "class-ref: %s -> %s.%s ",
+			vpr_di_info(di, "class-ref: %s -> %s.%s ",
 				    cli->mod_name, cli->map->mod_name, class_string);
 			return idx + cli->map->base;
 		}
@@ -218,7 +218,7 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 			continue;
 
 		if (query->class_string) {
-			valid_class = ddebug_find_valid_class(dt, query->class_string);
+			valid_class = ddebug_find_valid_class(&dt->info, query->class_string);
 			if (valid_class < 0)
 				continue;
 		} else {
@@ -1245,26 +1245,26 @@ static void ddebug_apply_params(const struct _ddebug_class_map *cm, const char *
 	}
 }
 
-static void ddebug_apply_class_maps(const struct ddebug_table *dt)
+static void ddebug_apply_class_maps(const struct _ddebug_info *di)
 {
 	struct _ddebug_class_map *cm;
 	int i;
 
-	for_subvec(i, cm, &dt->info, maps)
+	for_subvec(i, cm, di, maps)
 		ddebug_apply_params(cm, cm->mod_name);
 
-	vpr_dt_info(dt, "attached %d classmaps to module: %s ", i, cm->mod_name);
+	vpr_di_info(di, "attached %d classmaps to module: %s ", i, cm->mod_name);
 }
 
-static void ddebug_apply_class_users(const struct ddebug_table *dt)
+static void ddebug_apply_class_users(const struct _ddebug_info *di)
 {
 	struct _ddebug_class_user *cli;
 	int i;
 
-	for_subvec(i, cli, &dt->info, users)
+	for_subvec(i, cli, di, users)
 		ddebug_apply_params(cli->map, cli->mod_name);
 
-	vpr_dt_info(dt, "attached %d class-users to module: %s ", i, cli->mod_name);
+	vpr_di_info(di, "attached %d class-users to module: %s ", i, cli->mod_name);
 }
 
 /*
@@ -1351,14 +1351,14 @@ static int ddebug_add_module(struct _ddebug_info *di)
 			goto cleanup;
 
 	if (dt->info.maps.len)
-		ddebug_apply_class_maps(dt);
+		ddebug_apply_class_maps(&dt->info);
 
 	mutex_lock(&ddebug_lock);
 	list_add_tail(&dt->link, &ddebug_tables);
 	mutex_unlock(&ddebug_lock);
 
 	if (dt->info.users.len)
-		ddebug_apply_class_users(dt);
+		ddebug_apply_class_users(&dt->info);
 
 	vpr_info("%3u debug prints in module %s\n", di->descs.len, di->mod_name);
 	return 0;
