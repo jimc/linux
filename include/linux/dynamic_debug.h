@@ -100,8 +100,9 @@ enum ddebug_class_map_type {
  * __pr_debug_cls(0, "fake CORE msg") in any part of DRM would "work"
  * __pr_debug_cls(22, "no such class") would compile, but not "work"
  */
-
+struct _ddebug_class_param;
 struct _ddebug_class_map {
+	struct _ddebug_class_param *controlling_param;
 	const struct module *mod;		/* NULL for builtins */
 	const char *mod_name;
 	const char **class_names;
