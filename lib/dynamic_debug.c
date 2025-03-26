@@ -204,17 +204,6 @@ static int ddebug_find_valid_class(const struct _ddebug_info *di, const char *cl
 	return -ENOENT;
 }
 
-/*
- * classmaps-v1 protected classes from changes by legacy commands
- * (those selecting _DPRINTK_CLASS_DFLT by omission), v2 undoes that
- * special treatment.  State so explicitly.  Later we could give
- * modules the choice to protect their classes or to keep v2 behavior.
- */
-static inline bool ddebug_client_module_protects_classes(const struct ddebug_table *dt)
-{
-	return false;
-}
-
 static void ddebug_clear_prefix_cache(const struct _ddebug *dp)
 {
 	mtree_erase(&pr_prefixes, (unsigned long)dp);
@@ -355,6 +344,22 @@ static const char* desc_function(const struct _ddebug *dp)
 }
 
 /*
+ * classmaps-V1 protected classes from changes by legacy commands
+ * (those selecting _DPRINTK_CLASS_DFLT by omission).
+ *
+ * V2 is smarter, it protects class-maps if the defining module also
+ * calls DYNAMIC_DEBUG_CLASSMAP_PARAM, since we know they want the
+ * sysfs control point, and presumably want to trust what they tell it.
+ *
+ * This gives protection when its useful, and not when its just tedious.
+ */
+static inline bool ddebug_user_wants_protected_classes(const struct _ddebug_info *di)
+{
+	// need new info
+	return false;
+}
+
+/*
  * Search the tables for _ddebug's which match the given `query' and
  * apply the `flags' and `mask' to them.  Returns number of matching
  * callsites, normally the same as number of changes.  If verbose,
@@ -395,7 +400,7 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 					/* site.class != given class */
 					continue;
 				/* legacy query, class'd site */
-				else if (ddebug_client_module_protects_classes(dt))
+				else if (ddebug_user_wants_protected_classes(&dt->info))
 					continue;
 				/* allow change on class'd pr_debug */
 			}
