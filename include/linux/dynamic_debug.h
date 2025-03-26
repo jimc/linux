@@ -96,6 +96,7 @@ struct _ddebug_class_map {
 	const char **class_names;
 	const int length;
 	const int base;		/* index of 1st .class_id, allows split/shared space */
+	bool has_kparam;
 	enum ddebug_class_map_type map_type;
 };
 
@@ -207,8 +208,8 @@ struct _ddebug_class_param {
 		unsigned long *bits;
 		unsigned long *lvl;
 	};
-	char flags[8];
 	const struct _ddebug_class_map *map;
+	char flags[6];
 };
 
 /**

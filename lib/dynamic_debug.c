@@ -645,6 +645,7 @@ static int ddebug_exec_queries(char *query, const char *modname)
 }
 
 /* apply a new class-param setting */
+
 static int ddebug_apply_class_bitmap(const struct _ddebug_class_param *dcp,
 				     const unsigned long *new_bits,
 				     const unsigned long old_bits,
@@ -1223,25 +1224,34 @@ static void ddebug_sync_classbits(const struct kernel_param *kp, const char *mod
 	}
 }
 
-static void ddebug_match_apply_kparam(const struct kernel_param *kp,
-				      const struct _ddebug_class_map *map,
-				      const char *modnm)
+static bool ddebug_does_classmap_have_kparam(const struct kernel_param *kp,
+					     const struct _ddebug_class_map *map)
 {
 	struct _ddebug_class_param *dcp;
 
 	if (kp->ops != &param_ops_dyndbg_classes)
-		return;
+		return false;
 
 	dcp = (struct _ddebug_class_param *)kp->arg;
 
-	if (map == dcp->map) {
+	return (map == dcp->map);
+}
+
+static void ddebug_match_apply_kparam(const struct kernel_param *kp,
+				      const struct _ddebug_class_map *map,
+				      const char *modnm)
+{
+	if (ddebug_does_classmap_have_kparam(kp,map)) {
+		struct _ddebug_class_param *dcp
+			= (struct _ddebug_class_param *)kp->arg;
+
 		v2pr_info(" kp:%s.%s =0x%lx", modnm, kp->name, *dcp->bits);
 		vpr_cm_info(map, " %s mapped to: ", modnm);
 		ddebug_sync_classbits(kp, modnm);
 	}
 }
 
-static void ddebug_apply_params(const struct _ddebug_class_map *cm, const char *modnm)
+static void ddebug_apply_params(struct _ddebug_class_map *cm, const char *modnm)
 {
 	const struct kernel_param *kp;
 #if IS_ENABLED(CONFIG_MODULES)
@@ -1251,16 +1261,31 @@ static void ddebug_apply_params(const struct _ddebug_class_map *cm, const char *
 		vpr_cm_info(cm, "loaded classmap: %s", modnm);
 		/* ifdef protects the cm->mod->kp deref */
 		for (i = 0, kp = cm->mod->kp; i < cm->mod->num_kp; i++, kp++)
-			ddebug_match_apply_kparam(kp, cm, modnm);
+
+			if (ddebug_does_classmap_have_kparam(kp, cm)) {
+				ddebug_match_apply_kparam(kp, cm, modnm);
+				cm->has_kparam = true;
+			}
 	}
 #endif
 	if (!cm->mod) {
 		vpr_cm_info(cm, "builtin classmap: %s", modnm);
 		for (kp = __start___param; kp < __stop___param; kp++)
-			ddebug_match_apply_kparam(kp, cm, modnm);
+
+			if (ddebug_does_classmap_have_kparam(kp, cm)) {
+				ddebug_match_apply_kparam(kp, cm, modnm);
+				cm->has_kparam = true;
+			}
 	}
 }
 
+/*
+ * called from add_module, ie early. it can find controlling kparams,
+ * which can/does? enable protection of this classmap from class-less
+ * queries, on the grounds that the user created the kparam, means to
+ * use it, and expects it to reflect reality.  We should oblige him,
+ * and protect those classmaps from classless "-p" changes.
+ */
 static void ddebug_apply_class_maps(const struct _ddebug_info *di)
 {
 	struct _ddebug_class_map *cm;
