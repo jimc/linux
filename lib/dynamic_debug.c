@@ -1556,6 +1556,11 @@ ddebug_class_range_overlap(struct _ddebug_class_map *cm,
  * actually needed.
  */
 
+struct str_vec {
+	unsigned int base;
+	unsigned int len;
+};
+
 struct str_stk {
 	const char **start;
 	unsigned int len;
