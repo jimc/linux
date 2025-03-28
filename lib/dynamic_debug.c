@@ -368,6 +368,8 @@ static const char* desc_function(const struct _ddebug *dp)
 	return (dp)->site->function;
 }
 
+#define ddebug_user_wants_protected_classes(a, b) false
+
 /*
  * Search the tables for _ddebug's which match the given `query' and
  * apply the `flags' and `mask' to them.  Returns number of matching
@@ -1920,14 +1922,14 @@ static int __init dynamic_debug_init(void)
 		.maps.len  = __stop___dyndbg_class_maps - __start___dyndbg_class_maps,
 		.users.len = __stop___dyndbg_class_users - __start___dyndbg_class_users,
 	};
+	pr_info("builtin descs:%d sites:%d maps:%d users:%d\n",
+		di.descs.len, di.sites.len, di.maps.len, di.users.len);
+
 	BUG_ON(di.sites.len != di.descs.len);
 	BUILD_BUG_ON(sizeof(struct _ddebug_header) != sizeof(struct _ddebug));
 
 	ddebug_squeeze_codeorg(&di);
 	CODETREE_SANITY_CHECK(di.tree, "dynamic_debug_init");
-
-	pr_info("builtin descs:%d sites:%d maps:%d users:%d\n",
-		di.descs.len, di.sites.len, di.maps.len, di.users.len);
 
 	BUG_ON(di.sites.len != di.descs.len);
 	BUG_ON(di.descs.len > (1 << _DD_BI_DESCS_MAX));
