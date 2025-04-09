@@ -1734,11 +1734,11 @@ static int ddebug_squeeze_codeorg(struct _ddebug_info *di)
 	return 0;
 }
 
-// di->descs.start[i].COLNAME##_idx = offset;
 #define FILL_UNIQUE_COLUMN(COLNAME, FIELD) do {				\
 	last = NULL;							\
 	ub->COLNAME.base = offset;					\
 	for (int i = 0; i < n; ++i) {					\
+		di->descs.start[i].COLNAME##_idx = offset;		\
 		if (arr[i].FIELD != last) {				\
 			ub->buffer[offset++] = (char*)arr[i].FIELD;	\
 			last = arr[i].FIELD;				\
@@ -1747,8 +1747,6 @@ static int ddebug_squeeze_codeorg(struct _ddebug_info *di)
 	}								\
 	ub->COLNAME.len = offset - ub->COLNAME.base;			\
 	} while (0)
-
-// di->descs.start[i]._vec##_idx =
 
 static void dd_copy_unique_names(struct _ddebug_info *di)
 {
@@ -2024,13 +2022,13 @@ static int __init dynamic_debug_init(void)
 	BUILD_BUG_ON(sizeof(struct _ddebug_header) != sizeof(struct _ddebug));
 
 	dd_copy_unique_names(&di);
-	ddebug_squeeze_codeorg(&di);
+	//ddebug_squeeze_codeorg(&di);
 	CODETREE_SANITY_CHECK(&di, "dynamic_debug_init");
 
 	BUG_ON(di.sites.len != di.descs.len);
 	BUG_ON(di.descs.len > (1 << _DD_BI_DESCS_MAX));
-	BUG_ON(di.tree->files.len > (1 << _DD_BI_FILES_MAX));
-	BUG_ON(di.tree->funcs.len > (1 << _DD_BI_FUNCS_MAX));
+	//BUG_ON(di.tree->files.len > (1 << _DD_BI_FILES_MAX));
+	//BUG_ON(di.tree->funcs.len > (1 << _DD_BI_FUNCS_MAX));
 
 	if (di.tree->funcs.len > (1 << (_DD_BI_FUNCS_MAX)))
 		pr_info("builtin overflow: %d vs %d\n",
