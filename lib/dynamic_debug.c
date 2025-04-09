@@ -49,11 +49,24 @@ extern struct _ddebug_class_map __stop___dyndbg_class_maps[];
 extern struct _ddebug_class_user __start___dyndbg_class_users[];
 extern struct _ddebug_class_user __stop___dyndbg_class_users[];
 
+struct ColumnInfo {
+	int base;
+	int len;
+};
+
+struct UniqueBuffer {
+	struct ColumnInfo mods;
+	struct ColumnInfo files;
+	struct ColumnInfo funcs;
+	int total;      // total number of entries in buffer[]
+	char* buffer[]; // flexible array
+};
+
 /*
  * create the descriptor header record for all the builtin pr_debugs.
  */
 extern struct _ddebug __hdr___dyndbg_descs[];
-DYNAMIC_DEBUG_DESCRIPTORS_HEADER("builtin-header");
+DYNAMIC_DEBUG_DESCRIPTORS_HEADER("builtins");
 
 struct ddebug_table {
 	struct list_head link;
@@ -238,8 +251,9 @@ static inline bool ddebug_class_has_param(const struct _ddebug_class_map *map)
  * validate codetree construction manual helpers
  */
 __maybe_unused
-static void codetree_scan(const struct _ddebug_codetree *tree, char *id)
+static void codetree_scan(const struct _ddebug_info *di, char *id)
 {
+	const struct _ddebug_codetree *tree = di->tree;
 	const char **p;
 	int i;
 
@@ -256,6 +270,18 @@ static void codetree_scan(const struct _ddebug_codetree *tree, char *id)
 
 	for (i = 0, p = tree->_impl.start; i < tree->_impl.len; i++, p++)
 		v4pr_info("impl: %d %s\n", i, *p);
+
+	if (di->ub) {
+		for (i = 0; i < di->ub->mods.len; i++)
+			v4pr_info("ub-mods: %d %s\n", i,
+				  di->ub->buffer[di->ub->mods.base + i]);
+		for (i = 0; i < di->ub->files.len; i++)
+			v4pr_info("ub-files: %d %s\n", i,
+				  di->ub->buffer[di->ub->files.base + i]);
+		for (i = 0; i < di->ub->funcs.len; i++)
+			v4pr_info("ub-funcs: %d %s\n", i,
+				  di->ub->buffer[di->ub->funcs.base + i]);
+	}
 }
 
 static int codetree_sanity_check_namevec(const struct _ddebug_codetree *tree,
@@ -284,15 +310,18 @@ static int codetree_sanity_check_namevec(const struct _ddebug_codetree *tree,
 	return 0;
 }
 
-static inline int codetree_sanity_check(const struct _ddebug_codetree *tree,
+static inline int codetree_sanity_check(const struct _ddebug_info *di,
 					unsigned long stor_len, char *id)
 {
+	const struct _ddebug_codetree *tree;
 	int rc = 0;
 
-	if (!tree) {
+	if (!di->tree) {
 		pr_err("codetree_sanity_check: tree is NULL\n");
 		return 6;
 	}
+	tree = di->tree;
+
 	/*
 	 * XXX: hardcoded limits from squeeze output.
 	 * for vng-config: 2384, 540, 236, 3160
@@ -303,13 +332,13 @@ static inline int codetree_sanity_check(const struct _ddebug_codetree *tree,
 	rc += codetree_sanity_check_namevec(tree, &tree->mods, "mods",   id, stor_len, 338);
 	rc += codetree_sanity_check_namevec(tree, &tree->_impl, "_impl", id, stor_len, 3160);
 
-	codetree_scan(tree, id);
+	codetree_scan(di, id);
 	return rc;
 }
 
 
 /* WIP 5000 is enough 3160 is not */
-#define CODETREE_SANITY_CHECK(tree, str)  codetree_sanity_check(tree, 5000, str)
+#define CODETREE_SANITY_CHECK(di, str)  codetree_sanity_check(di, 5000, str)
 
 static __inline struct _ddebug_header *get_ddebug_header(const struct _ddebug *dp)
 {
@@ -341,15 +370,24 @@ static __inline struct _ddebug_info *to_info(const struct _ddebug *dp)
 	struct _ddebug_info *di = to_info(_dp);				\
 									\
 	if (di && di->tree) {						\
-		CODETREE_SANITY_CHECK(di->tree, "desc_"#_field);	\
+		CODETREE_SANITY_CHECK(di, "desc_"#_field);		\
 		if (_dp->site->_field != di->tree->_arr.start[_dp->_idx]) \
-			pr_info("mismatch %d %s vs %s\n",		\
+			pr_info("tree mismatch %d %s vs %s\n",		\
 				_dp->_idx,				\
 				di->tree->_arr.start[_dp->_idx],	\
 				_dp->site->_field);			\
 	} else {							\
-		pr_warn("no ddebug-info ??: %s\n", _dp->site->_field);	\
-	}
+		pr_warn("no tree info: %s\n", _dp->site->_field);	\
+	}								\
+	if (di && di->ub) {						\
+		if (_dp->site->_field != di->ub->buffer[di->ub->_arr.base + _dp->_idx - 1]) \
+			pr_info("ub mismatch %d %s vs %s\n",		\
+				_dp->_idx,				\
+				di->ub->buffer[di->ub->_arr.base + _dp->_idx - 1], \
+				_dp->site->_field);			\
+	} else {							\
+		pr_warn("no ub info: %s %s\n", #_field, _dp->site->_field); \
+	}								\
 
 static const char* desc_modname(const struct _ddebug *dp)
 {
@@ -1650,7 +1688,7 @@ static int ddebug_squeeze_codeorg(struct _ddebug_info *di)
 	tree->_impl.start = tree->_storage;
 	tree->_impl.len = di->descs.len - tree->_impl.len;
 
-	CODETREE_SANITY_CHECK(tree, "tree");
+	CODETREE_SANITY_CHECK(di, "tree");
 
 	/* shrink to fit and attach */
 	trimmed = krealloc(tree, sizeof(struct _ddebug_codetree)
@@ -1658,7 +1696,7 @@ static int ddebug_squeeze_codeorg(struct _ddebug_info *di)
 	if (!trimmed)
 		return -ENOMEM;  /* this would be weird */
 
-	CODETREE_SANITY_CHECK(trimmed, "trimmed");
+	// CODETREE_SANITY_CHECK(trimmed, "trimmed");
 
 	if (trimmed != tree) {
 		/*
@@ -1685,15 +1723,69 @@ static int ddebug_squeeze_codeorg(struct _ddebug_info *di)
 	vpr_info("squeeze done: %d mods, %d files, %d funcs, %d descs\n",
 		 tree->mods.len, tree->files.len, tree->funcs.len, di->descs.len);
 
-#define kept (tree->mods.len + tree->files.len + tree->funcs.len)
-#define total (3 * di->descs.len)
+#define _kept (tree->mods.len + tree->files.len + tree->funcs.len)
+#define _total (3 * di->descs.len)
 
 	vpr_info("squeeze kept %d saved %d of total %d ptrs\n",
-		 kept, total - kept, total);
+		 _kept, _total - _kept, _total);
 
-	CODETREE_SANITY_CHECK(di->tree, "saved");
+	CODETREE_SANITY_CHECK(di, "saved");
 
 	return 0;
+}
+
+// di->descs.start[i].COLNAME##_idx = offset;
+#define FILL_UNIQUE_COLUMN(COLNAME, FIELD) do {				\
+	last = NULL;							\
+	ub->COLNAME.base = offset;					\
+	for (int i = 0; i < n; ++i) {					\
+		if (arr[i].FIELD != last) {				\
+			ub->buffer[offset++] = (char*)arr[i].FIELD;	\
+			last = arr[i].FIELD;				\
+			v4pr_info("%d %d %s\n", i, offset, last);	\
+		}							\
+	}								\
+	ub->COLNAME.len = offset - ub->COLNAME.base;			\
+	} while (0)
+
+// di->descs.start[i]._vec##_idx =
+
+static void dd_copy_unique_names(struct _ddebug_info *di)
+{
+	struct UniqueBuffer* ub;
+	const char* last = NULL;
+	int count = 0;
+	struct _ddebug_site * arr = di->sites.start;
+	int n =  di->sites.len;
+	int offset = 0;
+
+	if (di->ub)
+		return; // builtins handled early
+
+	// Count total unique values
+	// Just do same macro logic but only counting
+#define COUNT_UNIQUE(FIELD) do {		    \
+        last = NULL;                                \
+        for (int i = 0; i < n; ++i) {               \
+		if (arr[i].FIELD != last) {	    \
+			count++;		    \
+			last = arr[i].FIELD;	    \
+		}				    \
+        }} while (0)
+
+	COUNT_UNIQUE(modname);
+	COUNT_UNIQUE(filename);
+	COUNT_UNIQUE(function);
+#undef COUNT_UNIQUE
+
+	ub = kmalloc(sizeof(struct UniqueBuffer) + count * sizeof(char*), GFP_KERNEL);
+	ub->total = count;
+
+	FILL_UNIQUE_COLUMN(mods, modname);
+	FILL_UNIQUE_COLUMN(files, filename);
+	FILL_UNIQUE_COLUMN(funcs, function);
+
+	di->ub = ub;
 }
 
 /*
@@ -1712,6 +1804,8 @@ static int ddebug_add_module(struct _ddebug_info *di)
 		return 0;
 
 	v3pr_info("add-module: %s %d sites\n", di->mod_name, di->descs.len);
+
+	dd_copy_unique_names(di);
 
 	dt = kzalloc(sizeof(*dt), GFP_KERNEL);
 	if (dt == NULL) {
@@ -1733,9 +1827,10 @@ static int ddebug_add_module(struct _ddebug_info *di)
 	if (!di->tree) {
 		vpr_info("re-squeeze?\n");
 		ddebug_squeeze_codeorg(di);
-		CODETREE_SANITY_CHECK(di->tree, "add_module refresh");
+		CODETREE_SANITY_CHECK(di, "add_module refresh");
+
 	}
-	else CODETREE_SANITY_CHECK(di->tree, "add_module same-old");
+	else CODETREE_SANITY_CHECK(di, "add_module same-old");
 
 	for_subvec(i, cm, &dt->info, maps)
 		if (ddebug_class_range_overlap(cm, &reserved_ids))
@@ -1928,8 +2023,9 @@ static int __init dynamic_debug_init(void)
 	BUG_ON(di.sites.len != di.descs.len);
 	BUILD_BUG_ON(sizeof(struct _ddebug_header) != sizeof(struct _ddebug));
 
+	dd_copy_unique_names(&di);
 	ddebug_squeeze_codeorg(&di);
-	CODETREE_SANITY_CHECK(di.tree, "dynamic_debug_init");
+	CODETREE_SANITY_CHECK(&di, "dynamic_debug_init");
 
 	BUG_ON(di.sites.len != di.descs.len);
 	BUG_ON(di.descs.len > (1 << _DD_BI_DESCS_MAX));
