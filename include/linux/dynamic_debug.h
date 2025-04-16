@@ -82,18 +82,23 @@ enum ddebug_class_map_type {
  *
  * class_id === drm_debug_category: DRM_UT_<*> === [0..10].  These are
  * compile-time constants, and __pr_debug_cls() requires this, so to
- * keep what DRM devised for optimizing compilers to work with.
+ * keep what DRM devised for optimizing compilers to work with. UUID
+ * overheads were out of scope.
  *
  * That choice has immediate consequences:
- * DRM wants class_ids [0..N], as will others.  we need private class_ids.
- * DRM also exposes 0..N to userspace (/sys/module/drm/paramaters/debug)
+ * DRM wants class_ids [0..N], as will others.  We need private class_ids.
+ * DRM also exposes 0..N to userspace (/sys/module/drm/parameters/debug)
  *
- * By mapping class-names into >control to class-ids, and only
- * responding to known class-names, we can private-ize the class-id,
- * and adjust only __pr_debug_cls(<T>...) callsites.
+ * By mapping class-names to class-ids at >control, and responding
+ * only to class-names DEFINEd or USEd by the module, we can
+ * private-ize the class-id, and adjust classes only by their names.
  *
  * Multi-class modules are possible, provided the use-case arranges to
  * share the per-module class_id space [0..62].
+ *
+ * NOTE: This api cannot disallow these:
+ * __pr_debug_cls(0, "fake CORE msg") in any part of DRM would "work"
+ * __pr_debug_cls(22, "no such class") would compile, but not "work"
  */
 
 struct _ddebug_class_map {
@@ -367,6 +372,23 @@ void __dynamic_ibdev_dbg(struct _ddebug *descriptor,
 				   KERN_DEBUG, prefix_str, prefix_type,	\
 				   rowsize, groupsize, buf, len, ascii)
 
+/*
+ * This is the "model" class variant of pr_debug.  It is not really
+ * intended for direct use; I'd encourage DRM-style drm_dbg_<T>
+ * macros for the interface, along with an enum for the <T>
+ *
+ * It works when passed a compile-time const int val (ie: an enum val)
+ * that has been named via _CLASSMAP_DEFINE.
+ *
+ * It cannot be a function, due to the macro it calls, which grabs
+ * __FILE_, __LINE__ etc, but would be __printf(2, * 3).
+ */
+#define __pr_debug_cls(cls, fmt, ...) ({			\
+	BUILD_BUG_ON_MSG(!__builtin_constant_p(cls),		\
+			 "expecting constant class int/enum");	\
+	dynamic_pr_debug_cls(cls, fmt, ##__VA_ARGS__);		\
+})
+
 #else /* !(CONFIG_DYNAMIC_DEBUG || (CONFIG_DYNAMIC_DEBUG_CORE && DYNAMIC_DEBUG_MODULE)) */
 
 #include <linux/string.h>
@@ -418,23 +440,7 @@ static inline int param_set_dyndbg_classes(const char *instr, const struct kerne
 static inline int param_get_dyndbg_classes(char *buffer, const struct kernel_param *kp)
 { return 0; }
 
-/*
- * This is the "model" class variant of pr_debug.  It is not really
- * intended for direct use; I'd encourage DRM-style drm_dbg_<T>
- * macros for the interface, along with an enum for the <T>
- *
- * It works when passed a compile-time const int val (ie: an enum val)
- * that has been named (with stringified <T>) via _CLASSMAP_DEFINE.
- * It would be __printf(2, 3), but cannot be a function, due to the
- * macro it calls, which grabs __FILE_, __LINE__ etc.
- */
-#define __pr_debug_cls(cls, fmt, ...) ({			\
-	BUILD_BUG_ON_MSG(!__builtin_constant_p(cls),		\
-			 "expecting constant class int/enum");	\
-	dynamic_pr_debug_cls(cls, fmt, ##__VA_ARGS__);		\
-})
-
-#endif
+#endif /* !CONFIG_DYNAMIC_DEBUG_CORE */
 
 extern const struct kernel_param_ops param_ops_dyndbg_classes;
 
