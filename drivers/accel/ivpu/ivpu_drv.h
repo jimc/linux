@@ -1,12 +1,4 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/*
- * Copyright (C) 2020-2024 Intel Corporation
- */
-
-#ifndef __IVPU_DRV_H__
-#define __IVPU_DRV_H__
-
-#include <drm/drm_device.h>
 #include <drm/drm_drv.h>
 #include <drm/drm_managed.h>
 #include <drm/drm_mm.h>
@@ -63,6 +55,7 @@
 
 #define IVPU_SCHED_MODE_AUTO -1
 
+#ifndef CONFIG_DRM_USE_DYNAMIC_DEBUG
 #define IVPU_DBG_REG	 BIT(0)
 #define IVPU_DBG_IRQ	 BIT(1)
 #define IVPU_DBG_MMU	 BIT(2)
@@ -78,6 +71,39 @@
 #define IVPU_DBG_RPM	 BIT(12)
 #define IVPU_DBG_MMU_MAP BIT(13)
 
+#define ivpu_dbg(vdev, type, fmt, args...) do {				\
+	if (unlikely(IVPU_DBG_##type & ivpu_dbg_mask))			\
+		dev_dbg((vdev)->drm.dev, "[%s] " fmt, #type, ##args);	\
+} while (0)
+
+#else /* !CONFIG_DRM_USE_DYNAMIC_DEBUG */
+
+enum ivpu_dbg_category {
+	/*
+	 * since accels are drm-devices (amdxdna at least), adjust the
+	 * constants to accomodate DRMs 0..0x2ff class_id reservations
+	 * via DRM_CLASSMAP_DEFINE
+	 */
+	IVPU_DBG_REG = 16,
+	IVPU_DBG_IRQ,
+	IVPU_DBG_MMU,
+	IVPU_DBG_FILE,
+	IVPU_DBG_MISC,
+	IVPU_DBG_FW_BOOT,
+	IVPU_DBG_PM,
+	IVPU_DBG_IPC,
+	IVPU_DBG_BO,
+	IVPU_DBG_JOB,
+	IVPU_DBG_JSM,
+	IVPU_DBG_KREF,
+	IVPU_DBG_RPM,
+	IVPU_DBG_MMU_MAP
+};
+#define ivpu_dbg(vdev, type, fmt, args...)				\
+	drm_dev_dbg((vdev)->drm.dev, type, "[%s] " fmt, #type, ##args);
+
+#endif /* !CONFIG_DRM_USE_DYNAMIC_DEBUG */
+
 #define ivpu_err(vdev, fmt, ...) \
 	drm_err(&(vdev)->drm, "%s(): " fmt, __func__, ##__VA_ARGS__)
 
@@ -91,11 +117,6 @@
 	drm_err_ratelimited(&(vdev)->drm, "%s(): " fmt, __func__, ##__VA_ARGS__)
 
 #define ivpu_info(vdev, fmt, ...) drm_info(&(vdev)->drm, fmt, ##__VA_ARGS__)
-
-#define ivpu_dbg(vdev, type, fmt, args...) do {                                \
-	if (unlikely(IVPU_DBG_##type & ivpu_dbg_mask))                         \
-		dev_dbg((vdev)->drm.dev, "[%s] " fmt, #type, ##args);          \
-} while (0)
 
 #define IVPU_WA(wa_name) (vdev->wa.wa_name)
 

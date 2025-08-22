@@ -38,8 +38,26 @@
 #endif
 
 int ivpu_dbg_mask;
-module_param_named(dbg_mask, ivpu_dbg_mask, int, 0644);
+module_param_named(dbg_mask, ivpu_dbg_mask, ulong, 0644);
 MODULE_PARM_DESC(dbg_mask, "Driver debug mask. See IVPU_DBG_* macros.");
+DRM_CLASSMAP_USE(ivpu_dbg_classes,
+		 IVPU_DBG_REG,
+		 "IVPU_DBG_REG",
+		 "IVPU_DBG_IRQ",
+		 "IVPU_DBG_MMU",
+		 "IVPU_DBG_FILE",
+		 "IVPU_DBG_MISC",
+		 "IVPU_DBG_FW_BOOT",
+		 "IVPU_DBG_PM",
+		 "IVPU_DBG_IPC",
+		 "IVPU_DBG_BO",
+		 "IVPU_DBG_JOB",
+		 "IVPU_DBG_JSM",
+		 "IVPU_DBG_KREF",
+		 "IVPU_DBG_RPM",
+		 "IVPU_DBG_MMU_MAP");
+
+DRM_CLASSMAP_PARAM_REF(dbg_mask, ivpu_dbg_mask, ivpu_dbg_classes, p);
 
 int ivpu_test_mode;
 #if IS_ENABLED(CONFIG_DRM_ACCEL_IVPU_DEBUG)
