@@ -50,7 +50,7 @@
 
 #include "drm_crtc_helper_internal.h"
 
-DRM_CLASSMAP_USE(drm_debug_classes);
+DYNAMIC_DEBUG_CLASSMAP_USE(drm_debug_classes);
 
 /**
  * DOC: overview

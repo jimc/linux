@@ -56,7 +56,7 @@ MODULE_PARM_DESC(debug, "Enable debug output, where each bit enables a debug cat
 module_param_named(debug, __drm_debug, ulong, 0600);
 #else
 /* classnames must match value-symbols of enum drm_debug_category */
-DRM_CLASSMAP_DEFINE(drm_debug_classes, DD_CLASS_TYPE_DISJOINT_BITS,
+DYNAMIC_DEBUG_CLASSMAP_DEFINE(drm_debug_classes, DD_CLASS_TYPE_DISJOINT_BITS,
 		    DRM_UT_CORE,
 		    "DRM_UT_CORE",
 		    "DRM_UT_DRIVER",
@@ -69,7 +69,7 @@ DRM_CLASSMAP_DEFINE(drm_debug_classes, DD_CLASS_TYPE_DISJOINT_BITS,
 		    "DRM_UT_DP",
 		    "DRM_UT_DRMRES");
 
-DRM_CLASSMAP_PARAM_REF(debug, __drm_debug, drm_debug_classes, p);
+DYNAMIC_DEBUG_CLASSMAP_PARAM_REF(debug, __drm_debug, drm_debug_classes, p);
 
 #endif
 
