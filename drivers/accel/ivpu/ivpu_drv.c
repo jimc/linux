@@ -3,6 +3,7 @@
  * Copyright (C) 2020-2025 Intel Corporation
  */
 
+#include <linux/dynamic_debug.h>
 #include <linux/firmware.h>
 #include <linux/module.h>
 #include <linux/pci.h>
@@ -37,10 +38,13 @@
 #define DRIVER_VERSION_STR "1.0.0 " UTS_RELEASE
 #endif
 
-int ivpu_dbg_mask;
+long unsigned int ivpu_dbg_mask;
+
+#if !defined(CONFIG_DRM_USE_DYNAMIC_DEBUG)
+
 module_param_named(dbg_mask, ivpu_dbg_mask, ulong, 0644);
-MODULE_PARM_DESC(dbg_mask, "Driver debug mask. See IVPU_DBG_* macros.");
-DRM_CLASSMAP_USE(ivpu_dbg_classes,
+#else
+DYNAMIC_DEBUG_CLASSMAP_DEFINE(ivpu_dbg_classes, DD_CLASS_TYPE_DISJOINT_BITS,
 		 IVPU_DBG_REG,
 		 "IVPU_DBG_REG",
 		 "IVPU_DBG_IRQ",
@@ -56,8 +60,9 @@ DRM_CLASSMAP_USE(ivpu_dbg_classes,
 		 "IVPU_DBG_KREF",
 		 "IVPU_DBG_RPM",
 		 "IVPU_DBG_MMU_MAP");
-
-DRM_CLASSMAP_PARAM_REF(dbg_mask, ivpu_dbg_mask, ivpu_dbg_classes, p);
+DYNAMIC_DEBUG_CLASSMAP_PARAM_REF(dbg_mask, ivpu_dbg_mask, ivpu_dbg_classes, p);
+#endif
+MODULE_PARM_DESC(dbg_mask, "Driver debug mask. See IVPU_DBG_* macros.");
 
 int ivpu_test_mode;
 #if IS_ENABLED(CONFIG_DRM_ACCEL_IVPU_DEBUG)

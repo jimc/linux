@@ -1,4 +1,12 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (C) 2020-2024 Intel Corporation
+ */
+
+#ifndef __IVPU_DRV_H__
+#define __IVPU_DRV_H__
+
+#include <drm/drm_device.h>
 #include <drm/drm_drv.h>
 #include <drm/drm_managed.h>
 #include <drm/drm_mm.h>
@@ -56,6 +64,7 @@
 #define IVPU_SCHED_MODE_AUTO -1
 
 #ifndef CONFIG_DRM_USE_DYNAMIC_DEBUG
+
 #define IVPU_DBG_REG	 BIT(0)
 #define IVPU_DBG_IRQ	 BIT(1)
 #define IVPU_DBG_MMU	 BIT(2)
@@ -99,8 +108,12 @@ enum ivpu_dbg_category {
 	IVPU_DBG_RPM,
 	IVPU_DBG_MMU_MAP
 };
-#define ivpu_dbg(vdev, type, fmt, args...)				\
-	drm_dev_dbg((vdev)->drm.dev, type, "[%s] " fmt, #type, ##args);
+void __dev_dbg(struct _ddebug *desc, const struct ivpu_device *vdev,
+	       enum ivpu_dbg_category category, const char *format, ...);
+
+#define ivpu_dbg(vdev, type, fmt, ...)					\
+	_dynamic_func_call_cls(IVPU_DBG_##type, fmt, __dev_dbg,		\
+                               vdev, IVPU_DBG_##type, fmt, ##__VA_ARGS__)
 
 #endif /* !CONFIG_DRM_USE_DYNAMIC_DEBUG */
 
@@ -214,7 +227,6 @@ struct ivpu_file_priv {
 	bool aborted;
 };
 
-extern int ivpu_dbg_mask;
 extern u8 ivpu_pll_min_ratio;
 extern u8 ivpu_pll_max_ratio;
 extern int ivpu_sched_mode;
