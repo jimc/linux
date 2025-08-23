@@ -29,7 +29,7 @@
 #include "i915_params.h"
 #include "i915_drv.h"
 
-DRM_CLASSMAP_USE(drm_debug_classes);
+DYNAMIC_DEBUG_CLASSMAP_USE(drm_debug_classes);
 
 #define i915_param_named(name, T, perm, desc) \
 	module_param_named(name, i915_modparams.name, T, perm); \

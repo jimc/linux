@@ -43,7 +43,7 @@
 
 #include "drm_dp_helper_internal.h"
 
-DRM_CLASSMAP_USE(drm_debug_classes);
+DYNAMIC_DEBUG_CLASSMAP_USE(drm_debug_classes);
 
 struct dp_aux_backlight {
 	struct backlight_device *base;

@@ -37,7 +37,7 @@
 
 static struct vkms_config *default_config;
 
-DRM_CLASSMAP_USE(drm_debug_classes);
+DYNAMIC_DEBUG_CLASSMAP_USE(drm_debug_classes);
 
 static bool enable_cursor = true;
 module_param_named(enable_cursor, enable_cursor, bool, 0444);

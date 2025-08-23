@@ -25,7 +25,7 @@
 #include "etnaviv_mmu.h"
 #include "etnaviv_perfmon.h"
 
-DRM_CLASSMAP_USE(drm_debug_classes);
+DYNAMIC_DEBUG_CLASSMAP_USE(drm_debug_classes);
 
 /*
  * DRM operations:

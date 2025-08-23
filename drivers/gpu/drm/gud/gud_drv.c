@@ -32,7 +32,7 @@
 
 #include "gud_internal.h"
 
-DRM_CLASSMAP_USE(drm_debug_classes);
+DYNAMIC_DEBUG_CLASSMAP_USE(drm_debug_classes);
 
 /* Only used internally */
 static const struct drm_format_info gud_drm_format_r1 = {
