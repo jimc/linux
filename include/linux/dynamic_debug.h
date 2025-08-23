@@ -74,6 +74,13 @@ enum ddebug_class_map_type {
 };
 
 /*
+ * pr_debug() and friends are globally enabled or modules have selectively
+ * enabled them.
+ */
+#if defined(CONFIG_DYNAMIC_DEBUG) || \
+	(defined(CONFIG_DYNAMIC_DEBUG_CORE) && defined(DYNAMIC_DEBUG_MODULE))
+
+/*
  * classmaps allow authors to devise their own domain-oriented
  * class-names, to use them by converting some of their pr_debug(...)s
  * to __pr_debug_cls(class_id, ...), and to enable them either by their
@@ -267,13 +274,6 @@ struct _ddebug_class_param {
 	module_param_cb(_name, &param_ops_dyndbg_classes,		\
 			&_name##_##_flags, 0600)
 
-/*
- * pr_debug() and friends are globally enabled or modules have selectively
- * enabled them.
- */
-#if defined(CONFIG_DYNAMIC_DEBUG) || \
-	(defined(CONFIG_DYNAMIC_DEBUG_CORE) && defined(DYNAMIC_DEBUG_MODULE))
-
 extern __printf(2, 3)
 void __dynamic_pr_debug(struct _ddebug *descriptor, const char *fmt, ...);
 
@@ -443,6 +443,12 @@ void __dynamic_ibdev_dbg(struct _ddebug *descriptor,
 #include <linux/string.h>
 #include <linux/errno.h>
 #include <linux/printk.h>
+
+/* stub declarator macros */
+#define DYNAMIC_DEBUG_CLASSMAP_DEFINE(_var, _mapty, _base, ...)
+#define DYNAMIC_DEBUG_CLASSMAP_USE(_var)
+#define DYNAMIC_DEBUG_CLASSMAP_PARAM(_name, _var, _flags)
+#define DYNAMIC_DEBUG_CLASSMAP_PARAM_REF(_name, _var, _flags)
 
 #define DEFINE_DYNAMIC_DEBUG_METADATA(name, fmt)
 #define DYNAMIC_DEBUG_BRANCH(descriptor) false
