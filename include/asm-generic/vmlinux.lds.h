@@ -355,7 +355,6 @@
 	STRUCT_ALIGN();							\
 	*(__tracepoints)						\
 	DYNDBG_SECTIONS()						\
-	DYNDBG_RO_SECTIONS()						\
 	CODETAG_SECTIONS()						\
 	LIKELY_PROFILE()		       				\
 	BRANCH_PROFILE()						\
@@ -453,7 +452,7 @@
 		*(.rodata) *(.rodata.*) *(.data.rel.ro*)		\
 		SCHED_DATA						\
 		RO_AFTER_INIT_DATA	/* Read only after init */	\
-		. = ALIGN(8);						\
+		DYNDBG_RO_SECTIONS()					\
 		BOUNDED_SECTION_BY(__tracepoints_ptrs, ___tracepoints_ptrs) \
 		*(__tracepoints_strings)/* Tracepoints: strings */	\
 	}								\
