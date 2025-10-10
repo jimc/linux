@@ -32,6 +32,7 @@
 #include <linux/string_helpers.h>
 #include <linux/uaccess.h>
 #include <linux/dynamic_debug.h>
+#include <linux/shrinker.h>
 
 #include <linux/debugfs.h>
 #include <linux/maple_tree.h>
@@ -102,6 +103,7 @@ static DEFINE_MTREE(dd_mod_map);
 /* cache of composed prefixes for enabled and invoked pr_debugs */
 static DEFINE_MTREE(pr_prefixes);
 static DEFINE_SPINLOCK(pr_prefixes_lock);
+static unsigned int pr_prefixes_count;
 
 static unsigned long ddebug_prefix_key(const struct _ddebug *desc);
 static void ddebug_drop_cached_prefix(const struct _ddebug *dp);
@@ -1003,6 +1005,7 @@ static int __dynamic_emit_lookup(const struct _ddebug *desc, char *buf, int star
 				  (void *)new_prefix, GFP_ATOMIC);
 		spin_unlock_irqrestore(&pr_prefixes_lock, lock_flags);
 		v3pr_info("filled prefix cache: %s\n", new_prefix);
+		pr_prefixes_count++;
 	}
 	return pos;
 }
@@ -1858,6 +1861,7 @@ static void ddebug_drop_cached_prefix(const struct _ddebug *dp)
 	if (prefix) {
 		kfree(prefix);
 		v3pr_info("drop cached prefix: %s\n", prefix);
+		pr_prefixes_count--;
 	}
 }
 
@@ -1934,6 +1938,45 @@ static int __init dynamic_debug_init_control(void)
 
 	return 0;
 }
+
+static unsigned long ddebug_shrinker_count(struct shrinker *s,
+					   struct shrink_control *sc)
+{
+	return pr_prefixes_count;
+}
+
+static unsigned long ddebug_shrinker_scan(struct shrinker *s,
+					  struct shrink_control *sc)
+{
+	unsigned long freed = 0;
+	void *prefix;
+	MA_STATE(mas, &pr_prefixes, 0, ULONG_MAX);
+	unsigned long lock_flags;
+
+	if (sc->nr_to_scan == 0)
+		return 0;
+
+	mutex_lock(&ddebug_lock);
+	spin_lock_irqsave(&pr_prefixes_lock, lock_flags);
+
+	while ((prefix = mas_erase(&mas))) {
+		kfree(prefix);
+		pr_prefixes_count--;
+		freed++;
+		if (freed >= sc->nr_to_scan)
+			break;
+	}
+
+	spin_unlock_irqrestore(&pr_prefixes_lock, lock_flags);
+	mutex_unlock(&ddebug_lock);
+	return freed;
+}
+
+static struct shrinker ddebug_shrinker = {
+	.count_objects = ddebug_shrinker_count,
+	.scan_objects = ddebug_shrinker_scan,
+	.seeks = DEFAULT_SEEKS,
+};
 
 static int __init dynamic_debug_init(void)
 {
@@ -2013,12 +2056,14 @@ static int __init dynamic_debug_init(void)
 	parse_args("dyndbg params", cmdline, NULL,
 		   0, 0, 0, NULL, &ddebug_dyndbg_boot_param_cb);
 	kfree(cmdline);
+	shrinker_register(&ddebug_shrinker);
 	return 0;
 
 out_err:
 	ddebug_remove_all_tables();
 	return 0;
 }
+
 /* Allow early initialization for boot messages via boot param */
 early_initcall(dynamic_debug_init);
 
