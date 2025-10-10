@@ -29,6 +29,7 @@
 #include <linux/string_helpers.h>
 #include <linux/uaccess.h>
 #include <linux/dynamic_debug.h>
+#include <linux/shrinker.h>
 
 #include <linux/debugfs.h>
 #include <linux/maple_tree.h>
@@ -1688,6 +1689,42 @@ static int __init dynamic_debug_init_control(void)
 	return 0;
 }
 
+static unsigned long ddebug_shrinker_count(struct shrinker *s,
+					   struct shrink_control *sc)
+{
+	/* Return 1 to indicate that there are objects to free. */
+	return mtree_empty(&pr_prefixes) ? 0 : 1;
+}
+
+static unsigned long ddebug_shrinker_scan(struct shrinker *s,
+					  struct shrink_control *sc)
+{
+	unsigned long freed = 0;
+	void *prefix;
+	MA_STATE(mas, &pr_prefixes, 0, ULONG_MAX);
+
+	if (sc->nr_to_scan == 0)
+		return 0;
+
+	mutex_lock(&ddebug_lock);
+
+	while ((prefix = mas_erase(&mas))) {
+		kfree(prefix);
+		freed++;
+		if (freed >= sc->nr_to_scan)
+			break;
+	}
+
+	mutex_unlock(&ddebug_lock);
+	return freed;
+}
+
+static struct shrinker ddebug_shrinker = {
+	.count_objects = ddebug_shrinker_count,
+	.scan_objects = ddebug_shrinker_scan,
+	.seeks = DEFAULT_SEEKS,
+};
+
 static int __init dynamic_debug_init(void)
 {
 	struct _ddebug *iter, *iter_mod_start;
@@ -1769,12 +1806,14 @@ static int __init dynamic_debug_init(void)
 	parse_args("dyndbg params", cmdline, NULL,
 		   0, 0, 0, NULL, &ddebug_dyndbg_boot_param_cb);
 	kfree(cmdline);
+	shrinker_register(&ddebug_shrinker);
 	return 0;
 
 out_err:
 	ddebug_remove_all_tables();
 	return 0;
 }
+
 /* Allow early initialization for boot messages via boot param */
 early_initcall(dynamic_debug_init);
 
