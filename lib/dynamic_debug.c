@@ -73,6 +73,14 @@ struct flag_settings {
 	unsigned int mask;
 };
 
+struct _dd_prefix_key_range {
+	unsigned long start;
+	unsigned long end;
+};
+
+static unsigned long ddebug_prefix_key(const struct _ddebug *desc);
+static void ddebug_prefix_range(const struct _ddebug *desc, struct _dd_prefix_key_range *range);
+
 static DEFINE_MUTEX(ddebug_lock);
 static LIST_HEAD(ddebug_tables);
 static int verbose;
@@ -902,9 +910,13 @@ static int __dynamic_emit_lookup(struct _ddebug *desc, char *buf, int pos)
 {
 	char *prefix;
 	int len;
+	struct _dd_prefix_key_range r;
+	unsigned long key;
+
+	key = ddebug_prefix_key(desc);
 
 	if (desc->flags & _DPRINTK_FLAGS_PREFIX_CACHED) {
-		prefix = (char *) mtree_load(&pr_prefixes, (unsigned long)desc);
+		prefix = (char *) mtree_load(&pr_prefixes, key);
 		if (prefix) {
 			pos += snprintf(buf + pos, remaining(pos), "%s", prefix);
 			v4pr_info("using prefix cache:%px %s\n", buf, prefix);
@@ -945,7 +957,8 @@ static int __dynamic_emit_lookup(struct _ddebug *desc, char *buf, int pos)
 		return pos;
 	}
 	/* save the dynamic prefix to cache */
-	mtree_store(&pr_prefixes, (unsigned long)desc, (void *)cpy, GFP_KERNEL);
+	ddebug_prefix_range(desc, &r);
+	mtree_store_range(&pr_prefixes, r.start, r.end, (void *)cpy, GFP_KERNEL);
 	desc->flags |= _DPRINTK_FLAGS_PREFIX_CACHED;
 	v3pr_info("filling prefix cache:%px %s", desc, cpy);
 
@@ -1665,6 +1678,45 @@ static void ddebug_remove_all_tables(void)
 }
 
 static __initdata int ddebug_init_success;
+
+/*
+ * The pr_prefixes cache-key places the +mfsl flags at the top of the
+ * key-space.  This exploits maple-tree's non-overlapping intervals,
+ * giving each +mfsl combo a separate sub-space to scribble their
+ * generated prefix strings.
+ *
+ * So this allows all of `ddcmd module foo +pm` to share a single
+ * generated prefix string, for all pr_debugs called with those flags
+ * set.  Further, `ddcmd module foo function bar +pmf` stores a single
+ * prefix into a separate keyspace, so bar's 1st pr-debug will look in
+ * the "+mfs" subspace, find nothing, then generate it, and 2nd+ will
+ * compute the same key, and hit the cache.
+ *
+ * ddebug_prefix_key() constructs the final key for the maple tree by
+ * combining the type flag and the descriptor address as described.
+ *
+ * ddebug_prefix_range() determines the range of _ddebug descriptors
+ * that can share a given prefix type. For now, it uses a simple range
+ * of a single descriptor, but with right range given at mt-store, we
+ * can fetch it for that range of pr_debugs.
+ */
+
+#define DDEBUG_PREFIX_KEY_ADDR_MASK 0x00FFFFFFFFFFFFFFUL
+#define DDEBUG_PREFIX_KEY_FLAGS_SHIFT 56
+
+static unsigned long ddebug_prefix_key(const struct _ddebug *desc)
+{
+	return ((unsigned long)desc & DDEBUG_PREFIX_KEY_ADDR_MASK) |
+	       ((unsigned long)prefix_flags(desc->flags) << DDEBUG_PREFIX_KEY_FLAGS_SHIFT);
+}
+
+static void ddebug_prefix_range(const struct _ddebug *desc,
+				struct _dd_prefix_key_range *range)
+{
+	/* Placeholder: for now, just use the single descriptor address */
+	range->start = (unsigned long)desc;
+	range->end = (unsigned long)desc;
+}
 
 static int __init dynamic_debug_init_control(void)
 {
