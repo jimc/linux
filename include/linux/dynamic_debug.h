@@ -55,8 +55,8 @@ struct _ddebug {
 #define _DPRINTK_FLAGS_INCL_MODNAME	(1<<1)
 #define _DPRINTK_FLAGS_INCL_FUNCNAME	(1<<2)
 #define _DPRINTK_FLAGS_INCL_LINENO	(1<<3)
-#define _DPRINTK_FLAGS_INCL_TID		(1<<4)
-#define _DPRINTK_FLAGS_INCL_SOURCENAME	(1<<5)
+#define _DPRINTK_FLAGS_INCL_SOURCENAME	(1<<4) /* contiguous for cache */
+#define _DPRINTK_FLAGS_INCL_TID		(1<<5)
 #define _DPRINTK_FLAGS_INCL_STACK	(1<<6)
 #define _DPRINTK_FLAGS_COUNT		(1<<7)
 
