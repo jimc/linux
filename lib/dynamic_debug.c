@@ -77,6 +77,11 @@ struct flag_settings {
 	unsigned int mask;
 };
 
+struct _dd_prefix_key_range {
+	unsigned long start;
+	unsigned long end;
+};
+
 static DEFINE_MUTEX(ddebug_lock);
 static LIST_HEAD(ddebug_tables);
 static int verbose;
@@ -100,6 +105,7 @@ static DEFINE_SPINLOCK(pr_prefixes_lock);
 
 static unsigned long ddebug_prefix_key(const struct _ddebug *desc);
 static void ddebug_drop_cached_prefix(const struct _ddebug *dp);
+static void ddebug_prefix_range(const struct _ddebug *desc, struct _dd_prefix_key_range *range);
 #define prefix_flags(flags)  (flags & _DPRINTK_FLAGS_INCL_LOOKUP)
 
 /* Return the path relative to source root */
@@ -940,8 +946,9 @@ static int __dynamic_emit_lookup(const struct _ddebug *desc, char *buf, int star
 {
 	char *prefix, *new_prefix;
 	int pos = start;
+	struct _dd_prefix_key_range range;
 	unsigned long key;
-	unsigned long flags;
+	unsigned long lock_flags;
 
 	if (!(desc->flags & _DPRINTK_FLAGS_INCL_LOOKUP))
 		return pos;
@@ -950,9 +957,8 @@ static int __dynamic_emit_lookup(const struct _ddebug *desc, char *buf, int star
 
 	/* guard against other pr_debugs and prefix drops */
 	rcu_read_lock();
-	prefix = mtree_load(&pr_prefixes, key);
+	prefix = (char *) mtree_load(&pr_prefixes, key);
 	rcu_read_unlock();
-
 	if (prefix) {
 		pos += snprintf(buf + pos, remaining(pos), "%s", prefix);
 		v4pr_info("using cached prefix: %s\n", prefix);
@@ -984,17 +990,18 @@ static int __dynamic_emit_lookup(const struct _ddebug *desc, char *buf, int star
 		return pos;
 
 	/* Re-check for race while we were allocating */
-	spin_lock_irqsave(&pr_prefixes_lock, flags);
+	spin_lock_irqsave(&pr_prefixes_lock, lock_flags);
 	prefix = mtree_load(&pr_prefixes, key);
 	if (prefix) {
 		/* Another thread won. Use theirs, free ours. */
-		spin_unlock_irqrestore(&pr_prefixes_lock, flags);
+		spin_unlock_irqrestore(&pr_prefixes_lock, lock_flags);
 		kfree(new_prefix);
 	} else {
 		/* We are first. Store our new prefix. */
-		mtree_store_range(&pr_prefixes, key, key,
+		ddebug_prefix_range(desc, &range);
+		mtree_store_range(&pr_prefixes, range.start, range.end,
 				  (void *)new_prefix, GFP_ATOMIC);
-		spin_unlock_irqrestore(&pr_prefixes_lock, flags);
+		spin_unlock_irqrestore(&pr_prefixes_lock, lock_flags);
 		v3pr_info("filled prefix cache: %s\n", new_prefix);
 	}
 	return pos;
@@ -1745,7 +1752,6 @@ static void ddebug_table_free(struct ddebug_table *dt)
 	kfree(dt);
 }
 
-
 #ifdef CONFIG_MODULES
 
 /*
@@ -1821,6 +1827,16 @@ static void ddebug_remove_all_tables(void)
 	mutex_unlock(&ddebug_lock);
 }
 
+/*
+ * dynamic prefix cache keys and descriptor ranges.
+ *
+ * ddebug_prefix_key() constructs the maple tree key by combining
+ * prefix flags with the descriptor address, creating separate
+ * key-spaces for different flag combinations.
+ *
+ * ddebug_prefix_range() determines the address range of descriptors
+ * that can share a dynamic prefix based on these flags.
+ */
 #define DDEBUG_PREFIX_KEY_FLAGS_SHIFT 56
 #define DDEBUG_PREFIX_KEY_ADDR_MASK ((1UL << DDEBUG_PREFIX_KEY_FLAGS_SHIFT) - 1)
 
@@ -1843,6 +1859,55 @@ static void ddebug_drop_cached_prefix(const struct _ddebug *dp)
 		kfree(prefix);
 		v3pr_info("drop cached prefix: %s\n", prefix);
 	}
+}
+
+static void ddebug_prefix_range(const struct _ddebug *desc,
+				struct _dd_prefix_key_range *range)
+{
+	unsigned long start = (unsigned long)desc;
+	unsigned long end = (unsigned long)desc;
+	uint8_t flags = prefix_flags(desc->flags);
+
+	if (flags & _DPRINTK_FLAGS_INCL_LINENO) {
+		/*
+		 * except for amdgpu, which has macros with 2+ pr_debugs,
+		 * all prefixes with line-numbers are unique.  While its
+		 * possible to share here,its basically pointless.
+		 */
+		range->start = range->end = ddebug_prefix_key(desc);
+		return;
+	}
+
+	/* 1. Module Level (Always the base for sharing) */
+	{
+		MA_STATE(mod_mas, &dd_mod_map, start, start);
+		if (mas_walk(&mod_mas)) {
+			start = mod_mas.index;
+			end = mod_mas.last;
+		}
+	}
+
+	/* 2. File Level (Narrow further if +s is set) */
+	if (flags & _DPRINTK_FLAGS_INCL_SOURCENAME) {
+		MA_STATE(file_mas, &dd_file_map, (unsigned long)desc, (unsigned long)desc);
+		if (mas_walk(&file_mas)) {
+			start = max(start, file_mas.index);
+			end = min(end, file_mas.last);
+		}
+	}
+
+	/* 3. Function Level (Narrow if +f is set) */
+	if (flags & _DPRINTK_FLAGS_INCL_FUNCNAME) {
+		MA_STATE(func_mas, &dd_func_map, (unsigned long)desc, (unsigned long)desc);
+		if (mas_walk(&func_mas)) {
+			start = max(start, func_mas.index);
+			end = min(end, func_mas.last);
+		}
+	}
+
+	/* Convert descriptor addresses to your Flag-Shifted Keys */
+	range->start = (start & DDEBUG_PREFIX_KEY_ADDR_MASK) | ((unsigned long)flags << 56);
+	range->end = (end & DDEBUG_PREFIX_KEY_ADDR_MASK) | ((unsigned long)flags << 56);
 }
 
 static __initdata int ddebug_init_success;
