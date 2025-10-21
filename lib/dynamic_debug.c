@@ -195,21 +195,16 @@ static void vpr_info_dq(const struct ddebug_query *query, const char *msg)
 		  _di->users.len);					\
 	})
 
+/* these are unusable after __init, when __dyndbg_sites is released */
 #define dref_modname(d)  ((d)->site->_modname)
 #define dref_filename(d) ((d)->site->_filename)
 #define dref_function(d) ((d)->site->_function)
 
-#define DEFINE_DYNDBG_SITE_ACCESSOR(name, mt_tree, err_str)		\
-static const char *desc_##name(struct _ddebug const *dp)		\
-{									\
-	struct maple_tree *mt = &mt_tree;				\
-									\
-	void *ret = mtree_load(mt, (unsigned long)dp);			\
-									\
-	if (ret != dref_##name(dp))					\
-		pr_err(err_str " %lx got %s want %s\\n",		\
-		       (unsigned long)dp, (char *)ret, dref_##name(dp)); \
-	return ret;							\
+#define DEFINE_DYNDBG_SITE_ACCESSOR(name, mt_tree, err_str)	\
+static const char *desc_##name(struct _ddebug const *dp)	\
+{								\
+	struct maple_tree *mt = &(mt_tree);			\
+	return (const char *)mtree_load(mt, (unsigned long)dp);	\
 }
 
 DEFINE_DYNDBG_SITE_ACCESSOR(function, dd_func_map, "func")
