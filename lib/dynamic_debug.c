@@ -273,28 +273,21 @@ static inline bool ddebug_class_has_param(const struct ddebug_class_map *map)
 /* re-framed as a policy choice */
 #define ddebug_class_wants_protection(map) (ddebug_class_has_param(map))
 
-#define dref_modname(d)  ((d)->site->_modname)
-#define dref_filename(d) ((d)->site->_filename)
-#define dref_function(d) ((d)->site->_function)
-
-#define DEFINE_DYNDBG_SITE_ACCESSOR(name, mt_tree, err_str)		\
-static const char *desc_##name(struct _ddebug const *dp)		\
-{									\
-	struct maple_tree *mt = &mt_tree;				\
-									\
-	rcu_read_lock();						\
-	void *ret = mtree_load(mt, (unsigned long)dp);			\
-	rcu_read_unlock();						\
-									\
-	if (ret != dref_##name(dp))					\
-		pr_err(err_str " %lx got %s want %s\\n",		\
-		       (unsigned long)dp, (char *)ret, dref_##name(dp)); \
-	return ret;							\
+#define DEFINE_DYNDBG_SITE_ACCESSOR(column, mt_tree)		\
+static const char *desc_##column(struct _ddebug const *dp)	\
+{								\
+	struct maple_tree *mt = &mt_tree;			\
+	void *ret;						\
+								\
+	rcu_read_lock();					\
+	ret = mtree_load(mt, (unsigned long)dp);		\
+	rcu_read_unlock();					\
+	return (const char *)ret ?: "unknown";			\
 }
 
-DEFINE_DYNDBG_SITE_ACCESSOR(function, dd_func_map, "func")
-DEFINE_DYNDBG_SITE_ACCESSOR(filename, dd_file_map, "file")
-DEFINE_DYNDBG_SITE_ACCESSOR(modname, dd_mod_map, "mod")
+DEFINE_DYNDBG_SITE_ACCESSOR(function, dd_func_map)
+DEFINE_DYNDBG_SITE_ACCESSOR(filename, dd_file_map)
+DEFINE_DYNDBG_SITE_ACCESSOR(modname, dd_mod_map)
 
 /*
  * Search the tables for _ddebug's which match the given `query' and
@@ -1571,6 +1564,11 @@ static void ddebug_store_range(struct maple_tree *mt, const struct _ddebug *star
 		pr_err("%s:%s range store failed: %d\n", kind, name, rc);
 }
 
+
+/* these are unusable after __init, when __dyndbg_sites is released */
+#define dref_modname(d)  ((d)->site->_modname)
+#define dref_filename(d) ((d)->site->_filename)
+#define dref_function(d) ((d)->site->_function)
 
 #define DYNDBG_SITE_GETTER(name)				      \
 static inline const char *ddebug_get_##name(const struct _ddebug *dp) \
