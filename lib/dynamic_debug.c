@@ -1898,12 +1898,20 @@ static int __init dynamic_debug_init_control(void)
 	return 0;
 }
 
+struct ddebug_mod_info {
+	struct list_head link;
+	const char *mod_name;
+	unsigned long start_addr;
+	unsigned long end_addr;
+};
+
 static int __init dynamic_debug_init(void)
 {
-	struct _ddebug *iter, *iter_mod_start;
-	int ret, i, mod_sites, mod_ct;
-	const char *modname;
+	int i, ret = 0, mod_ct = 0;
+	void *mod_name;
 	char *cmdline;
+	LIST_HEAD(mod_list);
+	struct ddebug_mod_info *mod_info, *tmp;
 
 	struct _ddebug_info di = {
 		.descs.start = __start___dyndbg_descs,
@@ -1933,33 +1941,53 @@ static int __init dynamic_debug_init(void)
 		ddebug_init_success = 1;
 		return 0;
 	}
+	/*
+	 * fill the 3 function, file, module trees with the values and
+	 * their intervals, and then walk the module intervals and
+	 * call add_module for each.
+	 */
+	ddebug_condense_sites(&di);
 
-	iter = iter_mod_start = __start___dyndbg_descs;
-	modname = dref_modname(iter);
-	i = mod_sites = mod_ct = 0;
-
-	for (; iter < __stop___dyndbg_descs; iter++, i++, mod_sites++) {
-
-		if (strcmp(modname, dref_modname(iter))) {
-			mod_ct++;
-			di.descs.len = mod_sites;
-			di.descs.start = iter_mod_start;
-			di.mod_name = modname;
-			ret = ddebug_add_module(&di);
-			if (ret)
-				goto out_err;
-
-			mod_sites = 0;
-			modname = dref_modname(iter);
-			iter_mod_start = iter;
+	/*
+	 * under rcu-lock, gather the modules' descriptor intervals
+	 * into an atomically alloc'd list
+	 */
+	rcu_read_lock();
+	MA_STATE(mas, &dd_mod_map, 0, ULONG_MAX);
+	mas_for_each(&mas, mod_name, ULONG_MAX) {
+		mod_info = kmalloc(sizeof(*mod_info), GFP_ATOMIC);
+		if (!mod_info) {
+			pr_warn("kmalloc failed, some modules may not be processed\n");
+			break;
 		}
+		mod_info->mod_name = (const char *)mod_name;
+		mod_info->start_addr = mas.index;
+		mod_info->end_addr = mas.last;
+		list_add_tail(&mod_info->link, &mod_list);
 	}
-	di.descs.len = mod_sites;
-	di.descs.start = iter_mod_start;
-	di.mod_name = modname;
-	ret = ddebug_add_module(&di);
-	if (ret)
-		goto out_err;
+	rcu_read_unlock();
+
+	/*
+	 * walk the list, call ddebug_add_module for each, which may sleep
+	 */
+	list_for_each_entry_safe(mod_info, tmp, &mod_list, link) {
+		struct _ddebug_info mod_di = di;
+
+		mod_di.mod_name = mod_info->mod_name;
+		mod_di.descs.start = (struct _ddebug *)mod_info->start_addr;
+		mod_di.descs.len = (mod_info->end_addr - mod_info->start_addr) / sizeof(struct _ddebug) + 1;
+
+		ret = ddebug_add_module(&mod_di);
+		if (ret) {
+			pr_err("Failed to add module %s, error %d\n",
+			       mod_di.mod_name, ret);
+			goto out_err;
+		}
+		mod_ct++;
+		i += mod_di.descs.len;
+		list_del(&mod_info->link);
+		kfree(mod_info);
+	}
 
 	ddebug_init_success = 1;
 	vpr_info("%d prdebugs in %d modules, %d KiB in ddebug tables, %d+%d kiB in __dyndbg:_descs+_sites sections\n",
@@ -1985,8 +2013,13 @@ static int __init dynamic_debug_init(void)
 	return 0;
 
 out_err:
+	/* Clean up any remaining items in mod_list on error */
+	list_for_each_entry_safe(mod_info, tmp, &mod_list, link) {
+		list_del(&mod_info->link);
+		kfree(mod_info);
+	}
 	ddebug_remove_all_tables();
-	return 0;
+	return ret;
 }
 /* Allow early initialization for boot messages via boot param */
 early_initcall(dynamic_debug_init);
