@@ -203,8 +203,9 @@ static void vpr_info_dq(const struct ddebug_query *query, const char *msg)
 #define DEFINE_DYNDBG_SITE_ACCESSOR(name, mt_tree, err_str)	\
 static const char *desc_##name(struct _ddebug const *dp)	\
 {								\
-	struct maple_tree *mt = &(mt_tree);			\
-	return (const char *)mtree_load(mt, (unsigned long)dp);	\
+	struct maple_tree *mt = &mt_tree;			\
+	void *ret = mtree_load(mt, (unsigned long)dp);		\
+	return (const char *)(ret ?: "unknown");		\
 }
 
 DEFINE_DYNDBG_SITE_ACCESSOR(function, dd_func_map, "func")
@@ -1756,9 +1757,8 @@ static int __init dynamic_debug_init_control(void)
 
 static int __init dynamic_debug_init(void)
 {
-	struct _ddebug *iter, *iter_mod_start;
-	int ret, i, mod_sites, mod_ct;
-	const char *modname;
+	int ret, mod_ct = 0;
+	void *mod_name;
 	char *cmdline;
 
 	struct _ddebug_info di = {
@@ -1789,39 +1789,34 @@ static int __init dynamic_debug_init(void)
 		ddebug_init_success = 1;
 		return 0;
 	}
+	/*
+	 * fill the 3 function, file, module trees with the values and
+	 * their intervals, and then walk the module intervals and
+	 * call add_module for each.
+	 */
+	ddebug_condense_sites(&di);
+	MA_STATE(mas, &dd_mod_map, 0, ULONG_MAX);
 
-	iter = iter_mod_start = __start___dyndbg_descs;
-	modname = dref_modname(iter);
-	i = mod_sites = mod_ct = 0;
+	rcu_read_lock();
+	mas_for_each(&mas, mod_name, ULONG_MAX) {
+		struct _ddebug_info mod_di = di;
+		unsigned long start = mas.index;
+		unsigned long end = mas.last;
 
-	for (; iter < __stop___dyndbg_descs; iter++, i++, mod_sites++) {
+		mod_di.mod_name = (const char *)mod_name;
+		mod_di.descs.start = (struct _ddebug *)start;
+		mod_di.descs.len = (end - start) / sizeof(struct _ddebug) + 1;
 
-		if (strcmp(modname, dref_modname(iter))) {
-			mod_ct++;
-			di.descs.len = mod_sites;
-			di.descs.start = iter_mod_start;
-			di.mod_name = modname;
-			ret = ddebug_add_module(&di);
-			if (ret)
-				goto out_err;
-
-			mod_sites = 0;
-			modname = dref_modname(iter);
-			iter_mod_start = iter;
+		ret = ddebug_add_module(&mod_di);
+		if (ret) {
+			rcu_read_unlock();
+			goto out_err;
 		}
+		mod_ct++;
 	}
-	di.descs.len = mod_sites;
-	di.descs.start = iter_mod_start;
-	di.mod_name = modname;
-	ret = ddebug_add_module(&di);
-	if (ret)
-		goto out_err;
+	rcu_read_unlock();
 
 	ddebug_init_success = 1;
-	vpr_info("%d prdebugs in %d modules, %d KiB in ddebug tables, %d+%d kiB in __dyndbg+_sites sections\n",
-		 i, mod_ct, (int)((mod_ct * sizeof(struct ddebug_table)) >> 10),
-		 (int)((i * sizeof(struct _ddebug)) >> 10),
-		 (int)((i * sizeof(struct _ddebug_site)) >> 10));
 
 	if (di.maps.len)
 		v2pr_info("  %d builtin ddebug class-maps\n", di.maps.len);
