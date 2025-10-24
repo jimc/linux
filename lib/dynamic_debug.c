@@ -1579,6 +1579,23 @@ DYNDBG_SITE_GETTER(function)
 DYNDBG_SITE_GETTER(filename)
 DYNDBG_SITE_GETTER(modname)
 
+static void ddebug_log_compression_stats(int ct_sites, int mods,
+					 int files, int funcs)
+{
+	int ct_ranges = mods + files + funcs;
+	int before = ct_sites * sizeof(struct _ddebug_site);
+
+	int estimated_nodes = (ct_ranges + MAPLE_NODE_SLOTS - 1) /
+		MAPLE_NODE_SLOTS;
+	int overhead = estimated_nodes * sizeof(struct maple_node);
+	int net_savings = before - overhead;
+
+	v2pr_info("condensed %d sites into %d mods, %d files, %d funcs\n",
+		  ct_sites, mods, files, funcs);
+	vpr_info("memory: site data %d KiB, tree size ~%d KiB, saved ~%d KiB\n",
+		 before >> 10, overhead >> 10, net_savings >> 10);
+}
+
 static int ddebug_grow_tree(struct _ddebug_info *di,
 			    struct maple_tree *mt,
 			    const char *kind,
@@ -1620,8 +1637,7 @@ static void ddebug_condense_sites(struct _ddebug_info *di)
 	mods = ddebug_grow_tree(di, &dd_mod_map,
 				"mod", ddebug_get_modname);
 
-	vpr_info("condensed %d sites into %d mods, %d files, %d funcs\n",
-		 di->descs.len, mods, files, funcs);
+	ddebug_log_compression_stats(di->descs.len, mods, files, funcs);
 	di->sites.len = 0;
 }
 
