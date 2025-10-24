@@ -1527,12 +1527,16 @@ static void ddebug_condense_sites(struct _ddebug_info *di)
 {
 	int funcs = 0, files = 0, mods = 0;
 
+	if (!di->sites.len)
+		return;
+
 	funcs = ddebug_grow_tree(&di->descs, &dd_func_map, "func", ddebug_get_function);
 	files = ddebug_grow_tree(&di->descs, &dd_file_map, "file", ddebug_get_filename);
 	mods = ddebug_grow_tree(&di->descs, &dd_mod_map, "mod", ddebug_get_modname);
 
 	vpr_info("condensed %d sites into %d mods, %d files, %d funcs\n",
 		 di->descs.len, mods, files, funcs);
+	di->sites.len = 0;
 }
 
 static int ddebug_remove_module(const char *mod_name);
