@@ -102,35 +102,36 @@ struct _ddebug_class_user {
  * together, each is a vec_<T>: a struct { struct T start[], int len }.
  *
  * For builtins, it is used as a cursor, with the inner structs
- * marking sub-vectors of the builtin __sections in DATA_DATA
+ * marking sub-vectors of the builtin __sections in DATA_DATA.
  */
 struct _ddebug_descs {
 	struct _ddebug *start;
 	int len;
-};
+} __packed;
 
 struct _ddebug_sites {
-	struct _ddebug_site *start;
 	int len;
+	struct _ddebug_site *start;
 } __packed;
 
 struct _ddebug_class_maps {
 	struct _ddebug_class_map *start;
 	int len;
-};
+} __packed;
 
 struct _ddebug_class_users {
-	struct _ddebug_class_user *start;
 	int len;
-};
+	struct _ddebug_class_user *start;
+} __packed;
 
 struct _ddebug_info {
 	const char *mod_name;
+	/* tetris packing */
 	struct _ddebug_descs descs;
 	struct _ddebug_sites sites;
 	struct _ddebug_class_maps maps;
 	struct _ddebug_class_users users;
-};
+} __aligned(8);
 
 struct _ddebug_class_param {
 	union {
