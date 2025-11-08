@@ -1105,7 +1105,8 @@ our $declaration_macros = qr{(?x:
 	(?:SKCIPHER_REQUEST|SHASH_DESC|AHASH_REQUEST)_ON_STACK\s*\(|
 	(?:$Storage\s+)?(?:XA_STATE|XA_STATE_ORDER)\s*\(|
 	__cacheline_group_(?:begin|end)(?:_aligned)?\s*\(|
-	__dma_from_device_group_(?:begin|end)\s*\(
+	__dma_from_device_group_(?:begin|end)\s*\(|
+	(?:MA_STATE)\s*\(
 )};
 
 our %allow_repeated_words = (
