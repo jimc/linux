@@ -649,8 +649,8 @@ function GOLDEN_RECORDS {
 #K= bede904b02278e5648bb7a8243be8d98 FT_path_module_queries.2
 #K= 4b902c159d7f08f91377bf0a353e0051 FT_path_module_queries.3
 #K= bede904b02278e5648bb7a8243be8d98 FT_path_module_queries.4
-#K= 5d38e4cca64da64a4d7f433398668836 FT_test_classes.1
-#K= 5516e3d13cba7ea4197a7fb6c033887a FT_test_classes.2
+#K= d4923595eea382923aee64aed15c7c35 FT_test_classes.1
+#K= a15ec4843acd721fbdfddc0b512c8032 FT_test_classes.2
 #K= 40a294034c886787960f4c751b196da9 FT_test_classes.3
 #K= 38e813e9025107ac3e24226b8d487a92 FT_classmap_inheritance.1
 #K= 9b82b12a35ad98ef26183db15071f70e FT_classmap_inheritance.2
