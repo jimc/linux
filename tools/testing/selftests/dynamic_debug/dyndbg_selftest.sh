@@ -204,7 +204,7 @@ function verify_modprobe_param_logging {
     # capture bookends to verify their actual pr_debug logging!
     
     if [ "$param" = "p_disjoint_bits" ] || [ "$param" = "p_level_num" ]; then
-        set_param 1 /sys/module/test_dynamic_debug/parameters/do_prints
+        set_param 1 /sys/module/test_dynamic_debug/parameters/do_classes
     fi
 
     log_stop
@@ -491,7 +491,7 @@ function FT_test_classes {
     # 2. Verify state transition and live-printing end-to-end via ddcmd_load!
     ddcmd_load "class,D2_CORE,+pmf;class,D2_KMS,+pls;class,D2_ATOMIC,+pml" \
         '\[test_dynamic_debug\]' \
-        "/sys/module/test_dynamic_debug/parameters/do_prints" "1"
+        "/sys/module/test_dynamic_debug/parameters/do_classes" "1"
 
     ifrmmod test_dynamic_debug
 }
@@ -561,8 +561,8 @@ function FT_classmap_inheritance {
 
     # --- Live Content Fingerprinting Phase ---
     log_start
-    echo 1 > /sys/module/test_dynamic_debug/parameters/do_prints
-    echo 1 > /sys/module/test_dynamic_debug_submod/parameters/do_prints
+    echo 1 > /sys/module/test_dynamic_debug/parameters/do_classes
+    echo 1 > /sys/module/test_dynamic_debug_submod/parameters/do_classes
     log_stop
 
     ifrmmod test_dynamic_debug_submod
@@ -580,10 +580,8 @@ function FT_modprobe_w_param {
 	echo $verbose > /sys/module/dynamic_debug/parameters/verbose
 
 	# Verify each parameter load sequence with 100% DRY modularity
-	verify_modprobe_param_logging "do_prints" "1"
-
-	#verify_modprobe_param_logging "do_classes" "1"
-	#verify_modprobe_param_logging "do_bulk" "1"
+	verify_modprobe_param_logging "do_classes" "1"
+	verify_modprobe_param_logging "do_bulk" "1"
 
 	# Sequence composite bitmasks to verify disjoint bit transitions
 	for mask in "0x05" "0x12" "0x1f" "0x00"; do
@@ -685,41 +683,43 @@ function GOLDEN_RECORDS {
 #K= 755151834387b0bb737a172278df34f7 FT_classmap_inheritance.5 "test_dynamic_debug"
 #K= a7d407d63fe4fef3b768b93a68319f45 FT_classmap_inheritance.6 "\[test_dynamic_debug\]"
 #K= fd9358cdf7709ad1359a972db1d35bbe FT_classmap_inheritance.7 "test_dynamic_debug"
-#K= f43e0aff8a4b38435b73d90ed8100d1b FT_classmap_inheritance.8 dmesg
-#K= 0f3a3a0814ef979d7d5b6ba42c6b5542 FT_modprobe_w_param.1    dmesg
-#K= ec0781a78e51590d8481c2551411ded6 FT_modprobe_w_param.2    dmesg
-#K= d7ed6935730c356ac78d6a9e7184b5d6 FT_modprobe_w_param.3    "\[test_dynamic_debug\]"
-#K= b7b913ba270695efd7a812f67ebda48c FT_modprobe_w_param.4    dmesg
-#K= d7ed6935730c356ac78d6a9e7184b5d6 FT_modprobe_w_param.5    "\[test_dynamic_debug\]"
-#K= ea1267e206c3e3d062e829ef82fe68f1 FT_modprobe_w_param.6    dmesg
-#K= d7ed6935730c356ac78d6a9e7184b5d6 FT_modprobe_w_param.7    "\[test_dynamic_debug\]"
-#K= 5746de4ee0f35a779a4fad6f2186b708 FT_modprobe_w_param.8    dmesg
-#K= d7ed6935730c356ac78d6a9e7184b5d6 FT_modprobe_w_param.9    "\[test_dynamic_debug\]"
-#K= 2f7acce16b80572d5e8eaee6bda4d227 FT_modprobe_w_param.10   dmesg
-#K= d7ed6935730c356ac78d6a9e7184b5d6 FT_modprobe_w_param.11   "\[test_dynamic_debug\]"
-#K= 3f26cbf7e3f672f5f077a03d6ff86831 FT_modprobe_w_param.12   dmesg
-#K= d7ed6935730c356ac78d6a9e7184b5d6 FT_modprobe_w_param.13   "\[test_dynamic_debug\]"
-#K= 1cde346e273ca9854cb947576b22b528 FT_modprobe_w_param.14   dmesg
-#K= d7ed6935730c356ac78d6a9e7184b5d6 FT_modprobe_w_param.15   "\[test_dynamic_debug\]"
-#K= dafad094064271d2ac6a47859a63d67b FT_modprobe_w_param.16   dmesg
-#K= d7ed6935730c356ac78d6a9e7184b5d6 FT_modprobe_w_param.17   "\[test_dynamic_debug\]"
-#K= 7b761bb8a6055bab29f50cde888f5292 FT_modprobe_w_param.18   dmesg
-#K= 8830c131b3a00bb94695e9c7f8f2ad9e FT_modprobe_w_param.19   dmesg
-#K= d7ed6935730c356ac78d6a9e7184b5d6 FT_modprobe_w_param.20   "\[test_dynamic_debug\]"
-#K= b62d204303c12d1bdf5ce3b4a1babb76 FT_modprobe_w_param.21   dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_classmap_inheritance.8 dmesg
+#K= 873722664eb8b604103e575493d553df FT_modprobe_w_param.1    dmesg
+#K= 5f9fa1ac0b8598efc8b75b234431e7d8 FT_modprobe_w_param.2    dmesg
+#K= 7e9ff4656971ef4104483ef5de83c586 FT_modprobe_w_param.3    dmesg
+#K= d7ed6935730c356ac78d6a9e7184b5d6 FT_modprobe_w_param.4    "\[test_dynamic_debug\]"
+#K= c95b26e7c27979894941434ffa9c8e9c FT_modprobe_w_param.5    dmesg
+#K= d7ed6935730c356ac78d6a9e7184b5d6 FT_modprobe_w_param.6    "\[test_dynamic_debug\]"
+#K= 984eb9987b2a977d428b6667bc5eea45 FT_modprobe_w_param.7    dmesg
+#K= d7ed6935730c356ac78d6a9e7184b5d6 FT_modprobe_w_param.8    "\[test_dynamic_debug\]"
+#K= 5746de4ee0f35a779a4fad6f2186b708 FT_modprobe_w_param.9    dmesg
+#K= d7ed6935730c356ac78d6a9e7184b5d6 FT_modprobe_w_param.10   "\[test_dynamic_debug\]"
+#K= 589287acf0b6219171815f6b36d00161 FT_modprobe_w_param.11   dmesg
+#K= d7ed6935730c356ac78d6a9e7184b5d6 FT_modprobe_w_param.12   "\[test_dynamic_debug\]"
+#K= 4accc32e040688ff04f69f32d86911fd FT_modprobe_w_param.13   dmesg
+#K= d7ed6935730c356ac78d6a9e7184b5d6 FT_modprobe_w_param.14   "\[test_dynamic_debug\]"
+#K= 0a79451c0b4d627ea7ca330d5927e0b5 FT_modprobe_w_param.15   dmesg
+#K= d7ed6935730c356ac78d6a9e7184b5d6 FT_modprobe_w_param.16   "\[test_dynamic_debug\]"
+#K= dafad094064271d2ac6a47859a63d67b FT_modprobe_w_param.17   dmesg
+#K= d7ed6935730c356ac78d6a9e7184b5d6 FT_modprobe_w_param.18   "\[test_dynamic_debug\]"
+#K= 3778ed0a1b49c3b9a7d957e3b13b8e4a FT_modprobe_w_param.19   dmesg
+#K= cd5d1e67d54dcb652880c023f7efe911 FT_modprobe_w_param.20   dmesg
+#K= 8cfb59d8a2ecb73b668a607367f005da FT_modprobe_w_param.21   dmesg
 #K= d7ed6935730c356ac78d6a9e7184b5d6 FT_modprobe_w_param.22   "\[test_dynamic_debug\]"
-#K= b63accafcc9c3ff6bcde98a1c43c9de0 FT_modprobe_w_param.23   dmesg
+#K= 3f23d9c8dd05875785b50cc13ba44773 FT_modprobe_w_param.23   dmesg
 #K= d7ed6935730c356ac78d6a9e7184b5d6 FT_modprobe_w_param.24   "\[test_dynamic_debug\]"
-#K= 8fa4ea5dac0580f5f57567b41d1c8b1b FT_modprobe_w_param.25   dmesg
+#K= f79b6d8612a61a0a9871dd3deac627eb FT_modprobe_w_param.25   dmesg
 #K= d7ed6935730c356ac78d6a9e7184b5d6 FT_modprobe_w_param.26   "\[test_dynamic_debug\]"
-#K= 0d4a25052a3408ad590b5632f0a10af3 FT_modprobe_w_param.27   dmesg
+#K= 8fa4ea5dac0580f5f57567b41d1c8b1b FT_modprobe_w_param.27   dmesg
 #K= d7ed6935730c356ac78d6a9e7184b5d6 FT_modprobe_w_param.28   "\[test_dynamic_debug\]"
-#K= 41716552b86a60975db26d4d3341f561 FT_modprobe_w_param.29   dmesg
+#K= 873995a873d9dbe889ce5c36026f8113 FT_modprobe_w_param.29   dmesg
 #K= d7ed6935730c356ac78d6a9e7184b5d6 FT_modprobe_w_param.30   "\[test_dynamic_debug\]"
-#K= c69714e59345bf0937290f0bdd0b2803 FT_modprobe_w_param.31   dmesg
+#K= 42cae6c20569639e205a6e2ca1a501a3 FT_modprobe_w_param.31   dmesg
 #K= d7ed6935730c356ac78d6a9e7184b5d6 FT_modprobe_w_param.32   "\[test_dynamic_debug\]"
-#K= 1ca895d63d34634ce1a72189aedb7be3 FT_modprobe_w_param.33   dmesg
+#K= 5038490cf2e432f5a2055283e338466f FT_modprobe_w_param.33   dmesg
 #K= d7ed6935730c356ac78d6a9e7184b5d6 FT_modprobe_w_param.34   "\[test_dynamic_debug\]"
+#K= 1ca895d63d34634ce1a72189aedb7be3 FT_modprobe_w_param.35   dmesg
+#K= d7ed6935730c356ac78d6a9e7184b5d6 FT_modprobe_w_param.36   "\[test_dynamic_debug\]"
 EOF
         # Read the K-recs and skip those for tests that can't run
         while read -r line; do
