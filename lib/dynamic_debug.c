@@ -13,6 +13,7 @@
 
 #define pr_fmt(fmt) "dyndbg: " fmt
 
+#include <linux/array_size.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
