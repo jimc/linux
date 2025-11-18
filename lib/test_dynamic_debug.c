@@ -29,24 +29,43 @@
 
 #include <linux/module.h>
 
-/* re-gen output by reading or writing sysfs node: do_prints */
+/* re-trigger debug output by reading or writing sysfs nodes: do_classes or do_bulk */
+static void do_classes(unsigned int); /* device under test */
+static void do_bulk(unsigned int);    /* device under test */
 
-static void do_prints(void); /* device under test */
-static int param_set_do_prints(const char *instr, const struct kernel_param *kp)
+static int param_set_do_repeats(const char *instr, const struct kernel_param *kp)
 {
-	do_prints();
+	int rc;
+	unsigned int ct;
+	void (*repeat_fn)(unsigned int) = kp->arg;
+
+	rc = kstrtouint(instr, 0, &ct);
+	if (rc) {
+		pr_err("expecting numeric input, using 1 instead\n");
+		ct = 1;
+	}
+
+	repeat_fn(ct);
+
 	return 0;
 }
-static int param_get_do_prints(char *buffer, const struct kernel_param *kp)
+
+static int param_get_do_repeats(char *buffer, const struct kernel_param *kp)
 {
-	do_prints();
-	return scnprintf(buffer, PAGE_SIZE, "did do_prints\n");
+	void (*repeat_fn)(unsigned int) = kp->arg;
+
+	repeat_fn(1);
+
+	return scnprintf(buffer, PAGE_SIZE, "did 1 %s\n", kp->name);
 }
-static const struct kernel_param_ops param_ops_do_prints = {
-	.set = param_set_do_prints,
-	.get = param_get_do_prints,
+
+static const struct kernel_param_ops param_ops_do_repeats = {
+	.set = param_set_do_repeats,
+	.get = param_get_do_repeats,
 };
-module_param_cb(do_prints, &param_ops_do_prints, NULL, 0600);
+
+module_param_cb(do_classes, &param_ops_do_repeats, do_classes, 0600);
+module_param_cb(do_bulk, &param_ops_do_repeats, do_bulk, 0600);
 
 /*
  * Using the CLASSMAP api:
@@ -202,17 +221,40 @@ static void do_levels(void)
 	prdbg(V7);
 }
 
-static void do_prints(void)
+static void do_classes(unsigned int ct)
 {
-	pr_debug("do_prints:\n");
-	do_cats();
-	do_levels();
+	/* maybe clamp this */
+	pr_debug("do_classes %d times:\n", ct);
+	for (; ct; ct--) {
+		do_cats();
+		do_levels();
+	}
+}
+
+static void do_bulk(unsigned int ct)
+{
+	int i;
+
+	pr_debug("do_bulk %d times:\n", ct);
+	for (i = 1; i <= ct; i++) {
+		pr_debug("bulk msg %d.0\n", i);
+		pr_debug("bulk msg %d.1\n", i);
+		pr_debug("bulk msg %d.2\n", i);
+		pr_debug("bulk msg %d.3\n", i);
+		pr_debug("bulk msg %d.4\n", i);
+		pr_debug("bulk msg %d.5\n", i);
+		pr_debug("bulk msg %d.6\n", i);
+		pr_debug("bulk msg %d.7\n", i);
+		pr_debug("bulk msg %d.8\n", i);
+		pr_debug("bulk msg %d.9\n", i);
+	}
 }
 
 static int __init test_dynamic_debug_init(void)
 {
 	pr_debug("init start\n");
-	do_prints();
+	do_classes(1);
+	do_bulk(1);
 	pr_debug("init done\n");
 	return 0;
 }
