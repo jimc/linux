@@ -335,12 +335,94 @@ function test_multiquery_splitting {
     ifrmmod test_dynamic_debug
 }
 
+function test_mod_submod {
+    echo -e "${GREEN}# TEST_MOD_SUBMOD ${NC}"
+    if [ $LACK_TMOD -eq 1 ]; then
+	echo "SKIP - test requires test-dynamic-debug.ko"
+	return
+    fi
+    ifrmmod test_dynamic_debug_submod
+    ifrmmod test_dynamic_debug
+    ddcmd =_
+
+    # modprobe with class enablements
+    modprobe test_dynamic_debug \
+	dyndbg=class,D2_CORE,+pf@class,D2_KMS,+pt@class,D2_ATOMIC,+pm
+
+    count_pr_debugs '\[test_dynamic_debug\]' 23 -r
+    count_pr_debugs =pf 1
+    count_pr_debugs =pt 1
+    count_pr_debugs =pm 1
+
+    modprobe test_dynamic_debug_submod
+    count_pr_debugs test_dynamic_debug_submod 23 -r
+    count_pr_debugs '\[test_dynamic_debug\]' 23 -r
+    count_pr_debugs test_dynamic_debug 46 -r
+
+    # no enablements propagate here
+    count_pr_debugs =pf 1
+    count_pr_debugs =pt 1
+    count_pr_debugs =pm 1
+
+    # change classes again, this time submod too
+    ddcmd class,D2_CORE,+mf@class,D2_KMS,+lt@class,D2_ATOMIC,+ml "# add some prefixes"
+    count_pr_debugs =pmf 1
+    count_pr_debugs =plt 1
+    count_pr_debugs =pml 1
+    #  submod changed too
+    count_pr_debugs =mf 1
+    count_pr_debugs =lt 1
+    count_pr_debugs =ml 1
+
+    # now work the classmap-params
+    # fresh start, to clear all above flags (test-fn limits)
+    ifrmmod test_dynamic_debug_submod
+    ifrmmod test_dynamic_debug
+    modprobe test_dynamic_debug_submod # get supermod too
+
+    echo 1 > /sys/module/test_dynamic_debug/parameters/p_disjoint_bits
+    echo 4 > /sys/module/test_dynamic_debug/parameters/p_level_num
+    # 2 mods * ( V1-3 + D2_CORE )
+    count_pr_debugs =p 8
+    echo 3 > /sys/module/test_dynamic_debug/parameters/p_disjoint_bits
+    echo 0 > /sys/module/test_dynamic_debug/parameters/p_level_num
+    # 2 mods * ( D2_CORE, D2_DRIVER )
+    count_pr_debugs =p 4
+    echo 0x16 > /sys/module/test_dynamic_debug/parameters/p_disjoint_bits
+    echo 0 > /sys/module/test_dynamic_debug/parameters/p_level_num
+    # 2 mods * ( D2_DRIVER, D2_KMS, D2_ATOMIC )
+    count_pr_debugs =p 6
+
+    # recap DRM_USE_DYNAMIC_DEBUG regression
+    ifrmmod test_dynamic_debug_submod
+    ifrmmod test_dynamic_debug
+    # set super-mod params
+    modprobe test_dynamic_debug p_disjoint_bits=0x16 p_level_num=5
+    count_pr_debugs =p 7
+    modprobe test_dynamic_debug_submod
+    # see them picked up by submod
+    count_pr_debugs =p 14
+
+    # --- Live Content Fingerprinting Phase ---
+    local test_key="mod_submod_regression_prints_${BASH_LINENO[0]}"
+    echo "DYNDBG_START_${test_key}" > /dev/kmsg
+    echo 1 > /sys/module/test_dynamic_debug/parameters/do_prints
+    echo 1 > /sys/module/test_dynamic_debug_submod/parameters/do_prints
+    echo "DYNDBG_END_${test_key}" > /dev/kmsg
+    compute_dmesg_block_fingerprint "$test_key" "1"
+
+    ifrmmod test_dynamic_debug_submod
+    ifrmmod test_dynamic_debug
+}
+
 tests_list=(
     basic_tests
     test_subsystem_module_queries
     test_hyphen_underscore
+    # these require test_dynamic_debug*.ko
     comma_terminator_tests
     test_multiquery_splitting
+    test_mod_submod
 )
 
 # Run tests
