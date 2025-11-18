@@ -325,9 +325,19 @@ function FT_basic_queries {
     ddcmd "module params +l"  'kernel/params.c'
     ddcmd "module params -m"  'kernel/params.c'
     ddcmd "module params =_"  'kernel/params.c'
+}
 
-    # multi-query commands split on ; on a single line
+function FT_multi_query {
+    v_echo "${GREEN}# MULTI_QUERY_TESTS ${NC}"
+    if [ $LACK_DD_BUILTIN -eq 1 ]; then
+	echo "SKIP - test requires params, which is a builtin module"
+	return
+    fi
+    ddcmd =_ # zero everything
+
+    # multi-query commands on a single line, split on ;/@ respectively
     ddcmd "module params +mf ; module params func parse_args +sl"  'kernel/params.c'
+    ddcmd "module params -f @ module params func parse_args -l"  'kernel/params.c'
 
     # verify multi-cmd input, newline separated, with embedded comments
     ddcmd =_ # reset before multiline query to capture full transition
@@ -493,7 +503,7 @@ function FT_test_classes {
     verify_control_slice '\[test_dynamic_debug\]'
 
     # 2. Verify state transition and live-printing end-to-end via ddcmd_load!
-    ddcmd_load "class,D2_CORE,+pmf;class,D2_KMS,+pls;class,D2_ATOMIC,+pml" \
+    ddcmd_load "class,D2_CORE,+pmf@class,D2_KMS,+pls@class,D2_ATOMIC,+pml" \
         '\[test_dynamic_debug\]' \
         "/sys/module/test_dynamic_debug/parameters/do_classes" "1"
 
@@ -591,6 +601,7 @@ builtin_tests=(
     FT_path_module_queries
     FT_hyphen_underscore
     FT_comma_terminators
+    FT_multi_query
 )
 
 # Modular Feature Tests (Require CONFIG_MODULES=y and test_dynamic_debug*.ko available)
@@ -660,13 +671,14 @@ function GOLDEN_RECORDS {
 #K= eb3bd35439cc289ef59ee967aad4d540 FT_basic_queries.2
 #K= 00359a9a05d439ec3a850a55e437fcbd FT_basic_queries.3
 #K= b24b1a8081d7514fa593cc28f6fb645b FT_basic_queries.4
-#K= de950a3e60669fdd58d0a8c2867a056d FT_basic_queries.5
-#K= 2ff49f0c4d18ec99bcb1c30840fe8afc FT_basic_queries.6
-#K= 9a1b13c32a15363dcf93913308edeea5 FT_basic_queries.7
 #K= 4b902c159d7f08f91377bf0a353e0051 FT_path_module_queries.1
 #K= bede904b02278e5648bb7a8243be8d98 FT_path_module_queries.2
 #K= 4b902c159d7f08f91377bf0a353e0051 FT_path_module_queries.3
 #K= bede904b02278e5648bb7a8243be8d98 FT_path_module_queries.4
+#K= de950a3e60669fdd58d0a8c2867a056d FT_multi_query.1
+#K= f49de2063a545721cf5e959efc160836 FT_multi_query.2
+#K= 2ff49f0c4d18ec99bcb1c30840fe8afc FT_multi_query.3
+#K= 9a1b13c32a15363dcf93913308edeea5 FT_multi_query.4
 #K= 68b329da9893e34099c7d8ad5cb9c940 FT_comma_terminators.1
 #K= 99985cce918eb5108ecb3658249f6bc7 FT_comma_terminators.2
 #K= 68b329da9893e34099c7d8ad5cb9c940 FT_comma_terminators.3
