@@ -39,7 +39,7 @@ struct drm_device;
 struct seq_file;
 
 /* Do *not* use outside of drm_print.[ch]! */
-extern unsigned long __drm_debug;
+extern u64 __drm_debug;
 
 /**
  * DOC: print
@@ -143,7 +143,7 @@ enum drm_debug_category {
 
 static inline bool drm_debug_enabled_raw(enum drm_debug_category category)
 {
-	return unlikely(__drm_debug & BIT(category));
+	return unlikely(__drm_debug & BIT_ULL(category));
 }
 
 #define drm_debug_enabled_instrumented(category)			\
