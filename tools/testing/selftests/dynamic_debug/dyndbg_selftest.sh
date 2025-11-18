@@ -303,11 +303,44 @@ function comma_terminator_tests {
     ddcmd =_
 }
 
+# more testing of multi-query command handling (newlines done in basic_tests)
+function test_multiquery_splitting {
+    echo -e "${GREEN}# TEST_MULTIQUERY_SPLITTING - multi-command splitting on @ ${NC}"
+    if [ $LACK_TMOD -eq 1 ]; then
+	echo "SKIP - test requires test-dynamic-debug.ko"
+	return
+    fi
+    ifrmmod test_dynamic_debug_submod
+    ifrmmod test_dynamic_debug
+    ddcmd =_
+    modprobe test_dynamic_debug dyndbg=class,D2_CORE,+pf@class,D2_KMS,+ps@class,D2_ATOMIC,+pm
+    count_pr_debugs =pf 1
+    count_pr_debugs =ps 1
+    count_pr_debugs =pm 1
+    count_pr_debugs test_dynamic_debug 23 -r
+    # add flags to those callsites
+    ddcmd class,D2_CORE,+mf@class,D2_KMS,+ls@class,D2_ATOMIC,+ml
+    count_pr_debugs =pmf 1
+    count_pr_debugs =psl 1 -v
+    count_pr_debugs =pml 1
+    count_pr_debugs test_dynamic_debug 23 -r
+
+    # --- Live Content Fingerprinting Phase ---
+    local test_key="multiquery_split_prints_${BASH_LINENO[0]}"
+    echo "DYNDBG_START_${test_key}" > /dev/kmsg
+    echo 1 > /sys/module/test_dynamic_debug/parameters/do_prints
+    echo "DYNDBG_END_${test_key}" > /dev/kmsg
+    compute_dmesg_block_fingerprint "$test_key" "1"
+
+    ifrmmod test_dynamic_debug
+}
+
 tests_list=(
     basic_tests
     test_subsystem_module_queries
     test_hyphen_underscore
     comma_terminator_tests
+    test_multiquery_splitting
 )
 
 # Run tests
