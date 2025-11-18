@@ -651,7 +651,7 @@ function GOLDEN_RECORDS {
 #K= bede904b02278e5648bb7a8243be8d98 FT_path_module_queries.4
 #K= 5d38e4cca64da64a4d7f433398668836 FT_test_classes.1
 #K= 5516e3d13cba7ea4197a7fb6c033887a FT_test_classes.2
-#K= a3677b84d39c42c24d879f34f879aa07 FT_test_classes.3
+#K= 40a294034c886787960f4c751b196da9 FT_test_classes.3
 #K= 38e813e9025107ac3e24226b8d487a92 FT_classmap_inheritance.1
 #K= 9b82b12a35ad98ef26183db15071f70e FT_classmap_inheritance.2
 #K= d4937472530af6fdcb0a2440d4a366ea FT_classmap_inheritance.3
@@ -685,13 +685,13 @@ function GOLDEN_RECORDS {
 #K= 030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.26
 #K= 7b91db8e9f160aebb1ee87fab2232404 FT_modprobe_w_param.27
 #K= 030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.28
-#K= e393499e02677de414e478f4e710eeb9 FT_modprobe_w_param.29
+#K= caa849a2817863d68a8d11ee415b049c FT_modprobe_w_param.29
 #K= 030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.30
-#K= 375e38613af3b49bb7c7689dfecf4177 FT_modprobe_w_param.31
+#K= e94cc54f62faa428a03f2a7dbca06f97 FT_modprobe_w_param.31
 #K= 030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.32
-#K= 745a61d20e26a6a22db0b99420fea80a FT_modprobe_w_param.33
+#K= 8919dde0fee0cf42f9388e541b33aa01 FT_modprobe_w_param.33
 #K= 030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.34
-#K= 3d2538bf868e71bff17c768cf118c352 FT_modprobe_w_param.35
+#K= ff5bf6afec9642da83d3dcdb5e732ab9 FT_modprobe_w_param.35
 #K= 030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.36
 EOF
         # Read the K-recs and skip those for tests that can't run
