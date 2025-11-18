@@ -712,13 +712,13 @@ function GOLDEN_RECORDS {
 #K= ef22493a8baadddc5dd0291577e413c8,62e34fa11ce7e711bfe810d6452697a7,030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.26   "\[test_dynamic_debug\]"
 #K= f1b772ca7b98a8d18eb34635a863f883,73564da4d991018d2e5f704f0425daa0,7b91db8e9f160aebb1ee87fab2232404 FT_modprobe_w_param.27   dmesg
 #K= ef22493a8baadddc5dd0291577e413c8,62e34fa11ce7e711bfe810d6452697a7,030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.28   "\[test_dynamic_debug\]"
-#K= 086650af00f66c73a051b6afbb71bf44,01276487a4aed602f729e513885755a7,e393499e02677de414e478f4e710eeb9 FT_modprobe_w_param.29   dmesg
+#K= 086650af00f66c73a051b6afbb71bf44,01276487a4aed602f729e513885755a7,e393499e02677de414e478f4e710eeb9,caa849a2817863d68a8d11ee415b049c FT_modprobe_w_param.29   dmesg
 #K= ef22493a8baadddc5dd0291577e413c8,62e34fa11ce7e711bfe810d6452697a7,030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.30   "\[test_dynamic_debug\]"
-#K= 72a67c4c9de15f08d1212b96ebc71213,1983b6dc4cafc7cb5bd16cf4135f3674,375e38613af3b49bb7c7689dfecf4177 FT_modprobe_w_param.31   dmesg
+#K= 72a67c4c9de15f08d1212b96ebc71213,1983b6dc4cafc7cb5bd16cf4135f3674,375e38613af3b49bb7c7689dfecf4177,e94cc54f62faa428a03f2a7dbca06f97 FT_modprobe_w_param.31   dmesg
 #K= ef22493a8baadddc5dd0291577e413c8,62e34fa11ce7e711bfe810d6452697a7,030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.32   "\[test_dynamic_debug\]"
-#K= 3d2538bf868e71bff17c768cf118c352,58dc8705e7070a8f4c6262ee6b29db7b,745a61d20e26a6a22db0b99420fea80a FT_modprobe_w_param.33   dmesg
+#K= 3d2538bf868e71bff17c768cf118c352,58dc8705e7070a8f4c6262ee6b29db7b,745a61d20e26a6a22db0b99420fea80a,8919dde0fee0cf42f9388e541b33aa01 FT_modprobe_w_param.33   dmesg
 #K= ef22493a8baadddc5dd0291577e413c8,62e34fa11ce7e711bfe810d6452697a7,030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.34   "\[test_dynamic_debug\]"
-#K= 1ca895d63d34634ce1a72189aedb7be3,3d2538bf868e71bff17c768cf118c352 FT_modprobe_w_param.35   dmesg
+#K= 1ca895d63d34634ce1a72189aedb7be3,3d2538bf868e71bff17c768cf118c352,ff5bf6afec9642da83d3dcdb5e732ab9 FT_modprobe_w_param.35   dmesg
 #K= d7ed6935730c356ac78d6a9e7184b5d6,030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.36   "\[test_dynamic_debug\]"
 EOF
         # Read the K-recs and skip those for tests that can't run
