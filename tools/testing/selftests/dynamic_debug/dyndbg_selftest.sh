@@ -180,7 +180,7 @@ function count_pr_debugs {
 function basic_tests {
     echo -e "${GREEN}# BASIC_TESTS ${NC}"
     if [ $LACK_DD_BUILTIN -eq 1 ]; then
-	echo "SKIP"
+	echo "SKIP - test requires params, which is a builtin module"
 	exit $ksft_skip
     fi
     ddcmd =_ # zero everything
@@ -283,10 +283,31 @@ function test_hyphen_underscore {
     ddcmd =_
 }
 
+# test parsing on spaces, commas. testing agains builtin [kernel/params]
+function comma_terminator_tests {
+    echo -e "${GREEN}# COMMA_TERMINATOR_TESTS ${NC}"
+    if [ $LACK_DD_BUILTIN -eq 1 ]; then
+	echo "SKIP - test requires params, which is a builtin module"
+	return
+    fi
+    count_pr_debugs '\[kernel/params\]' 4 -r
+
+    ddcmd module,params,=_		# commas as spaces
+    ddcmd module,params,+mpf		# turn on module's pr-debugs
+    count_pr_debugs =pmf 4
+    # empty tokens in list are ignored
+    ddcmd ,module ,, ,  params, -p
+    count_pr_debugs =mf 4
+    ddcmd " , module ,,, ,  params, -m"
+    count_pr_debugs =f 4
+    ddcmd =_
+}
+
 tests_list=(
     basic_tests
     test_subsystem_module_queries
     test_hyphen_underscore
+    comma_terminator_tests
 )
 
 # Run tests
