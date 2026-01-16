@@ -1170,17 +1170,28 @@ static void *ddebug_proc_start(struct seq_file *m, loff_t *pos)
  * call from userspace, with ddebug_lock held.  Walks to the
  * next _ddebug object with a special case for the header line.
  */
+static char ddebug_epilogue_token;
+#define EPILOGUE_TOKEN (&ddebug_epilogue_token)
+
 static void *ddebug_proc_next(struct seq_file *m, void *p, loff_t *pos)
 {
 	struct ddebug_iter *iter = m->private;
 	struct _ddebug *dp;
 
+	(*pos)++;
+
+	if (p == EPILOGUE_TOKEN)
+		return NULL;
+
 	if (p == SEQ_START_TOKEN)
 		dp = ddebug_iter_first(iter);
 	else
 		dp = ddebug_iter_next(iter);
-	++*pos;
-	return dp;
+
+	if (dp)
+		return dp;
+
+	return EPILOGUE_TOKEN;
 }
 
 static const char *ddebug_class_name(struct _ddebug_info *di, struct _ddebug *dp)
@@ -1216,6 +1227,10 @@ static int ddebug_proc_show(struct seq_file *m, void *p)
 	if (p == SEQ_START_TOKEN) {
 		seq_puts(m,
 			 "# filename:lineno [module]function flags format\n");
+		return 0;
+	}
+	if (p == EPILOGUE_TOKEN) {
+		/* use this soon */
 		return 0;
 	}
 
