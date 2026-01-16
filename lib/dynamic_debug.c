@@ -1420,7 +1420,9 @@ static int ddebug_proc_show(struct seq_file *m, void *p)
 		return 0;
 	}
 	if (p == EPILOGUE_TOKEN) {
-		seq_printf(m, "#: total call-counts: %lu\n", get_ddebug_call_count());
+		seq_printf(m, "#: cached_prefixes=%u\n", pr_prefixes_count);
+		seq_printf(m, "#: total call-counts: %lu\n",
+			   get_ddebug_call_count());
 		return 0;
 	}
 
