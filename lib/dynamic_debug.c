@@ -376,6 +376,7 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 
 	/* search for matching ddebugs */
 	mutex_lock(&ddebug_lock);
+	rcu_read_lock();
 	list_for_each_entry(dt, &ddebug_tables, link) {
 		struct _ddebug_info *di = &dt->info;
 		struct _ddebug_class_map *mods_map;
@@ -420,6 +421,7 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 			dp->flags = newflags;
 		}
 	}
+	rcu_read_unlock();
 	mutex_unlock(&ddebug_lock);
 
 	return nfound;
@@ -970,6 +972,7 @@ void __dynamic_pr_debug(struct _ddebug *descriptor, const char *fmt, ...)
 	va_list args;
 	struct va_format vaf;
 	char buf[PREFIX_SIZE] = "";
+	char *pfx;
 
 	BUG_ON(!descriptor);
 	BUG_ON(!fmt);
@@ -979,7 +982,10 @@ void __dynamic_pr_debug(struct _ddebug *descriptor, const char *fmt, ...)
 	vaf.fmt = fmt;
 	vaf.va = &args;
 
-	printk(KERN_DEBUG "%s%pV", dynamic_emit_prefix(descriptor, buf), &vaf);
+	rcu_read_lock();
+	pfx = dynamic_emit_prefix(descriptor, buf);
+	printk(KERN_DEBUG "%s%pV", pfx, &vaf);
+	rcu_read_unlock();
 
 	va_end(args);
 }
@@ -1003,11 +1009,15 @@ void __dynamic_dev_dbg(struct _ddebug *descriptor,
 		printk(KERN_DEBUG "(NULL device *): %pV", &vaf);
 	} else {
 		char buf[PREFIX_SIZE] = "";
+		char *pfx;
 
+		rcu_read_lock();
+		pfx = dynamic_emit_prefix(descriptor, buf);
 		dev_printk_emit(LOGLEVEL_DEBUG, dev, "%s%s %s: %pV",
-				dynamic_emit_prefix(descriptor, buf),
+				pfx,
 				dev_driver_string(dev), dev_name(dev),
 				&vaf);
+		rcu_read_unlock();
 	}
 
 	va_end(args);
@@ -1032,14 +1042,18 @@ void __dynamic_netdev_dbg(struct _ddebug *descriptor,
 
 	if (dev && dev->dev.parent) {
 		char buf[PREFIX_SIZE] = "";
+		char *pfx;
 
+		rcu_read_lock();
+		pfx = dynamic_emit_prefix(descriptor, buf);
 		dev_printk_emit(LOGLEVEL_DEBUG, dev->dev.parent,
 				"%s%s %s %s%s: %pV",
-				dynamic_emit_prefix(descriptor, buf),
+				pfx,
 				dev_driver_string(dev->dev.parent),
 				dev_name(dev->dev.parent),
 				netdev_name(dev), netdev_reg_state(dev),
 				&vaf);
+		rcu_read_unlock();
 	} else if (dev) {
 		printk(KERN_DEBUG "%s%s: %pV", netdev_name(dev),
 		       netdev_reg_state(dev), &vaf);
@@ -1068,14 +1082,18 @@ void __dynamic_ibdev_dbg(struct _ddebug *descriptor,
 
 	if (ibdev && ibdev->dev.parent) {
 		char buf[PREFIX_SIZE] = "";
+		char *pfx;
 
+		rcu_read_lock();
+		pfx = dynamic_emit_prefix(descriptor, buf);
 		dev_printk_emit(LOGLEVEL_DEBUG, ibdev->dev.parent,
 				"%s%s %s %s: %pV",
-				dynamic_emit_prefix(descriptor, buf),
+				pfx,
 				dev_driver_string(ibdev->dev.parent),
 				dev_name(ibdev->dev.parent),
 				dev_name(&ibdev->dev),
 				&vaf);
+		rcu_read_unlock();
 	} else if (ibdev) {
 		printk(KERN_DEBUG "%s: %pV", dev_name(&ibdev->dev), &vaf);
 	} else {
@@ -1184,6 +1202,7 @@ static void *ddebug_proc_start(struct seq_file *m, loff_t *pos)
 	int n = *pos;
 
 	mutex_lock(&ddebug_lock);
+	rcu_read_lock();
 
 	if (!n)
 		return SEQ_START_TOKEN;
@@ -1274,6 +1293,7 @@ static int ddebug_proc_show(struct seq_file *m, void *p)
  */
 static void ddebug_proc_stop(struct seq_file *m, void *p)
 {
+	rcu_read_unlock();
 	mutex_unlock(&ddebug_lock);
 }
 
