@@ -21,6 +21,22 @@
 #include <stdbool.h>
 #include <errno.h>
 
+/* Local CRC32 implementation for modpost.c */
+#define CRCPOLY_LE 0xEDB88320
+
+typedef uint32_t u32;
+
+static u32 crc32_le(u32 crc,  char  *p, size_t len)
+{
+	int i;
+	while (len--) {
+		crc ^= *p++;
+		for (i = 0; i < 8; i++)
+			crc = (crc >> 1) ^ ((crc & 1) ? CRCPOLY_LE : 0);
+	}
+	return crc;
+}
+
 #include <hash.h>
 #include <hashtable.h>
 #include <list.h>
@@ -1581,6 +1597,7 @@ static void read_symbols(const char *modname)
 
 	/* strip trailing .o */
 	mod = new_module(modname, strlen(modname) - strlen(".o"));
+	mod->name_hash = crc32_le(0, mod->name, strlen(mod->name));
 
 	/* save .no_trim_symbol section for later use */
 	if (info.no_trim_symbol_len) {
@@ -1834,6 +1851,7 @@ static void add_header(struct buffer *b, struct module *mod)
 	buf_printf(b, "#include <linux/compiler.h>\n");
 	buf_printf(b, "\n");
 	buf_printf(b, "MODULE_INFO(name, KBUILD_MODNAME);\n");
+	buf_printf(b, "MODULE_INFO(name_crc, \"0x%08x\");\n", mod->name_hash);
 	buf_printf(b, "\n");
 	buf_printf(b, "__visible struct module __this_module\n");
 	buf_printf(b, "__section(\".gnu.linkonce.this_module\") = {\n");

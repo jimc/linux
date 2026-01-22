@@ -11,10 +11,13 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <elf.h>
+#include <stdint.h>
 #include "../../include/linux/module_symbol.h"
 
 #include <list_types.h>
 #include "elfconfig.h"
+
+typedef uint32_t u32;
 
 /* On BSD-alike OSes elf.h defines these according to host's word size */
 #undef ELF_ST_BIND
@@ -126,7 +129,8 @@ struct module {
 	bool seen;
 	bool has_init;
 	bool has_cleanup;
-	char	     srcversion[25];
+		char         srcversion[25];
+		u32          name_hash;
 	// Missing namespace dependencies
 	struct list_head missing_namespaces;
 	// Actual imported namespaces

@@ -402,9 +402,17 @@ struct klp_modinfo {
 
 struct module {
 	enum module_state state;
+	u32 name_hash;
 
 	/* Member of list of modules */
 	struct list_head list;
+
+	/* Sysfs stuff. */
+	struct module_kobject mkobj;
+	struct module_attribute *modinfo_attrs;
+	const char *version;
+	const char *srcversion;
+	struct kobject *holders_dir;
 
 	/* Unique handle for this module */
 	char name[MODULE_NAME_LEN];
@@ -413,13 +421,6 @@ struct module {
 	/* Module build ID */
 	unsigned char build_id[BUILD_ID_SIZE_MAX];
 #endif
-
-	/* Sysfs stuff. */
-	struct module_kobject mkobj;
-	struct module_attribute *modinfo_attrs;
-	const char *version;
-	const char *srcversion;
-	struct kobject *holders_dir;
 
 	/* Exported symbols */
 	const struct kernel_symbol *syms;

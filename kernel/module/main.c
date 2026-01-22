@@ -39,6 +39,7 @@
 #include <linux/mutex.h>
 #include <linux/rculist.h>
 #include <linux/uaccess.h>
+#include <linux/crc32.h>
 #include <asm/cacheflush.h>
 #include <linux/set_memory.h>
 #include <asm/mmu_context.h>
@@ -431,13 +432,16 @@ struct module *find_module_all(const char *name, size_t len,
 			       bool even_unformed)
 {
 	struct module *mod;
+	u32 incoming_name_hash = crc32_le(0, name, len);
 
 	list_for_each_entry_rcu(mod, &modules, list,
 				lockdep_is_held(&module_mutex)) {
 		if (!even_unformed && mod->state == MODULE_STATE_UNFORMED)
 			continue;
-		if (strlen(mod->name) == len && !memcmp(mod->name, name, len))
-			return mod;
+		if (mod->name_hash == incoming_name_hash) {
+			if (strlen(mod->name) == len && !memcmp(mod->name, name, len))
+				return mod;
+		}
 	}
 	return NULL;
 }
