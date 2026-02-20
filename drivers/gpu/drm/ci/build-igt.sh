@@ -32,7 +32,6 @@ cd igt-gpu-tools
 git checkout $IGT_VERSION
 
 if [[ "$KERNEL_ARCH" = "arm" ]]; then
-    . ../.gitlab-ci/container/create-cross-file.sh armhf
     EXTRA_MESON_ARGS="--cross-file /cross_file-armhf.txt"
 fi
 
