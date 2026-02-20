@@ -27,7 +27,7 @@ function generate_testlist {
     set -x
 }
 
-git clone https://gitlab.freedesktop.org/drm/igt-gpu-tools.git --single-branch --no-checkout
+git clone https://gitlab.freedesktop.org/jim.cromie/igt-gpu-tools.git  -b dilation --single-branch --no-checkout
 cd igt-gpu-tools
 git checkout $IGT_VERSION
 
