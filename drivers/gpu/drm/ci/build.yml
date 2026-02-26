@@ -46,7 +46,7 @@ igt:arm32:
   before_script:
     - dpkg --add-architecture armhf
     - apt-get update
-    - apt-get install -y libjansson-dev:armhf libpci-dev:armhf libprocps-dev:armhf
+    - apt-get install -y libjansson-dev:armhf libpci-dev:armhf libproc2-dev:armhf
   extends: .build:arm32
   variables:
     GIT_DEPTH: 10
@@ -56,7 +56,7 @@ igt:arm32:
 igt:arm64:
   before_script:
     - apt-get update
-    - apt-get install -y libjansson-dev libpci-dev libprocps-dev
+    - apt-get install -y libjansson-dev libpci-dev libproc2-dev
   extends: .build:arm64
   variables:
     GIT_DEPTH: 10
