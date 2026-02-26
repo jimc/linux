@@ -70,4 +70,14 @@ tar -cf artifacts/igt.tar /igt
 # Pass needed files to the test stage
 S3_ARTIFACT_NAME="igt.tar.gz"
 gzip -c artifacts/igt.tar > ${S3_ARTIFACT_NAME}
+# Add debug lines here:
+echo "DEBUG (build-igt.sh): Checking S3_JWT_FILE before ci-fairy s3cp"
+if [ -f "${S3_JWT_FILE}" ]; then
+    echo "DEBUG (build-igt.sh): ${S3_JWT_FILE} exists."
+    # Print first few chars to confirm content, without exposing the full token
+    echo "DEBUG (build-igt.sh): ${S3_JWT_FILE} content starts with: $(head -c 10 "${S3_JWT_FILE}")"
+else
+    echo "DEBUG (build-igt.sh): ${S3_JWT_FILE} DOES NOT EXIST."
+fi
+
 ci-fairy s3cp --token-file "${S3_JWT_FILE}" ${S3_ARTIFACT_NAME} https://${PIPELINE_ARTIFACTS_BASE}/${KERNEL_ARCH}/${S3_ARTIFACT_NAME}
