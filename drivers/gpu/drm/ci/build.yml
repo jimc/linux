@@ -67,6 +67,7 @@ igt:arm64:
 
 igt:x86_64:
   before_script:
+    - !reference [default, before_script]
     - apt-get update && apt-get install -y libjansson-dev libpci-dev
   extends: .build:x86_64
   variables:
