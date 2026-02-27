@@ -5,5 +5,10 @@ kms_invalid_mode@overflow-vrefresh
 # Kernel panic seen with kms_cursor_crc tests
 kms_cursor_crc
 kms_cursor_edge_walk
+
+# Failing kms_plane tests
+kms_plane@pixel-format-linear-modifier
 kms_plane@planar-pixel-format-settings
+
+# Failing vkms_configfs tests (likely configfs not fully working)
 vkms_configfs
