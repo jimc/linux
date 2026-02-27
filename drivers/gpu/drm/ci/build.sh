@@ -96,6 +96,12 @@ for opt in $DISABLE_KCONFIGS; do
     ./scripts/config --disable CONFIG_$opt
 done
 
+# Force critical DRM drivers to be built as modules for VM testing
+# This ensures they are available for modprobe, as required by IGT.
+for opt in DRM DRM_KMS_HELPER DRM_PANEL DRM_I915 DRM_AMDGPU DRM_MSM DRM_VIRTIO_GPU DRM_VKMS DRM_ROCKCHIP DRM_MEDIATEK DRM_MESON; do
+    ./scripts/config --module CONFIG_$opt
+done
+
 make ${KERNEL_IMAGE_NAME}
 
 mkdir -p /kernel/

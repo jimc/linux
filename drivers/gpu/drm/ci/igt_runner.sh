@@ -21,9 +21,10 @@ set -e
 
 mkdir -p /lib/modules
 case "$DRIVER_NAME" in
-    amdgpu|vkms)
+    amdgpu|vkms|i915|virtio_gpu) # Add i915 and virtio_gpu
         # Cannot use HWCI_KERNEL_MODULES as at that point we don't have the module in /lib
         mv /install/modules/lib/modules/* /lib/modules/. || true
+        depmod -a # Add depmod -a to update module dependency cache
         modprobe --first-time $DRIVER_NAME
         ;;
 esac
