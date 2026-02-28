@@ -5,6 +5,8 @@
   artifacts:
     paths:
       - artifacts
+  variables:
+    # Use global defaults from gitlab-ci.yml
   script:
     - FDO_CI_CONCURRENT=${FDO_CI_CONCURRENT} bash drivers/gpu/drm/ci/build.sh
 
@@ -80,36 +82,19 @@ igt:x86_64:
 testing:arm32:
   extends: .build:arm32
   variables:
-    # Would be good to have DEBUG_KMEMLEAK, but it doesn't work well with any of
-    # PROVE_LOCKING and KASAN as of 5.17.
-    #
-    # db410c and db820c don't boot with KASAN_INLINE, probably due to the kernel
-    # becoming too big for their bootloaders.
-    ENABLE_KCONFIGS: "PROVE_LOCKING DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT DEBUG_WW_MUTEX_SLOWPATH DEBUG_FS"
     UPLOAD_TO_MINIO: 1
     MERGE_FRAGMENT: arm.config
 
 testing:arm64:
   extends: .build:arm64
   variables:
-    # Would be good to have DEBUG_KMEMLEAK, but it doesn't work well with any of
-    # PROVE_LOCKING and KASAN as of 5.17.
-    #
-    # db410c and db820c don't boot with KASAN_INLINE, probably due to the kernel
-    # becoming too big for their bootloaders.
-    ENABLE_KCONFIGS: "PROVE_LOCKING DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT DEBUG_WW_MUTEX_SLOWPATH DEBUG_FS"
     UPLOAD_TO_MINIO: 1
     MERGE_FRAGMENT: arm64.config
 
 testing:x86_64:
   extends: .build:x86_64
   variables:
-    # Would be good to have DEBUG_KMEMLEAK, but it doesn't work well with any of
-    # PROVE_LOCKING and KASAN as of 5.17.
-    #
-    # db410c and db820c don't boot with KASAN_INLINE, probably due to the kernel
-    # becoming too big for their bootloaders.
-    ENABLE_KCONFIGS: "PROVE_LOCKING DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT DEBUG_WW_MUTEX_SLOWPATH CONFIGFS_FS DEBUG_FS"
+    ENABLE_KCONFIGS: "PROVE_LOCKING DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT DEBUG_WW_MUTEX_SLOWPATH CONFIGFS_FS DEBUG_FS DYNAMIC_DEBUG DRM_USE_DYNAMIC_DEBUG $EXTRA_KCONFIGS"
     UPLOAD_TO_MINIO: 1
     MERGE_FRAGMENT: x86_64.config
 
