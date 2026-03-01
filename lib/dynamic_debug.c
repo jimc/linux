@@ -357,7 +357,7 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 				continue;
 		}
 
-		for (i = 0; i < di->descs.len; i++) {
+		for (i = di->descs.len - 1; i >= 0; i--) {
 			struct _ddebug *dp = &di->descs.start[i];
 
 			if (!ddebug_match_desc(query, dp, di, selected_class))
@@ -369,6 +369,7 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 			if (newflags == dp->flags)
 				continue;
 #ifdef CONFIG_JUMP_LABEL
+			vpr_info("queued site %d: addr:%px key:%px\n", i, (void *)jump_entry_code(static_key_entries(&dp->key.dd_key_true)), (void *)&dp->key.dd_key_true);
 			if (dp->flags & _DPRINTK_FLAGS_PRINT) {
 				if (!(newflags & _DPRINTK_FLAGS_PRINT))
 					static_branch_disable_queued(&dp->key.dd_key_true);

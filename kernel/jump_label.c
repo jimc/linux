@@ -739,6 +739,27 @@ static void __jump_label_mod_update(struct static_key *key)
 	}
 }
 
+static void __jump_label_mod_update_queued(struct static_key *key)
+{
+	struct static_key_mod *mod;
+
+	for (mod = static_key_mod(key); mod; mod = mod->next) {
+		struct jump_entry *stop;
+		struct module *m;
+
+		if (!mod->entries)
+			continue;
+
+		m = mod->mod;
+		if (!m)
+			stop = __stop___jump_table;
+		else
+			stop = m->jump_entries + m->num_jump_entries;
+		__jump_label_update_queued(key, mod->entries, stop,
+					   m && m->state == MODULE_STATE_COMING);
+	}
+}
+
 static int jump_label_add_module(struct module *mod)
 {
 	struct jump_entry *iter_start = mod->jump_entries;
@@ -971,7 +992,7 @@ static void jump_label_update_queued(struct static_key *key)
 	struct module *mod;
 
 	if (static_key_linked(key)) {
-		__jump_label_mod_update(key);
+		__jump_label_mod_update_queued(key);
 		return;
 	}
 
