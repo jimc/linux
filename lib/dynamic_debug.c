@@ -59,6 +59,10 @@ struct ddebug_query {
 	const char *format;
 	const char *class_string;
 	unsigned int first_lineno, last_lineno;
+	unsigned int filename_neg:1;
+	unsigned int module_neg:1;
+	unsigned int function_neg:1;
+	unsigned int format_neg:1;
 };
 
 struct ddebug_iter {
@@ -270,30 +274,32 @@ static bool ddebug_match_desc(const struct ddebug_query *query,
 	struct _ddebug_class_map *site_map;
 
 	/* match against the source filename */
-	if (query->filename &&
-	    !match_wildcard(query->filename, dp->filename) &&
-	    !match_wildcard(query->filename,
-			    kbasename(dp->filename)) &&
-	    !match_wildcard(query->filename,
-			    trim_prefix(dp->filename)))
-		return false;
+	if (query->filename) {
+		bool match = match_wildcard(query->filename, dp->filename) ||
+			     match_wildcard(query->filename, kbasename(dp->filename)) ||
+			     match_wildcard(query->filename, trim_prefix(dp->filename));
+		if (match == query->filename_neg)
+			return false;
+	}
 
 	/* match against the function */
-	if (query->function &&
-	    !match_wildcard(query->function, dp->function))
-		return false;
+	if (query->function) {
+		bool match = match_wildcard(query->function, dp->function);
+		if (match == query->function_neg)
+			return false;
+	}
 
 	/* match against the format */
 	if (query->format) {
+		bool match;
 		if (*query->format == '^') {
-			char *p;
 			/* anchored search. match must be at beginning */
-			p = strstr(dp->format, query->format + 1);
-			if (p != dp->format)
-				return false;
-		} else if (!strstr(dp->format, query->format)) {
-			return false;
+			match = (strstr(dp->format, query->format + 1) == dp->format);
+		} else {
+			match = !!strstr(dp->format, query->format);
 		}
+		if (match == query->format_neg)
+			return false;
 	}
 
 	/* match against the line number range */
@@ -345,9 +351,11 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 		struct _ddebug_class_map *mods_map;
 
 		/* match against the module name */
-		if (query->module &&
-		    !match_wildcard(query->module, di->mod_name))
-			continue;
+		if (query->module) {
+			bool match = match_wildcard(query->module, di->mod_name);
+			if (match == query->module_neg)
+				continue;
+		}
 
 		pr_debug("match on module: %s\n", di->mod_name);
 		selected_class = _DPRINTK_CLASS_DFLT;
@@ -521,6 +529,16 @@ static int parse_linerange(struct ddebug_query *query, const char *first)
 	return 0;
 }
 
+static char *check_neg(char *src, unsigned int *neg)
+{
+	if (*src == '!') {
+		*neg = 1;
+		return src + 1;
+	}
+	*neg = 0;
+	return src;
+}
+
 static int check_set(const char **dest, char *src, char *name)
 {
 	int rc = 0;
@@ -565,10 +583,15 @@ static int ddebug_parse_query(char *words[], int nwords,
 	for (i = 0; i < nwords; i += 2) {
 		char *keyword = words[i];
 		char *arg = words[i+1];
+		unsigned int neg;
 
 		if (!strcmp(keyword, "func")) {
+			arg = check_neg(arg, &neg);
+			query->function_neg = neg;
 			rc = check_set(&query->function, arg, "func");
 		} else if (!strcmp(keyword, "file")) {
+			arg = check_neg(arg, &neg);
+			query->filename_neg = neg;
 			if (check_set(&query->filename, arg, "file"))
 				return -EINVAL;
 
@@ -579,6 +602,8 @@ static int ddebug_parse_query(char *words[], int nwords,
 			*fline++ = '\0';
 			if (isalpha(*fline) || *fline == '*' || *fline == '?') {
 				/* take as function name */
+				fline = check_neg(fline, &neg);
+				query->function_neg = neg;
 				if (check_set(&query->function, fline, "func"))
 					return -EINVAL;
 			} else {
@@ -586,11 +611,15 @@ static int ddebug_parse_query(char *words[], int nwords,
 					return -EINVAL;
 			}
 		} else if (!strcmp(keyword, "module")) {
+			arg = check_neg(arg, &neg);
+			query->module_neg = neg;
 			rc = check_set(&query->module, arg, "module");
 		} else if (!strcmp(keyword, "format")) {
 			string_unescape_inplace(arg, UNESCAPE_SPACE |
 							    UNESCAPE_OCTAL |
 							    UNESCAPE_SPECIAL);
+			arg = check_neg(arg, &neg);
+			query->format_neg = neg;
 			rc = check_set(&query->format, arg, "format");
 		} else if (!strcmp(keyword, "line")) {
 			if (parse_linerange(query, arg))
