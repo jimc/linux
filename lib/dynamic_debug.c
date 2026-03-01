@@ -58,6 +58,10 @@ struct ddebug_query {
 	const char *format;
 	const char *class_string;
 	unsigned int first_lineno, last_lineno;
+	unsigned int filename_neg:1;
+	unsigned int module_neg:1;
+	unsigned int function_neg:1;
+	unsigned int format_neg:1;
 };
 
 struct ddebug_iter {
@@ -139,11 +143,12 @@ static void vpr_info_dq(const struct ddebug_query *query, const char *msg)
 			fmtlen--;
 	}
 
-	v3pr_info("%s: func=\"%s\" file=\"%s\" module=\"%s\" format=\"%.*s\" lineno=%u-%u class=%s\n",
+	v3pr_info("%s: func%s=\"%s\" file%s=\"%s\" module%s=\"%s\" format%s=\"%.*s\" lineno=%u-%u class=%s\n",
 		  msg,
-		  query->function ?: "",
-		  query->filename ?: "",
-		  query->module ?: "",
+		  query->function_neg ? "!" : "", query->function ?: "",
+		  query->filename_neg ? "!" : "", query->filename ?: "",
+		  query->module_neg ? "!" : "", query->module ?: "",
+		  query->format_neg ? "!" : "",
 		  fmtlen, query->format ?: "",
 		  query->first_lineno, query->last_lineno, query->class_string);
 }
@@ -176,35 +181,38 @@ static bool ddebug_match_desc(const struct ddebug_query *query,
 			      struct _ddebug *dp,
 			      int valid_class)
 {
+	bool match;
+
 	/* match site against query-class */
 	if (dp->class_id != valid_class)
 		return false;
 
 	/* match against the source filename */
-	if (query->filename &&
-	    !match_wildcard(query->filename, dp->filename) &&
-	    !match_wildcard(query->filename,
-			    kbasename(dp->filename)) &&
-	    !match_wildcard(query->filename,
-			    trim_prefix(dp->filename)))
-		return false;
+	if (query->filename) {
+		match = match_wildcard(query->filename, dp->filename) ||
+			match_wildcard(query->filename, kbasename(dp->filename)) ||
+			match_wildcard(query->filename, trim_prefix(dp->filename));
+		if (match == query->filename_neg)
+			return false;
+	}
 
 	/* match against the function */
-	if (query->function &&
-	    !match_wildcard(query->function, dp->function))
-		return false;
+	if (query->function) {
+		match = match_wildcard(query->function, dp->function);
+		if (match == query->function_neg)
+			return false;
+	}
 
 	/* match against the format */
 	if (query->format) {
 		if (*query->format == '^') {
-			char *p;
 			/* anchored search. match must be at beginning */
-			p = strstr(dp->format, query->format + 1);
-			if (p != dp->format)
-				return false;
-		} else if (!strstr(dp->format, query->format)) {
-			return false;
+			match = (strstr(dp->format, query->format + 1) == dp->format);
+		} else {
+			match = !!strstr(dp->format, query->format);
 		}
+		if (match == query->format_neg)
+			return false;
 	}
 
 	/* match against the line number range */
@@ -234,9 +242,11 @@ static int ddebug_change(const struct ddebug_query *query,
 	list_for_each_entry(dt, &ddebug_tables, link) {
 
 		/* match against the module name */
-		if (query->module &&
-		    !match_wildcard(query->module, dt->mod_name))
-			continue;
+		if (query->module) {
+			bool match = match_wildcard(query->module, dt->mod_name);
+			if (match == query->module_neg)
+				continue;
+		}
 
 		if (query->class_string) {
 			map = ddebug_find_valid_class(dt, query->class_string, &valid_class);
@@ -399,6 +409,16 @@ static int parse_linerange(struct ddebug_query *query, const char *first)
 	return 0;
 }
 
+static char *check_neg(char *src, unsigned int *neg)
+{
+	if (*src == '!') {
+		*neg = 1;
+		return src + 1;
+	}
+	*neg = 0;
+	return src;
+}
+
 static int check_set(const char **dest, char *src, char *name)
 {
 	int rc = 0;
@@ -441,12 +461,15 @@ static int ddebug_parse_query(char *words[], int nwords,
 	}
 
 	for (i = 0; i < nwords; i += 2) {
-		char *keyword = words[i];
+		unsigned int neg;
+		char *keyword = check_neg(words[i], &neg);
 		char *arg = words[i+1];
 
 		if (!strcmp(keyword, "func")) {
+			query->function_neg = neg;
 			rc = check_set(&query->function, arg, "func");
 		} else if (!strcmp(keyword, "file")) {
+			query->filename_neg = neg;
 			if (check_set(&query->filename, arg, "file"))
 				return -EINVAL;
 
@@ -464,16 +487,26 @@ static int ddebug_parse_query(char *words[], int nwords,
 					return -EINVAL;
 			}
 		} else if (!strcmp(keyword, "module")) {
+			query->module_neg = neg;
 			rc = check_set(&query->module, arg, "module");
 		} else if (!strcmp(keyword, "format")) {
 			string_unescape_inplace(arg, UNESCAPE_SPACE |
 							    UNESCAPE_OCTAL |
 							    UNESCAPE_SPECIAL);
+			query->format_neg = neg;
 			rc = check_set(&query->format, arg, "format");
 		} else if (!strcmp(keyword, "line")) {
+			if (neg) {
+				pr_err("negation not supported for \"line\"\n");
+				return -EINVAL;
+			}
 			if (parse_linerange(query, arg))
 				return -EINVAL;
 		} else if (!strcmp(keyword, "class")) {
+			if (neg) {
+				pr_err("negation not supported for \"class\"\n");
+				return -EINVAL;
+			}
 			rc = check_set(&query->class_string, arg, "class");
 		} else {
 			pr_err("unknown keyword \"%s\"\n", keyword);
