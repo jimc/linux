@@ -234,9 +234,19 @@ extern void static_key_slow_dec_cpuslocked(struct static_key *key);
 extern int static_key_count(struct static_key *key);
 extern void static_key_enable(struct static_key *key);
 extern void static_key_disable(struct static_key *key);
+extern void static_key_enable_queued(struct static_key *key);
+extern void static_key_disable_queued(struct static_key *key);
+extern void static_key_apply_queued(void);
 extern void static_key_enable_cpuslocked(struct static_key *key);
 extern void static_key_disable_cpuslocked(struct static_key *key);
 extern enum jump_label_type jump_label_init_type(struct jump_entry *entry);
+
+#define static_branch_enable(x)			static_key_enable(&(x)->key)
+#define static_branch_disable(x)		static_key_disable(&(x)->key)
+#define static_branch_enable_queued(x)		static_key_enable_queued(&(x)->key)
+#define static_branch_disable_queued(x)		static_key_disable_queued(&(x)->key)
+#define static_branch_enable_cpuslocked(x)	static_key_enable_cpuslocked(&(x)->key)
+#define static_branch_disable_cpuslocked(x)	static_key_disable_cpuslocked(&(x)->key)
 
 /*
  * We should be using ATOMIC_INIT() for initializing .enabled, but
@@ -339,6 +349,18 @@ static inline void static_key_disable(struct static_key *key)
 	}
 	atomic_set(&key->enabled, 0);
 }
+
+static inline void static_key_enable_queued(struct static_key *key)
+{
+	static_key_enable(key);
+}
+
+static inline void static_key_disable_queued(struct static_key *key)
+{
+	static_key_disable(key);
+}
+
+static inline int static_key_apply_queued(void) { return 0; }
 
 #define static_key_enable_cpuslocked(k)		static_key_enable((k))
 #define static_key_disable_cpuslocked(k)	static_key_disable((k))
@@ -535,6 +557,8 @@ extern bool ____wrong_branch_error(void);
 
 #define static_branch_enable(x)			static_key_enable(&(x)->key)
 #define static_branch_disable(x)		static_key_disable(&(x)->key)
+#define static_branch_enable_queued(x)		static_key_enable_queued(&(x)->key)
+#define static_branch_disable_queued(x)		static_key_disable_queued(&(x)->key)
 #define static_branch_enable_cpuslocked(x)	static_key_enable_cpuslocked(&(x)->key)
 #define static_branch_disable_cpuslocked(x)	static_key_disable_cpuslocked(&(x)->key)
 
