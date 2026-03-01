@@ -380,9 +380,9 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 #ifdef CONFIG_JUMP_LABEL
 			if (dp->flags & _DPRINTK_FLAGS_PRINT) {
 				if (!(newflags & _DPRINTK_FLAGS_PRINT))
-					static_branch_disable(&dp->key.dd_key_true);
+					static_branch_disable_queued(&dp->key.dd_key_true);
 			} else if (newflags & _DPRINTK_FLAGS_PRINT) {
-				static_branch_enable(&dp->key.dd_key_true);
+				static_branch_enable_queued(&dp->key.dd_key_true);
 			}
 #endif
 			v4pr_info("changed %s:%d [%s]%s %s => %s\n",
@@ -393,6 +393,7 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 			dp->flags = newflags;
 		}
 	}
+	static_key_apply_queued();
 	mutex_unlock(&ddebug_lock);
 
 	return nfound;

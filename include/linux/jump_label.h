@@ -360,7 +360,7 @@ static inline void static_key_disable_queued(struct static_key *key)
 	static_key_disable(key);
 }
 
-static inline int static_key_apply_queued(void) { return 0; }
+static void static_key_apply_queued(void) {}
 
 #define static_key_enable_cpuslocked(k)		static_key_enable((k))
 #define static_key_disable_cpuslocked(k)	static_key_disable((k))
