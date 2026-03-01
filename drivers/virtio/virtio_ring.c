@@ -759,7 +759,7 @@ static inline int virtqueue_add_split(struct vring_virtqueue *vq,
 						vq->split.avail_idx_shadow);
 	vq->num_added++;
 
-	pr_debug("Added buffer head %i to %p\n", head, vq);
+	pr_debug_ratelimited("Added buffer head %i to %p\n", head, vq);
 	END_USE(vq);
 
 	/* This is very unlikely, but theoretically possible.  Kick
@@ -930,7 +930,7 @@ static void *virtqueue_get_buf_ctx_split(struct vring_virtqueue *vq,
 	}
 
 	if (!more_used_split(vq)) {
-		pr_debug("No more buffers in queue\n");
+		pr_debug_ratelimited("No more buffers in queue\n");
 		END_USE(vq);
 		return NULL;
 	}
@@ -1595,7 +1595,7 @@ static int virtqueue_add_indirect_packed(struct vring_virtqueue *vq,
 
 	vq->num_added += 1;
 
-	pr_debug("Added buffer head %i to %p\n", head, vq);
+	pr_debug_ratelimited("Added buffer head %i to %p\n", head, vq);
 	END_USE(vq);
 
 	return 0;
@@ -1744,7 +1744,7 @@ static inline int virtqueue_add_packed(struct vring_virtqueue *vq,
 	vq->packed.vring.desc[head].flags = head_flags;
 	vq->num_added += descs_used;
 
-	pr_debug("Added buffer head %i to %p\n", head, vq);
+	pr_debug_ratelimited("Added buffer head %i to %p\n", head, vq);
 	END_USE(vq);
 
 	return 0;
@@ -1902,7 +1902,7 @@ static inline int virtqueue_add_packed_in_order(struct vring_virtqueue *vq,
 	vq->packed.vring.desc[head].flags = head_flags;
 	vq->num_added += total_sg;
 
-	pr_debug("Added buffer head %i to %p\n", head, vq);
+	pr_debug_ratelimited("Added buffer head %i to %p\n", head, vq);
 	END_USE(vq);
 
 	return 0;
@@ -3231,7 +3231,7 @@ irqreturn_t vring_interrupt(int irq, void *_vq)
 	struct vring_virtqueue *vq = to_vvq(_vq);
 
 	if (!more_used(vq)) {
-		pr_debug("virtqueue interrupt with no work for %p\n", vq);
+		pr_debug_ratelimited("virtqueue interrupt with no work for %p\n", vq);
 		return IRQ_NONE;
 	}
 
