@@ -91,6 +91,7 @@ jump_label_sort_entries(struct jump_entry *start, struct jump_entry *stop)
 }
 
 static void jump_label_update(struct static_key *key);
+static void jump_label_update_queued(struct static_key *key);
 
 /*
  * There are similar definitions for the !CONFIG_JUMP_LABEL case in jump_label.h.
@@ -250,10 +251,57 @@ void static_key_disable(struct static_key *key)
 }
 EXPORT_SYMBOL_GPL(static_key_disable);
 
+void static_key_enable_queued(struct static_key *key)
+{
+	STATIC_KEY_CHECK_USE(key);
+
+	if (atomic_read(&key->enabled) > 0) {
+		/*
+		 * already enabled, don't act.
+		 * warn if static-key-inc was used.
+		 */
+		WARN_ON_ONCE(atomic_read(&key->enabled) != 1);
+		return;
+	}
+
+	scoped_guard(jump_label_lock) {
+		if (atomic_read(&key->enabled) == 0) {
+			/*
+			 * set transitional value, update,
+			 * then set stable enabled state
+			 */
+			atomic_set(&key->enabled, -1);
+			jump_label_update_queued(key);
+			atomic_set_release(&key->enabled, 1);
+		}
+	}
+}
+
+void static_key_disable_queued(struct static_key *key)
+{
+	STATIC_KEY_CHECK_USE(key);
+
+	if (atomic_read(&key->enabled) != 1) {
+		/*
+		 * not simply enabled; is disabled, inc-enabled, or
+		 * in transition. don't act. warn if inc-enabled.
+		 */
+		WARN_ON_ONCE(atomic_read(&key->enabled) != 0);
+		return;
+	}
+
+	scoped_guard(jump_label_lock) {
+		/*
+		 * update if simply enabled. dont act if in transition.
+		 */
+		if (atomic_cmpxchg(&key->enabled, 1, 0) == 1)
+			jump_label_update_queued(key);
+	}
+}
+
 static bool static_key_dec_not_one(struct static_key *key)
 {
 	int v;
-
 	/*
 	 * Go into the slow path if key::enabled is less than or equal than
 	 * one. One is valid to shut down the key, anything less than one
@@ -488,28 +536,16 @@ static bool jump_label_can_update(struct jump_entry *entry, bool init)
 	return true;
 }
 
-#ifndef HAVE_JUMP_LABEL_BATCH
 static void __jump_label_update(struct static_key *key,
 				struct jump_entry *entry,
 				struct jump_entry *stop,
-				bool init)
+				bool init, bool apply)
 {
 	for (; (entry < stop) && (jump_entry_key(entry) == key); entry++) {
-		if (jump_label_can_update(entry, init))
-			arch_jump_label_transform(entry, jump_label_type(entry));
-	}
-}
-#else
-static void __jump_label_update(struct static_key *key,
-				struct jump_entry *entry,
-				struct jump_entry *stop,
-				bool init)
-{
-	for (; (entry < stop) && (jump_entry_key(entry) == key); entry++) {
-
 		if (!jump_label_can_update(entry, init))
 			continue;
 
+#ifdef HAVE_JUMP_LABEL_BATCH
 		if (!arch_jump_label_transform_queue(entry, jump_label_type(entry))) {
 			/*
 			 * Queue is full: Apply the current queue and try again.
@@ -517,10 +553,24 @@ static void __jump_label_update(struct static_key *key,
 			arch_jump_label_transform_apply();
 			BUG_ON(!arch_jump_label_transform_queue(entry, jump_label_type(entry)));
 		}
-	}
-	arch_jump_label_transform_apply();
-}
+#else
+		arch_jump_label_transform(entry, jump_label_type(entry));
 #endif
+	}
+#ifdef HAVE_JUMP_LABEL_BATCH
+	if (apply)
+		arch_jump_label_transform_apply();
+#endif
+}
+
+void static_key_apply_queued(void)
+{
+#ifdef HAVE_JUMP_LABEL_BATCH
+	jump_label_lock();
+	arch_jump_label_transform_apply();
+	jump_label_unlock();
+#endif
+}
 
 void __init jump_label_init(void)
 {
@@ -662,7 +712,7 @@ static int __jump_label_mod_text_reserved(void *start, void *end)
 	return ret;
 }
 
-static void __jump_label_mod_update(struct static_key *key)
+static void __jump_label_mod_update(struct static_key *key, bool apply)
 {
 	struct static_key_mod *mod;
 
@@ -683,7 +733,7 @@ static void __jump_label_mod_update(struct static_key *key)
 		else
 			stop = m->jump_entries + m->num_jump_entries;
 		__jump_label_update(key, mod->entries, stop,
-				    m && m->state == MODULE_STATE_COMING);
+				    m && m->state == MODULE_STATE_COMING, apply);
 	}
 }
 
@@ -753,7 +803,7 @@ static int jump_label_add_module(struct module *mod)
 		/* Only update if we've changed from our initial state */
 do_poke:
 		if (jump_label_type(iter) != jump_label_init_type(iter))
-			__jump_label_update(key, iter, iter_stop, true);
+			__jump_label_update(key, iter, iter_stop, true, true);
 	}
 
 	return 0;
@@ -883,7 +933,7 @@ int jump_label_text_reserved(void *start, void *end)
 	return ret;
 }
 
-static void jump_label_update(struct static_key *key)
+static void jump_label_update_key(struct static_key *key, bool apply)
 {
 	struct jump_entry *stop = __stop___jump_table;
 	bool init = system_state < SYSTEM_RUNNING;
@@ -892,7 +942,7 @@ static void jump_label_update(struct static_key *key)
 	struct module *mod;
 
 	if (static_key_linked(key)) {
-		__jump_label_mod_update(key);
+		__jump_label_mod_update(key, apply);
 		return;
 	}
 
@@ -907,7 +957,17 @@ static void jump_label_update(struct static_key *key)
 	entry = static_key_entries(key);
 	/* if there are no users, entry can be NULL */
 	if (entry)
-		__jump_label_update(key, entry, stop, init);
+		__jump_label_update(key, entry, stop, init, apply);
+}
+
+static void jump_label_update(struct static_key *key)
+{
+	jump_label_update_key(key, true);
+}
+
+static void jump_label_update_queued(struct static_key *key)
+{
+	jump_label_update_key(key, false);
 }
 
 #ifdef CONFIG_STATIC_KEYS_SELFTEST
