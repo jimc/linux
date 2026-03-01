@@ -529,10 +529,24 @@ static void __jump_label_update(struct static_key *key,
 				struct jump_entry *stop,
 				bool init)
 {
+#ifndef HAVE_JUMP_LABEL_BATCH
 	for (; (entry < stop) && (jump_entry_key(entry) == key); entry++) {
 		if (jump_label_can_update(entry, init))
 			arch_jump_label_transform(entry, jump_label_type(entry));
 	}
+#else
+	for (; (entry < stop) && (jump_entry_key(entry) == key); entry++) {
+
+		if (!jump_label_can_update(entry, init))
+			continue;
+
+		if (!arch_jump_label_transform_queue(entry, jump_label_type(entry))) {
+			arch_jump_label_transform_apply();
+			WARN_ON_ONCE(!arch_jump_label_transform_queue(entry, jump_label_type(entry)));
+		}
+	}
+	arch_jump_label_transform_apply();
+#endif
 }
 
 static void __jump_label_update_queued(struct static_key *key,
@@ -548,8 +562,7 @@ static void __jump_label_update_queued(struct static_key *key,
 
 		if (!arch_jump_label_transform_queue(entry, jump_label_type(entry))) {
 			arch_jump_label_transform_apply();
-			if (!arch_jump_label_transform_queue(entry, jump_label_type(entry)))
-				arch_jump_label_transform(entry, jump_label_type(entry));
+			WARN_ON_ONCE(!arch_jump_label_transform_queue(entry, jump_label_type(entry)));
 		}
 	}
 #else
