@@ -120,6 +120,8 @@ void arch_jump_label_transform(struct jump_entry *entry,
 	jump_label_transform(entry, type, 0);
 }
 
+static int jump_label_queue_len;
+
 bool arch_jump_label_transform_queue(struct jump_entry *entry,
 				     enum jump_label_type type)
 {
@@ -135,14 +137,23 @@ bool arch_jump_label_transform_queue(struct jump_entry *entry,
 
 	mutex_lock(&text_mutex);
 	jlp = __jump_label_patch(entry, type);
-	smp_text_poke_batch_add((void *)jump_entry_code(entry), jlp.code, jlp.size, NULL);
+	smp_text_poke_batch_add((void *)jump_entry_code(entry),
+				jlp.code, jlp.size, NULL);
+	jump_label_queue_len++;
 	mutex_unlock(&text_mutex);
 	return true;
 }
 
 void arch_jump_label_transform_apply(void)
 {
+	if (!jump_label_queue_len) {
+		pr_debug("no queued jump_labels to apply\n");
+		return;
+	}
+
+	pr_debug("applying %d queued jump_labels\n", jump_label_queue_len);
 	mutex_lock(&text_mutex);
 	smp_text_poke_batch_finish();
+	jump_label_queue_len = 0;
 	mutex_unlock(&text_mutex);
 }

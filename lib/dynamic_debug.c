@@ -349,6 +349,7 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 		    !match_wildcard(query->module, di->mod_name))
 			continue;
 
+		pr_debug("match on module: %s\n", di->mod_name);
 		selected_class = _DPRINTK_CLASS_DFLT;
 		if (query->class_string) {
 			mods_map = ddebug_find_valid_class(di, query->class_string,
@@ -357,17 +358,22 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 				continue;
 		}
 
+		/*
+		 * Addresses are generally DESCENDING in the descriptor table.
+		 * Flip process order to REVERSE (N-1 -> 0) to provide ASCENDING addresses
+		 * to the x86 patching engine, enabling a single IPI batch.
+		 */
 		for (i = di->descs.len - 1; i >= 0; i--) {
 			struct _ddebug *dp = &di->descs.start[i];
 
 			if (!ddebug_match_desc(query, dp, di, selected_class))
 				continue;
 
-			nfound++;
-
 			newflags = (dp->flags & modifiers->mask) | modifiers->flags;
 			if (newflags == dp->flags)
 				continue;
+
+			nfound++;
 #ifdef CONFIG_JUMP_LABEL
 			vpr_info("queued site %d: addr:%px key:%px\n", i, (void *)jump_entry_code(static_key_entries(&dp->key.dd_key_true)), (void *)&dp->key.dd_key_true);
 			if (dp->flags & _DPRINTK_FLAGS_PRINT) {
@@ -385,6 +391,7 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 			dp->flags = newflags;
 		}
 	}
+	pr_debug("applied queued updates to %d sites in total\n", nfound);
 	static_key_apply_queued();
 	mutex_unlock(&ddebug_lock);
 

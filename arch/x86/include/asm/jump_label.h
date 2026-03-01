@@ -2,8 +2,6 @@
 #ifndef _ASM_X86_JUMP_LABEL_H
 #define _ASM_X86_JUMP_LABEL_H
 
-#define HAVE_JUMP_LABEL_BATCH
-
 #include <asm/asm.h>
 #include <asm/nops.h>
 
