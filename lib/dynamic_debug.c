@@ -410,7 +410,7 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 	int selected_class;
 
 	/* search for matching ddebugs */
-	mutex_lock(&ddebug_lock);
+	lockdep_assert_held(&ddebug_lock);
 	list_for_each_entry(dt, &ddebug_tables, link) {
 		struct _ddebug_info *di = &dt->info;
 		struct _ddebug_class_map *mods_map;
@@ -459,10 +459,6 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 			dp->flags = newflags;
 		}
 	}
-	static_branch_apply_queued();
-	mutex_unlock(&ddebug_lock);
-	v2pr_info("applied %d queued updates to sites in total\n", nfound);
-
 	return nfound;
 }
 
@@ -771,6 +767,8 @@ static int ddebug_exec_queries(char *query, const char *modname)
 	char *split;
 	int i, errs = 0, exitcode = 0, rc, nfound = 0;
 
+	mutex_lock(&ddebug_lock);
+
 	for (i = 0; query; query = split) {
 		split = strpbrk(query, "%;\n");
 		if (split)
@@ -781,7 +779,8 @@ static int ddebug_exec_queries(char *query, const char *modname)
 		if (!query || !*query || *query == '#')
 			continue;
 
-		vpr_info("query %d: \"%s\" mod:%s\n", i, query, modname ?: "*");
+		vpr_info("query %d: \"%s\" mod:%s\n",
+			 i, query, modname ?: "*");
 
 		rc = ddebug_exec_query(query, modname);
 		if (rc < 0) {
@@ -792,6 +791,14 @@ static int ddebug_exec_queries(char *query, const char *modname)
 		}
 		i++;
 	}
+
+	static_branch_apply_queued();
+	mutex_unlock(&ddebug_lock);
+
+	if (nfound > 0)
+		v2pr_info("applied queued updates to %d sites in total\n",
+			  nfound);
+
 	if (i)
 		v2pr_info("processed %d queries, with %d matches, %d errs\n",
 			 i, nfound, errs);
