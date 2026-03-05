@@ -346,7 +346,7 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 	int selected_class;
 
 	/* search for matching ddebugs */
-	mutex_lock(&ddebug_lock);
+	lockdep_assert_held(&ddebug_lock);
 	list_for_each_entry(dt, &ddebug_tables, link) {
 		struct _ddebug_info *di = &dt->info;
 		struct _ddebug_class_map *mods_map;
@@ -393,10 +393,6 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 			dp->flags = newflags;
 		}
 	}
-	static_key_apply_queued();
-	mutex_unlock(&ddebug_lock);
-	v2pr_info("applied %d queued updates to sites in total\n", nfound);
-
 	return nfound;
 }
 
@@ -726,6 +722,8 @@ static int ddebug_exec_queries(char *query, const char *modname)
 	char *split;
 	int i, errs = 0, exitcode = 0, rc, nfound = 0;
 
+	mutex_lock(&ddebug_lock);
+
 	for (i = 0; query; query = split) {
 		split = strpbrk(query, "%;\n");
 		if (split)
@@ -751,6 +749,12 @@ static int ddebug_exec_queries(char *query, const char *modname)
 		v2pr_info("processed %d queries, with %d matches, %d errs\n",
 			 i, nfound, errs);
 
+	if (nfound > 0)
+		v2pr_info("applied queued updates to %d sites in total\n", nfound);
+
+	static_key_apply_queued();
+	mutex_unlock(&ddebug_lock);
+
 	if (exitcode)
 		return exitcode;
 	return nfound;
@@ -759,9 +763,9 @@ static int ddebug_exec_queries(char *query, const char *modname)
 /* apply a new class-param setting */
 
 static int ddebug_apply_class_bitmap(const struct _ddebug_class_param *dcp,
-				     const unsigned long *new_bits,
-				     const unsigned long old_bits,
-				     const char *query_modname)
+				       const unsigned long *new_bits,
+				       const unsigned long old_bits,
+				       const char *query_modname)
 {
 #define QUERY_SIZE 128
 	char query[QUERY_SIZE];
@@ -1394,6 +1398,8 @@ static void ddebug_apply_class_maps(const struct _ddebug_info *di)
 	struct _ddebug_class_map *cm;
 	int i;
 
+	lockdep_assert_held(&ddebug_lock);
+
 	for_subvec(i, cm, di, maps)
 		ddebug_apply_params(cm, cm->mod_name);
 
@@ -1404,6 +1410,8 @@ static void ddebug_apply_class_users(const struct _ddebug_info *di)
 {
 	struct _ddebug_class_user *cli;
 	int i;
+
+	lockdep_assert_held(&ddebug_lock);
 
 	for_subvec(i, cli, di, users)
 		ddebug_apply_params(cli->map, cli->mod_name);
@@ -1494,12 +1502,14 @@ static int ddebug_add_module(struct _ddebug_info *di)
 
 	mutex_lock(&ddebug_lock);
 	list_add_tail(&dt->link, &ddebug_tables);
-	mutex_unlock(&ddebug_lock);
 
 	if (dt->info.maps.len)
 		ddebug_apply_class_maps(&dt->info);
 	if (dt->info.users.len)
 		ddebug_apply_class_users(&dt->info);
+
+	static_key_apply_queued();
+	mutex_unlock(&ddebug_lock);
 
 	vpr_info("%3u debug prints in module %s\n",
 		 dt->info.descs.len, dt->info.mod_name);
