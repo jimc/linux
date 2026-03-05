@@ -332,7 +332,7 @@ static bool ddebug_match_desc(const struct ddebug_query *query,
 	return !ddebug_class_wants_protection(site_map);
 }
 
-static int ddebug_change(const struct ddebug_query *query, struct flag_settings *modifiers)
+static int __ddebug_change(const struct ddebug_query *query, struct flag_settings *modifiers)
 {
 	int i;
 	struct ddebug_table *dt;
@@ -342,7 +342,7 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 	int selected_class;
 
 	/* search for matching ddebugs */
-	mutex_lock(&ddebug_lock);
+	lockdep_assert_held(&ddebug_lock);
 	list_for_each_entry(dt, &ddebug_tables, link) {
 		struct _ddebug_info *di = &dt->info;
 		struct _ddebug_class_map *mods_map;
@@ -388,10 +388,6 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 			dp->flags = newflags;
 		}
 	}
-	static_branch_apply_queued();
-	mutex_unlock(&ddebug_lock);
-	v2pr_info("applied %d queued updates to sites in total\n", nfound);
-
 	return nfound;
 }
 
@@ -710,7 +706,7 @@ static int ddebug_exec_query(char *query_string, const char *modname)
 	}
 
 	/* actually go and implement the change */
-	nfound = ddebug_change(&query, &modifiers);
+	nfound = __ddebug_change(&query, &modifiers);
 	v3pr_info_dq(&query, nfound ? "applied" : "no-match");
 
 	return nfound;
@@ -720,10 +716,12 @@ static int ddebug_exec_query(char *query_string, const char *modname)
    last error or number of matching callsites.  Module name is either
    in the modname arg (for boot args) or perhaps in query string.
 */
-static int ddebug_exec_queries(char *query, const char *modname)
+static int __ddebug_exec_queries(char *query, const char *modname)
 {
 	char *split;
 	int i, errs = 0, exitcode = 0, rc, nfound = 0;
+
+	lockdep_assert_held(&ddebug_lock);
 
 	for (i = 0; query; query = split) {
 		split = strpbrk(query, "@;\n");
@@ -749,17 +747,40 @@ static int ddebug_exec_queries(char *query, const char *modname)
 		}
 		i++;
 	}
-	if (i)
+	if (i) {
 		v2pr_info("processed %d queries, with %d matches, %d errs\n",
 			 i, nfound, errs);
-
+	}
 	if (exitcode)
 		return exitcode;
 	return nfound;
 }
 
+/**
+ * ddebug_exec_queries - take dyndbg control string, apply changes
+ * @query: query string, potentially multiple commands separated by [@;\n]
+ * @modname: module name (for boot args)
+ *
+ * Take a string and apply the changes to the matched callsites.
+ * This is the primary entry point for >control and boot args.
+ * It takes the ddebug_lock and applies all changes in a single batch.
+ */
+static int ddebug_exec_queries(char *query, const char *modname)
+{
+	int rc;
+
+	mutex_lock(&ddebug_lock);
+	rc = __ddebug_exec_queries(query, modname);
+	if (rc >= 0)
+		static_branch_apply_queued();
+	mutex_unlock(&ddebug_lock);
+	if (rc >= 0)
+		v2pr_info("applied queued updates to %d sites in total\n", rc);
+	return rc;
+}
+
 /* apply a new class-param setting */
-static int ddebug_apply_class_bitmap(const struct _ddebug_class_param *dcp,
+static int __ddebug_apply_class_bitmap(const struct _ddebug_class_param *dcp,
 				     const u32 *new_bits, const u32 old_bits,
 				     const char *query_modname)
 {
@@ -783,7 +804,7 @@ static int ddebug_apply_class_bitmap(const struct _ddebug_class_param *dcp,
 		snprintf(query, QUERY_SIZE, "class %s %c%s", map->class_names[bi],
 			 new_b ? '+' : '-', dcp->flags);
 
-		ct = ddebug_exec_queries(query, query_modname);
+		ct = __ddebug_exec_queries(query, query_modname);
 		matches += ct;
 
 		v2pr_info("bit_%d: %d matches on class: %s -> 0x%x\n", bi,
@@ -794,6 +815,22 @@ static int ddebug_apply_class_bitmap(const struct _ddebug_class_param *dcp,
 			  old_bits, query_modname ?: "'*'");
 
 	return matches;
+}
+
+static int ddebug_apply_class_bitmap(const struct _ddebug_class_param *dcp,
+				     const u32 *new_bits, const u32 old_bits,
+				     const char *query_modname)
+{
+	int rc;
+
+	mutex_lock(&ddebug_lock);
+	rc = __ddebug_apply_class_bitmap(dcp, new_bits, old_bits, query_modname);
+	if (rc >= 0) {
+		v2pr_info("applied class-bitmap updates to %d sites in total\n", rc);
+		static_branch_apply_queued();
+	}
+	mutex_unlock(&ddebug_lock);
+	return rc;
 }
 
 /* stub to later conditionally add "$module." prefix where not already done */
@@ -1372,12 +1409,12 @@ static void ddebug_sync_classbits(const struct kernel_param *kp, const char *mod
 	switch (dcp->map->map_type) {
 	case DD_CLASS_TYPE_DISJOINT_BITS:
 		v2pr_info("  %s: classbits: 0x%x\n", KP_NAME(kp), *dcp->bits);
-		ddebug_apply_class_bitmap(dcp, dcp->bits, 0UL, modname);
+		__ddebug_apply_class_bitmap(dcp, dcp->bits, 0U, modname);
 		break;
 	case DD_CLASS_TYPE_LEVEL_NUM:
 		new_bits = CLASSMAP_BITMASK(*dcp->lvl);
 		v2pr_info("  %s: lvl:%d bits:0x%x\n", KP_NAME(kp), *dcp->lvl, new_bits);
-		ddebug_apply_class_bitmap(dcp, &new_bits, 0UL, modname);
+		__ddebug_apply_class_bitmap(dcp, &new_bits, 0U, modname);
 		break;
 	default:
 		pr_err("bad map type %d\n", dcp->map->map_type);
@@ -1439,10 +1476,12 @@ static void ddebug_apply_params(struct _ddebug_class_map *cm, const char *mod_na
  * use it, and expects it to reflect reality.  We should oblige him,
  * and protect those classmaps from classless "-p" changes.
  */
-static void ddebug_apply_class_maps(const struct _ddebug_info *di)
+static void __ddebug_apply_class_maps(const struct _ddebug_info *di)
 {
 	struct _ddebug_class_map *cm;
 	int i;
+
+	lockdep_assert_held(&ddebug_lock);
 
 	for_subvec(i, cm, di, maps)
 		ddebug_apply_params(cm, cm->mod_name);
@@ -1450,10 +1489,12 @@ static void ddebug_apply_class_maps(const struct _ddebug_info *di)
 	v2pr_di_info(di, "attached %d class-maps to ", i);
 }
 
-static void ddebug_apply_class_users(const struct _ddebug_info *di)
+static void __ddebug_apply_class_users(const struct _ddebug_info *di)
 {
 	struct _ddebug_class_user *cli;
 	int i;
+
+	lockdep_assert_held(&ddebug_lock);
 
 	for_subvec(i, cli, di, users)
 		ddebug_apply_params(cli->map, cli->mod_name);
@@ -1606,12 +1647,14 @@ static int ddebug_add_module(struct _ddebug_info *di)
 
 	mutex_lock(&ddebug_lock);
 	list_add_tail(&dt->link, &ddebug_tables);
-	mutex_unlock(&ddebug_lock);
 
 	if (dt->info.maps.len)
-		ddebug_apply_class_maps(&dt->info);
+		__ddebug_apply_class_maps(&dt->info);
 	if (dt->info.users.len)
-		ddebug_apply_class_users(&dt->info);
+		__ddebug_apply_class_users(&dt->info);
+
+	static_branch_apply_queued();
+	mutex_unlock(&ddebug_lock);
 
 	vpr_info("%3u debug prints in module %s\n",
 		 dt->info.descs.len, dt->info.mod_name);
