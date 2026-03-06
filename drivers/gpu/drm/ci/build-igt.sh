@@ -70,5 +70,5 @@ tar -cf artifacts/igt.tar /igt
 
 # Pass needed files to the test stage
 S3_ARTIFACT_NAME="igt.tar.gz"
-gzip -c artifacts/igt.tar > ${S3_ARTIFACT_NAME}
-ci-fairy s3cp --token-file "${S3_JWT_FILE}" ${S3_ARTIFACT_NAME} https://${PIPELINE_ARTIFACTS_BASE}/${KERNEL_ARCH}/${S3_ARTIFACT_NAME}
+gzip -c artifacts/igt.tar > artifacts/${S3_ARTIFACT_NAME} # Fix 1: Create in artifacts/
+ci-fairy s3cp --token-file "${S3_JWT_FILE}" artifacts/${S3_ARTIFACT_NAME} https://${PIPELINE_ARTIFACTS_BASE}/${KERNEL_ARCH}/${S3_ARTIFACT_NAME} # Fix 2: Reference from artifacts/
