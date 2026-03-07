@@ -5,8 +5,23 @@ variables:
   UPSTREAM_REPO: https://gitlab.freedesktop.org/drm/kernel.git
   TARGET_BRANCH: drm-next
 
-  IGT_VERSION: 129d5b10baaadea1d6cd6377341c4cb42e7ee6fd
+  # --- Documentation: Variables inherited from Mesa/Infrastructure ---
+  # KERNEL_ARCH: Architecture to build (e.g., x86_64, arm64)
+  # DEFCONFIG: The base config to use for the build
+  # DEVICE_TREES: List of DTBs to build/include
 
+  # --- Custom Kconfig Hooks ---
+  # Stable debug flags that should always be on for tests
+  ENABLE_KCONFIGS: "PROVE_LOCKING DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT DEBUG_WW_MUTEX_SLOWPATH DEBUG_FS DYNAMIC_DEBUG DRM_USE_DYNAMIC_DEBUG"
+  DISABLE_KCONFIGS: ""
+  MODULE_KCONFIGS: ""
+
+  # Hooks for the GitLab UI / ad-hoc runs (Absolute Overrides)
+  EXTRA_KCONFIGS: ""
+  EXTRA_MODULE_KCONFIGS: ""
+
+  # --- Versions ---
+  IGT_VERSION: 911c75d8ee24b6d42d31e76bc60149a9350f1190 # master
   DEQP_RUNNER_GIT_URL: https://gitlab.freedesktop.org/mesa/deqp-runner.git
   DEQP_RUNNER_GIT_TAG: v0.20.0
 
