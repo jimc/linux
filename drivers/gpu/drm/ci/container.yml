@@ -1,11 +1,23 @@
 .container:
-  variables:
-    CI_REPOSITORY_URL: ${DRM_CI_PROJECT_URL}.git # So ci-templates clones drm-ci instead of the repo to test
-    CI_COMMIT_SHA: ${DRM_CI_COMMIT_SHA}
+variables:
+  CI_REPOSITORY_URL: ${DRM_CI_PROJECT_URL}.git # So ci-templates clones drm-ci instead of the repo to test
+  CI_COMMIT_SHA: ${DRM_CI_COMMIT_SHA}
+
+  # --- Documentation: Package Lists ---
+  # Base tools needed for all build-containers
+  BUILD_BASE_PACKAGES: "bc python3-ply python3-docutils libssl-dev"
+
+  # Libraries needed for IGT/Drivers (Native)
+  BUILD_LIB_PACKAGES: "libcairo-dev libdw-dev libjansson-dev libjson-c-dev libkmod2 libkmod-dev libpci-dev libpciaccess-dev libproc2-dev libudev-dev libunwind-dev"
+
+  # Libraries needed for IGT/Drivers (Cross-compile armhf)
+  # Note: libpixman-1-dev:armhf is added here as it is a cross-build
+  # requirement not needed in the native dev base.
+  BUILD_LIB_PACKAGES_ARMHF: "libcairo-dev:armhf libdw-dev:armhf libjansson-dev:armhf libjson-c-dev:armhf libkmod-dev:armhf libpci-dev:armhf libproc2-dev:armhf libudev-dev:armhf libunwind-dev:armhf libpixman-1-dev:armhf"
 
 debian/x86_64_build-base:
   variables:
-    EXTRA_LOCAL_PACKAGES: "libcairo-dev libdw-dev libjson-c-dev libkmod2 libkmod-dev libpciaccess-dev libproc2-dev libudev-dev libunwind-dev python3-docutils bc python3-ply libssl-dev bc"
+    EXTRA_LOCAL_PACKAGES: "$BUILD_BASE_PACKAGES $BUILD_LIB_PACKAGES"
 
 debian/x86_64_test-gl:
   variables:
@@ -13,7 +25,7 @@ debian/x86_64_test-gl:
 
 debian/arm64_build:
   variables:
-    EXTRA_LOCAL_PACKAGES: "libcairo-dev libdw-dev libjson-c-dev libproc2-dev libkmod2 libkmod-dev libpciaccess-dev libudev-dev libunwind-dev python3-docutils libssl-dev crossbuild-essential-armhf libkmod-dev:armhf libproc2-dev:armhf libunwind-dev:armhf libdw-dev:armhf libpixman-1-dev:armhf libcairo-dev:armhf libudev-dev:armhf libjson-c-dev:armhf"
+    EXTRA_LOCAL_PACKAGES: "$BUILD_BASE_PACKAGES $BUILD_LIB_PACKAGES crossbuild-essential-armhf $BUILD_LIB_PACKAGES_ARMHF"
 
 .kernel+rootfs:
   variables:
