@@ -24,6 +24,10 @@
 
 .lava-igt:arm32:
   needs:
+    - alpine/x86_64_lava_ssh_client
+    - debian/arm32_test-gl
+    - python-artifacts
+    - testing:arm32
     - job: igt:arm32
       artifacts: true
   extends:
@@ -34,15 +38,13 @@
     FARM: collabora
   dependencies:
     - testing:arm32
-  needs:
-    - alpine/x86_64_lava_ssh_client
-    - debian/arm32_test-gl
-    - python-artifacts
-    - testing:arm32
-    - igt:arm32
 
 .lava-igt:arm64:
   needs:
+    - alpine/x86_64_lava_ssh_client
+    - debian/arm64_test-gl
+    - python-artifacts
+    - testing:arm64
     - job: igt:arm64
       artifacts: true
   extends:
@@ -53,15 +55,13 @@
     FARM: collabora
   dependencies:
     - testing:arm64
-  needs:
-    - alpine/x86_64_lava_ssh_client
-    - debian/arm64_test-gl
-    - python-artifacts
-    - testing:arm64
-    - igt:arm64
 
 .lava-igt:x86_64:
   needs:
+    - alpine/x86_64_lava_ssh_client
+    - debian/x86_64_test-gl
+    - python-artifacts
+    - testing:x86_64
     - job: igt:x86_64
       artifacts: true
   extends:
@@ -72,12 +72,6 @@
     FARM: collabora
   dependencies:
     - testing:x86_64
-  needs:
-    - alpine/x86_64_lava_ssh_client
-    - debian/x86_64_test-gl
-    - python-artifacts
-    - testing:x86_64
-    - igt:x86_64
 
 .baremetal-igt-arm64:
   extends:
