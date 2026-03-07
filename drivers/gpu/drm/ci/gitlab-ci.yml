@@ -62,6 +62,7 @@ variables:
 
 
 default:
+  interruptible: true
   id_tokens:
     S3_JWT:
       aud: https://s3.freedesktop.org
