@@ -89,12 +89,21 @@ else
     make `basename ${DEFCONFIG}`
 fi
 
-for opt in $ENABLE_KCONFIGS; do
-    ./scripts/config --enable CONFIG_$opt
-done
-for opt in $DISABLE_KCONFIGS; do
-    ./scripts/config --disable CONFIG_$opt
-done
+function set_configs() {
+    local control=$1; shift;
+    local list=$@
+    for opt in $list; do
+	./scripts/config $control CONFIG_$opt
+    done
+}
+
+set_configs --enable $ENABLE_KCONFIGS
+set_configs --disable $DISABLE_KCONFIGS
+set_configs --module $MODULE_KCONFIGS
+
+# Absolute overrides from UI/Manual runs
+set_configs --enable $EXTRA_KCONFIGS
+set_configs --module $EXTRA_MODULE_KCONFIGS
 
 make ${KERNEL_IMAGE_NAME}
 

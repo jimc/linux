@@ -65,38 +65,37 @@ igt:x86_64:
 
 # Build kernels for testing on devices
 
-testing:arm32:
-  extends: .build:arm32
+.kasan-notes: &kasan-notes
   variables:
     # Would be good to have DEBUG_KMEMLEAK, but it doesn't work well with any of
     # PROVE_LOCKING and KASAN as of 5.17.
     #
     # db410c and db820c don't boot with KASAN_INLINE, probably due to the kernel
     # becoming too big for their bootloaders.
+    DISABLE_KCONFIGS: "DEBUG_KMEMLEAK KASAN_INLINE"
+
+testing:arm32:
+  extends:
+    - .build:arm32
+    - .kasan-notes
+  variables:
     ENABLE_KCONFIGS: "PROVE_LOCKING DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT DEBUG_WW_MUTEX_SLOWPATH"
     UPLOAD_TO_MINIO: 1
     MERGE_FRAGMENT: arm.config
 
 testing:arm64:
-  extends: .build:arm64
+  extends:
+    - .build:arm64
+    - .kasan-notes
   variables:
-    # Would be good to have DEBUG_KMEMLEAK, but it doesn't work well with any of
-    # PROVE_LOCKING and KASAN as of 5.17.
-    #
-    # db410c and db820c don't boot with KASAN_INLINE, probably due to the kernel
-    # becoming too big for their bootloaders.
     ENABLE_KCONFIGS: "PROVE_LOCKING DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT DEBUG_WW_MUTEX_SLOWPATH"
     UPLOAD_TO_MINIO: 1
     MERGE_FRAGMENT: arm64.config
 
 testing:x86_64:
-  extends: .build:x86_64
-  variables:
-    # Would be good to have DEBUG_KMEMLEAK, but it doesn't work well with any of
-    # PROVE_LOCKING and KASAN as of 5.17.
-    #
-    # db410c and db820c don't boot with KASAN_INLINE, probably due to the kernel
-    # becoming too big for their bootloaders.
+  extends:
+    - .build:x86_64
+    - .kasan-notes
     ENABLE_KCONFIGS: "PROVE_LOCKING DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT DEBUG_WW_MUTEX_SLOWPATH"
     UPLOAD_TO_MINIO: 1
     MERGE_FRAGMENT: x86_64.config
