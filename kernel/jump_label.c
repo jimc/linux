@@ -251,7 +251,6 @@ void static_key_disable(struct static_key *key)
 }
 EXPORT_SYMBOL_GPL(static_key_disable);
 
-static void jump_label_update_queued(struct static_key *key);
 
 void static_key_enable_queued(struct static_key *key)
 {
