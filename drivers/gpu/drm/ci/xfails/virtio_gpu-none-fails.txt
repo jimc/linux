@@ -186,5 +186,12 @@ kms_vblank@ts-continuation-suspend,Fail
 kms_vblank@wait-busy,Fail
 kms_vblank@wait-forked,Fail
 kms_vblank@wait-forked-busy,Fail
+kdrm_virtgpu@drm-virtgpu-get-caps,Fail
+drm_virtgpu@drm-virtgpu-context-init,Fail
+vkms/vkms_configfs@enabled-connector-cannot-change,Fail
+vkms/vkms_configfs@enabled-connector-hot-plug,Fail
+vkms/vkms_configfs@enabled-crtc-cannot-change,Fail
+vkms/vkms_configfs@enabled-encoder-cannot-change,Fail
+vkms/vkms_configfs@enabled-plane-cannot-change,Fail
 kms_vblank@wait-idle,Fail
 perf@i915-ref-count,Fail

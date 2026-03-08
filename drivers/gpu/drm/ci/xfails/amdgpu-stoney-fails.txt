@@ -38,3 +38,7 @@ kms_plane@pixel-format,Fail
 kms_plane_cursor@primary,Fail
 kms_rotation_crc@primary-rotation-180,Fail
 perf@i915-ref-count,Fail
+core_getversion@all-cards,Fail
+core_setmaster@master-drop-set-user,Fail
+vkms/vkms_configfs@enabled-connector-cannot-change,Fail
+vkms/vkms_configfs@enabled-crtc-cannot-change,Fail

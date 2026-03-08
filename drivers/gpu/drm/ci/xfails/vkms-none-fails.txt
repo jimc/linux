@@ -22,4 +22,12 @@ kms_writeback@writeback-fb-id,Fail
 kms_writeback@writeback-fb-id-XRGB2101010,Fail
 kms_writeback@writeback-invalid-parameters,Fail
 kms_writeback@writeback-pixel-formats,Fail
+kms_rotation_crc@primary-rotation-180,Fail
 perf@i915-ref-count,Fail
+core_getversion@all-cards,Fail
+core_setmaster@master-drop-set-user,Fail
+vkms/vkms_configfs@enabled-connector-cannot-change,Fail
+vkms/vkms_configfs@enabled-connector-hot-plug,Fail
+vkms/vkms_configfs@enabled-crtc-cannot-change,Fail
+vkms/vkms_configfs@enabled-encoder-cannot-change,Fail
+vkms/vkms_configfs@enabled-plane-cannot-change,Fail
