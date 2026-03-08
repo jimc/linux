@@ -19,15 +19,17 @@ set +e
 cat /sys/kernel/debug/dri/*/state
 set -e
 
-mkdir -p /lib/modules
-case "$DRIVER_NAME" in
-    amdgpu|vkms|i915|virtio_gpu)
-        # Cannot use HWCI_KERNEL_MODULES as at that point we don't have the module in /lib
-        mv /install/modules/lib/modules/* /lib/modules/. || true
-        depmod -a # Add depmod -a to update module dependency cache
-        modprobe --first-time $DRIVER_NAME
-        ;;
-esac
+# If modules were built and provided, install them
+if [ -d /install/modules/lib/modules ]; then
+    mkdir -p /lib/modules
+    cp -rf /install/modules/lib/modules/* /lib/modules/.
+    depmod -a
+fi
+
+# Load the target driver specifically if it's modular
+if modinfo "$DRIVER_NAME" >/dev/null 2>&1; then
+    modprobe "$DRIVER_NAME"
+fi
 
 if [ -e "/install/xfails/$DRIVER_NAME-$GPU_VERSION-skips.txt" ]; then
     IGT_SKIPS="--skips /install/xfails/$DRIVER_NAME-$GPU_VERSION-skips.txt"

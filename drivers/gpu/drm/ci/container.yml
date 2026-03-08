@@ -1,10 +1,11 @@
 variables:
   CI_REPOSITORY_URL: ${DRM_CI_PROJECT_URL}.git # So ci-templates clones drm-ci instead of the repo to test
   CI_COMMIT_SHA: ${DRM_CI_COMMIT_SHA}
+  LLVM_VERSION: 19
 
 debian/x86_64_build-base:
   variables:
-    EXTRA_LOCAL_PACKAGES: "libcairo-dev libdw-dev libjansson-dev libjson-c-dev libkmod2 libkmod-dev libpci-dev libpciaccess-dev libpixman-1-dev libproc2-dev libudev-dev libunwind-dev python3-docutils bc python3-ply libssl-dev bc"
+    EXTRA_LOCAL_PACKAGES: "libcairo-dev libdw-dev libjansson-dev libjson-c-dev libkmod2 libkmod-dev libpci-dev libpciaccess-dev libpixman-1-dev libproc2-dev libudev-dev libunwind-dev python3-docutils bc python3-ply libssl-dev"
 
 debian/x86_64_test-gl:
   variables:
