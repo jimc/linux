@@ -264,6 +264,7 @@ static int ddebug_change(const struct ddebug_query *query,
 		}
 	}
 	mutex_unlock(&ddebug_lock);
+	v2pr_info("applied %d queued updates to sites in total\n", nfound);
 
 	if (!nfound && verbose)
 		pr_info("no matches for query\n");
