@@ -394,6 +394,7 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 	}
 	static_branch_apply_queued();
 	mutex_unlock(&ddebug_lock);
+	v2pr_info("applied %d queued updates to sites in total\n", nfound);
 
 	return nfound;
 }
