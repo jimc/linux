@@ -91,6 +91,7 @@ jump_label_sort_entries(struct jump_entry *start, struct jump_entry *stop)
 }
 
 static void jump_label_update(struct static_key *key);
+static void jump_label_update_queued(struct static_key *key);
 
 /*
  * There are similar definitions for the !CONFIG_JUMP_LABEL case in jump_label.h.
@@ -522,34 +523,25 @@ static bool jump_label_can_update(struct jump_entry *entry, bool init)
 	return true;
 }
 
-#ifndef HAVE_JUMP_LABEL_BATCH
 static void __jump_label_update(struct static_key *key,
 				struct jump_entry *entry,
 				struct jump_entry *stop,
 				bool init)
 {
+#ifndef HAVE_JUMP_LABEL_BATCH
 	for (; (entry < stop) && (jump_entry_key(entry) == key); entry++) {
 		if (jump_label_can_update(entry, init))
 			arch_jump_label_transform(entry, jump_label_type(entry));
 	}
-}
 #else
-static void __jump_label_update(struct static_key *key,
-				struct jump_entry *entry,
-				struct jump_entry *stop,
-				bool init)
-{
 	for (; (entry < stop) && (jump_entry_key(entry) == key); entry++) {
 
 		if (!jump_label_can_update(entry, init))
 			continue;
 
 		if (!arch_jump_label_transform_queue(entry, jump_label_type(entry))) {
-			/*
-			 * Queue is full: Apply the current queue and try again.
-			 */
 			arch_jump_label_transform_apply();
-			BUG_ON(!arch_jump_label_transform_queue(entry, jump_label_type(entry)));
+			WARN_ON_ONCE(!arch_jump_label_transform_queue(entry, jump_label_type(entry)));
 		}
 	}
 	arch_jump_label_transform_apply();

@@ -2,6 +2,7 @@
 #define pr_fmt(fmt) "SMP alternatives: " fmt
 
 #include <linux/mmu_context.h>
+#include <linux/sort.h>
 #include <linux/perf_event.h>
 #include <linux/vmalloc.h>
 #include <linux/memory.h>
@@ -2808,6 +2809,18 @@ static __always_inline int patch_cmp(const void *tpl_a, const void *tpl_b)
 	return 0;
 }
 
+static int text_poke_loc_cmp(const void *a, const void *b)
+{
+	const struct smp_text_poke_loc *tpl_a = a;
+	const struct smp_text_poke_loc *tpl_b = b;
+
+	if (tpl_a->rel_addr < tpl_b->rel_addr)
+		return -1;
+	if (tpl_a->rel_addr > tpl_b->rel_addr)
+		return 1;
+	return 0;
+}
+
 noinstr int smp_text_poke_int3_handler(struct pt_regs *regs)
 {
 	struct smp_text_poke_loc *tpl;
@@ -2919,6 +2932,10 @@ void smp_text_poke_batch_finish(void)
 
 	if (!text_poke_array.nr_entries)
 		return;
+
+	if (text_poke_array.nr_entries > 1)
+		sort(text_poke_array.vec, text_poke_array.nr_entries,
+		     sizeof(struct smp_text_poke_loc), text_poke_loc_cmp, NULL);
 
 	lockdep_assert_held(&text_mutex);
 
@@ -3136,28 +3153,6 @@ static void __smp_text_poke_batch_add(void *addr, const void *opcode, size_t len
 	}
 }
 
-/*
- * We hard rely on the text_poke_array.vec being ordered; ensure this is so by flushing
- * early if needed.
- */
-static bool text_poke_addr_ordered(void *addr)
-{
-	WARN_ON_ONCE(!addr);
-
-	if (!text_poke_array.nr_entries)
-		return true;
-
-	/*
-	 * If the last current entry's address is higher than the
-	 * new entry's address we'd like to add, then ordering
-	 * is violated and we must first flush all pending patching
-	 * requests:
-	 */
-	if (text_poke_addr(text_poke_array.vec + text_poke_array.nr_entries-1) > addr)
-		return false;
-
-	return true;
-}
 
 /**
  * smp_text_poke_batch_add() -- update instruction on live kernel on SMP, batched
@@ -3174,8 +3169,9 @@ static bool text_poke_addr_ordered(void *addr)
  */
 void __ref smp_text_poke_batch_add(void *addr, const void *opcode, size_t len, const void *emulate)
 {
-	if (text_poke_array.nr_entries == TEXT_POKE_ARRAY_MAX || !text_poke_addr_ordered(addr))
+	if (text_poke_array.nr_entries == TEXT_POKE_ARRAY_MAX)
 		smp_text_poke_batch_finish();
+
 	__smp_text_poke_batch_add(addr, opcode, len, emulate);
 }
 
