@@ -137,7 +137,14 @@ DYNAMIC_DEBUG_CLASSMAP_DEFINE(classid_range_conflict, 0, D2_CORE + 1, "D3_CORE")
  * DEFINEd (and exported) above.
  */
 DYNAMIC_DEBUG_CLASSMAP_USE(map_disjoint_bits);
-DYNAMIC_DEBUG_CLASSMAP_USE(map_level_num);
+#if !defined(DD_RUNTIME_CLASS_CHECK)
+  DYNAMIC_DEBUG_CLASSMAP_USE(map_level_num);
+#else
+/*
+ * force failure of runtime sanity test of classmap.length + offset < 63
+ */
+DYNAMIC_DEBUG_CLASSMAP_USE_(map_level_num, 55);
+#endif
 
 #if defined(DD_MACRO_ARGCHECK)
 /*
