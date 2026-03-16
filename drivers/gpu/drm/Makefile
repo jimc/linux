@@ -3,7 +3,15 @@
 # Makefile for the drm device driver.  This driver provides support for the
 # Direct Rendering Infrastructure (DRI) in XFree86 4.1.0 and higher.
 
-CFLAGS-$(CONFIG_DRM_USE_DYNAMIC_DEBUG)	+= -DDYNAMIC_DEBUG_MODULE
+# At the top
+ccflags-$(CONFIG_DRM_USE_DYNAMIC_DEBUG)         += -DDYNAMIC_DEBUG_MODULE -include $(srctree)/drivers/gpu/drm/drm_dyndbg_classmap_mgr.h
+subdir-ccflags-$(CONFIG_DRM_USE_DYNAMIC_DEBUG)  += -DDYNAMIC_DEBUG_MODULE -include $(srctree)/drivers/gpu/drm/drm_dyndbg_classmap_mgr.h
+
+# Skip emitting the classmap USE in the definer and quirk modules that drm.ko depends on.
+# This prevents circular dependencies: drm.ko -> quirks.ko -> drm.ko
+CFLAGS_drm_print.o += -DDRM_DYNDBG_CLASSMAP_SKIP
+CFLAGS_drm_panel_orientation_quirks.o += -DDRM_DYNDBG_CLASSMAP_SKIP
+CFLAGS_drm_panel_backlight_quirks.o += -DDRM_DYNDBG_CLASSMAP_SKIP
 
 # Unconditionally enable W=1 warnings locally
 # --- begin copy-paste W=1 warnings from scripts/Makefile.warn
