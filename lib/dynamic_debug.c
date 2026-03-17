@@ -1368,11 +1368,19 @@ static void ddebug_apply_class_maps(const struct _ddebug_info *di)
 
 static void ddebug_apply_class_users(const struct _ddebug_info *di)
 {
-	struct _ddebug_class_user *cli;
-	int i;
+	struct _ddebug_class_user *cli, *cli2;
+	int i, j;
 
-	for_subvec(i, cli, di, users)
+	for_subvec(i, cli, di, users) {
+		for (j = 0; j < i; j++) {
+			cli2 = &di->users.start[j];
+			if (cli2->map == cli->map)
+				goto skip;
+		}
 		ddebug_apply_params(cli->map, cli->mod_name);
+skip:
+		;
+	}
 
 	vpr_di_info(di, "attached %d class-users to ", i);
 }
