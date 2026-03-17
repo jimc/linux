@@ -10,6 +10,7 @@
 #endif
 
 #include <asm-generic/codetag.lds.h>
+#include <asm-generic/dyndbg.lds.h>
 
 SECTIONS {
 	/DISCARD/ : {
@@ -61,6 +62,7 @@ SECTIONS {
 	}
 
 	MOD_SEPARATE_CODETAG_SECTIONS()
+	MOD_DYNDBG_SECTIONS()
 }
 
 /* bring in arch-specific sections */
