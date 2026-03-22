@@ -261,14 +261,14 @@ struct _ddebug_class_param {
  * original_map_base + class_index + @_offset.
  */
 #define DYNAMIC_DEBUG_CLASSMAP_USE_(_var, _offset)			\
-	__DYNAMIC_DEBUG_CLASSMAP_USE(_var, _offset, __UNIQUE_ID(_ddebug_class_user))
-
-#define __DYNAMIC_DEBUG_CLASSMAP_USE(_var, _offset, _uname)		\
 	extern struct _ddebug_class_map _var;				\
 	static_assert((_offset) >= 0 && (_offset) < _DPRINTK_CLASS_DFLT, \
 		      "classmap use offset must be in 0..62");          \
-	static struct _ddebug_class_user __aligned(8) __used		\
-	__section("__dyndbg_class_users") _uname = {			\
+	extern struct _ddebug_class_user				\
+	__PASTE(__dyndbg_class_user_, __PASTE(__KBUILD_MODNAME, _var)); \
+	struct _ddebug_class_user __aligned(8) __used __weak		\
+	__section("__dyndbg_class_users")				\
+	__PASTE(__dyndbg_class_user_, __PASTE(__KBUILD_MODNAME, _var)) = { \
 		.mod_name = KBUILD_MODNAME,				\
 		.map = &(_var),						\
 		.offset = _offset					\
