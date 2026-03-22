@@ -265,10 +265,10 @@ struct _ddebug_class_param {
 	static_assert((_offset) >= 0 && (_offset) < _DPRINTK_CLASS_DFLT, \
 		      "classmap use offset must be in 0..62");          \
 	extern struct _ddebug_class_user				\
-	__PASTE(__dyndbg_class_user_, __PASTE(__KBUILD_MODNAME, _var)); \
+	__PASTE(_var, __KBUILD_MODNAME);				\
 	struct _ddebug_class_user __aligned(8) __used __weak		\
-	__section("__dyndbg_class_users")				\
-	__PASTE(__dyndbg_class_user_, __PASTE(__KBUILD_MODNAME, _var)) = { \
+	__section(".gnu.linkonce.d.__dyndbg_class_users." KBUILD_MODNAME) \
+	__PASTE(_var, __KBUILD_MODNAME) = {				\
 		.mod_name = KBUILD_MODNAME,				\
 		.map = &(_var),						\
 		.offset = _offset					\

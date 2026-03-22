@@ -7,7 +7,8 @@
 	. = ALIGN(8);							\
 	BOUNDED_SECTION_BY(__dyndbg_descriptors, ___dyndbg_descs)	\
 	BOUNDED_SECTION_BY(__dyndbg_class_maps, ___dyndbg_class_maps)	\
-	BOUNDED_SECTION_BY(__dyndbg_class_users, ___dyndbg_class_users)
+	BOUNDED_SECTION_BY(.gnu.linkonce.d.__dyndbg_class_users.*,	\
+			   ___dyndbg_class_users)
 
 #define MOD_DYNDBG_SECTIONS()                                           \
 	__dyndbg_descriptors : {					\
@@ -19,7 +20,7 @@
 				   ___dyndbg_class_maps)		\
 	}								\
 	__dyndbg_class_users : {					\
-		BOUNDED_SECTION_BY(__dyndbg_class_users,		\
+		BOUNDED_SECTION_BY(.gnu.linkonce.d.__dyndbg_class_users.*, \
 				   ___dyndbg_class_users)		\
 	}
 
