@@ -26,7 +26,7 @@
 	}
 
 #define MOD_DYNDBG_RO_SECTIONS()					\
-	__dyndbg_sites : {						\
+	.init.__dyndbg_sites : {					\
 		BOUNDED_SECTION_BY(__dyndbg_sites, ___dyndbg_sites)	\
 	}
 
