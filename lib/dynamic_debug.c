@@ -1564,14 +1564,14 @@ static void ddebug_store_range(struct maple_tree *mt, const struct _ddebug *star
 
 
 /* these are unusable after __init, when __dyndbg_sites is released */
-#define dref_modname(d)  ((d)->site->_modname)
-#define dref_filename(d) ((d)->site->_filename)
-#define dref_function(d) ((d)->site->_function)
+#define dref_modname(s)  ((s)->_modname)
+#define dref_filename(s) ((s)->_filename)
+#define dref_function(s) ((s)->_function)
 
-#define DYNDBG_SITE_GETTER(name)				      \
-static inline const char *ddebug_get_##name(const struct _ddebug *dp) \
-{								      \
-	return dref_##name(dp);					      \
+#define DYNDBG_SITE_GETTER(name)                                 \
+static inline const char *ddebug_get_##name(const struct _ddebug_site *s) \
+{                                                                \
+	return dref_##name(s);                                       \
 }
 DYNDBG_SITE_GETTER(function)
 DYNDBG_SITE_GETTER(filename)
@@ -1597,25 +1597,34 @@ static void ddebug_log_compression_stats(int ct_sites, int mods,
 static int ddebug_grow_tree(struct _ddebug_info *di,
 			    struct maple_tree *mt,
 			    const char *kind,
-			    const char *(*key_fn)(const struct _ddebug *))
+			    const char *(*key_fn)(const struct _ddebug_site *))
 {
 	int count = 0;
 	struct _ddebug *p = di->descs.start,
 		*end = di->descs.start + di->descs.len;
 	struct _ddebug *range_start = di->descs.start;
+	const struct _ddebug_site *site_p, *site_range_start;
 
 	if (!di->descs.len)
 		return 0;
 
 	for (; p < end; ++p) {
-		if (key_fn(range_start) != key_fn(p)) {
+
+		site_p = &di->sites.start[p - di->descs.start];
+		site_range_start = &di->sites.start[range_start -
+						    di->descs.start];
+
+		if (key_fn(site_range_start) != key_fn(site_p)) {
 			ddebug_store_range(mt, range_start, p, kind,
-					   key_fn(range_start));
+					   key_fn(site_range_start));
 			count++;
 			range_start = p;
 		}
 	}
-	ddebug_store_range(mt, range_start, p, kind, key_fn(range_start));
+	site_range_start = &di->sites.start[range_start -
+					    di->descs.start];
+	ddebug_store_range(mt, range_start, p, kind,
+			   key_fn(site_range_start));
 	count++;
 
 	return count;
@@ -1626,6 +1635,9 @@ static void ddebug_condense_sites(struct _ddebug_info *di)
 	int funcs = 0, files = 0, mods = 0;
 
 	if (!di->sites.len)
+		return;
+
+	if (WARN_ON(di->descs.len != di->sites.len))
 		return;
 
 	funcs = ddebug_grow_tree(di, &dd_func_map,
