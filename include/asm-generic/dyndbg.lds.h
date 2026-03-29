@@ -23,7 +23,7 @@
 	}
 
 #define MOD_DYNDBG_RO_SECTIONS()					\
-	__dyndbg_sites 0 : ALIGN(8) {					\
+	.init.__dyndbg_sites 0 : ALIGN(8) {				\
 		KEEP(*(__dyndbg_sites))					\
 	}
 
