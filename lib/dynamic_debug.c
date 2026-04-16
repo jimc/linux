@@ -19,12 +19,14 @@
 #include <linux/kallsyms.h>
 #include <linux/types.h>
 #include <linux/mutex.h>
+#include <linux/percpu.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/list.h>
 #include <linux/sysctl.h>
 #include <linux/ctype.h>
 #include <linux/string.h>
+
 #include <linux/parser.h>
 #include <linux/string_helpers.h>
 #include <linux/uaccess.h>
@@ -71,6 +73,13 @@ struct flag_settings {
 	unsigned int mask;
 };
 
+static DEFINE_PER_CPU(unsigned long, ddebug_call_count);
+void ddebug_increment_call_count(void)
+{
+	this_cpu_inc(ddebug_call_count);
+}
+EXPORT_SYMBOL(ddebug_increment_call_count);
+
 static DEFINE_MUTEX(ddebug_lock);
 static LIST_HEAD(ddebug_tables);
 static int verbose;
@@ -97,6 +106,7 @@ static const struct { unsigned flag:8; char opt_char; } opt_array[] = {
 	{ _DPRINTK_FLAGS_INCL_LINENO, 'l' },
 	{ _DPRINTK_FLAGS_INCL_TID, 't' },
 	{ _DPRINTK_FLAGS_INCL_STACK, 'd' },
+	{ _DPRINTK_FLAGS_COUNT, 'c' },
 	{ _DPRINTK_FLAGS_NONE, '_' },
 };
 
@@ -360,10 +370,10 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 			if (newflags == dp->flags)
 				continue;
 #ifdef CONFIG_JUMP_LABEL
-			if (dp->flags & _DPRINTK_FLAGS_PRINT) {
-				if (!(newflags & _DPRINTK_FLAGS_PRINT))
+			if (dp->flags & _DPRINTK_FLAGS_ENABLED) {
+				if (!(newflags & _DPRINTK_FLAGS_ENABLED))
 					static_branch_disable(&dp->key.dd_key_true);
-			} else if (newflags & _DPRINTK_FLAGS_PRINT) {
+			} else if (newflags & _DPRINTK_FLAGS_ENABLED) {
 				static_branch_enable(&dp->key.dd_key_true);
 			}
 #endif
@@ -1071,6 +1081,14 @@ static __init int dyndbg_setup(char *str)
 
 __setup("dyndbg=", dyndbg_setup);
 
+static void reset_ddebug_call_count(void)
+{
+	int cpu;
+
+	for_each_possible_cpu(cpu)
+		per_cpu(ddebug_call_count, cpu) = 0;
+}
+
 /*
  * File_ops->write method for <debugfs>/dynamic_debug/control.  Gathers the
  * command text from userspace, parses and executes it.
@@ -1093,6 +1111,10 @@ static ssize_t ddebug_proc_write(struct file *file, const char __user *ubuf,
 		return PTR_ERR(tmpbuf);
 	v2pr_info("read %zu bytes from userspace\n", len);
 
+	if (len >= 11 && !strncmp(tmpbuf, "reset_stats", 11)) {
+		reset_ddebug_call_count();
+		return len;
+	}
 	ret = ddebug_exec_queries(tmpbuf, NULL);
 	kfree(tmpbuf);
 	if (ret < 0)
@@ -1212,6 +1234,16 @@ static const char *ddebug_class_name(struct _ddebug_info *di, struct _ddebug *dp
 	return NULL;
 }
 
+static unsigned long get_ddebug_call_count(void)
+{
+	unsigned long total = 0;
+	int cpu;
+
+	for_each_online_cpu(cpu)
+		total += per_cpu(ddebug_call_count, cpu);
+	return total;
+}
+
 /*
  * Seq_ops show method.  Called several times within a read()
  * call from userspace, with ddebug_lock held.  Formats the
@@ -1231,7 +1263,7 @@ static int ddebug_proc_show(struct seq_file *m, void *p)
 		return 0;
 	}
 	if (p == EPILOGUE_TOKEN) {
-		/* use this soon */
+		seq_printf(m, "#: total call-counts: %lu\n", get_ddebug_call_count());
 		return 0;
 	}
 
