@@ -10,6 +10,8 @@
 
 #include "drm_client_internal.h"
 
+DRM_CLASSMAP_USE(drm_debug_classes);
+
 static char drm_client_default[16] = CONFIG_DRM_CLIENT_DEFAULT;
 module_param_string(active, drm_client_default, sizeof(drm_client_default), 0444);
 MODULE_PARM_DESC(active,
