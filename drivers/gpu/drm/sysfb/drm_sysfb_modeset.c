@@ -18,6 +18,8 @@
 
 #include "drm_sysfb_helper.h"
 
+DRM_CLASSMAP_USE(drm_debug_classes);
+
 struct drm_display_mode drm_sysfb_mode(unsigned int width,
 				       unsigned int height,
 				       unsigned int width_mm,
