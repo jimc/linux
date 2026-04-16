@@ -693,7 +693,8 @@ __printf(1, 2)
 void __drm_err(const char *format, ...);
 
 #if !defined(CONFIG_DRM_USE_DYNAMIC_DEBUG)
-#define __drm_dbg(cat, fmt, ...)	__drm_dev_dbg(NULL, NULL, cat, fmt, ##__VA_ARGS__)
+#define __drm_dbg(cat, fmt, ...)				\
+	__drm_dev_dbg(NULL, NULL, cat, fmt, ##__VA_ARGS__)
 #else
 #define __drm_dbg(cat, fmt, ...)					\
 	_dynamic_func_call_cls(cat, fmt, __drm_dev_dbg,			\
