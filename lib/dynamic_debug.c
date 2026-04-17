@@ -1558,7 +1558,7 @@ static void ddebug_store_range(struct maple_tree *mt, const struct _ddebug *star
 	unsigned long last = (unsigned long)(next - 1); /* cast after decrement */
 	int rc, reps = next - start;
 
-	v3pr_info("%3d debugs %lx-%lx  %s: %s\n", reps, first, last, kind, name);
+	v3pr_info("%3d debugs in %s: %s\n", reps, kind, name);
 	rc = mtree_store_range(mt, first, last, (void *)name, GFP_KERNEL);
 	if (rc)
 		pr_err("%s:%s range store failed: %d\n", kind, name, rc);
@@ -1615,8 +1615,14 @@ static int ddebug_grow_tree(struct _ddebug_info *di,
 		site_p = &di->sites.start[p - di->descs.start];
 		site_range_start = &di->sites.start[range_start -
 						    di->descs.start];
+		/*
+		 * address != should be enough to find new ranges, but
+		 * for modules, the modname can be the same, even when
+		 * addys differ, and we want consolidated ranges.
+		 */
+		if (key_fn(site_range_start) != key_fn(site_p) &&
+		    !!strcmp(key_fn(site_range_start), key_fn(site_p))) {
 
-		if (key_fn(site_range_start) != key_fn(site_p)) {
 			ddebug_store_range(mt, range_start, p, kind,
 					   key_fn(site_range_start));
 			count++;
