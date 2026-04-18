@@ -8,6 +8,8 @@
 #include <drm/ttm/ttm_placement.h>
 #include <drm/ttm/ttm_tt.h>
 
+DRM_CLASSMAP_USE(drm_debug_classes);
+
 /**
  * DOC: overview
  *
