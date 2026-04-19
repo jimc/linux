@@ -24,6 +24,7 @@
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_ioctl.h>
 #include <drm/drm_of.h>
+#include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_vblank.h>
 
@@ -36,6 +37,8 @@
 #define DRIVER_DESC "Mediatek SoC DRM"
 #define DRIVER_MAJOR 1
 #define DRIVER_MINOR 0
+
+DRM_CLASSMAP_USE(drm_debug_classes);
 
 static const struct drm_mode_config_helper_funcs mtk_drm_mode_config_helpers = {
 	.atomic_commit_tail = drm_atomic_helper_commit_tail_rpm,
