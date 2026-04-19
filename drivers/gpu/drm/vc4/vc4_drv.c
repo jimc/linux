@@ -39,6 +39,8 @@
 #include <drm/drm_print.h>
 #include <drm/drm_vblank.h>
 
+DRM_CLASSMAP_USE(drm_debug_classes);
+
 #include <soc/bcm2835/raspberrypi-firmware.h>
 
 #include "uapi/drm/vc4_drm.h"
