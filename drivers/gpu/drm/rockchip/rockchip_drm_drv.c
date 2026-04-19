@@ -26,6 +26,8 @@
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_vblank.h>
 
+DRM_CLASSMAP_USE(drm_debug_classes);
+
 #if defined(CONFIG_ARM_DMA_USE_IOMMU)
 #include <asm/dma-iommu.h>
 #else
