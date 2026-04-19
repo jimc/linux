@@ -23,6 +23,7 @@
 #include <drm/drm_gem_vram_helper.h>
 #include <drm/drm_managed.h>
 #include <drm/drm_module.h>
+#include <drm/drm_print.h>
 #include <drm/drm_vblank.h>
 
 #include "hibmc_drm_drv.h"
@@ -30,6 +31,7 @@
 
 #include "dp/dp_reg.h"
 
+DRM_CLASSMAP_USE(drm_debug_classes);
 DEFINE_DRM_GEM_FOPS(hibmc_fops);
 
 static const char *g_irqs_names_map[HIBMC_MAX_VECTORS] = { "hibmc-vblank", "hibmc-hpd" };
