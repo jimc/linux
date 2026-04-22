@@ -12,6 +12,9 @@
 
 #include "dcss-dev.h"
 #include "dcss-kms.h"
+#include <drm/drm_print.h>
+
+DRM_CLASSMAP_USE(drm_debug_classes);
 
 struct dcss_drv {
 	struct dcss_dev *dcss;
