@@ -33,6 +33,8 @@
 #include "analogix_dp_core.h"
 #include "analogix_dp_reg.h"
 
+DRM_CLASSMAP_USE(drm_debug_classes);
+
 #define to_dp(nm)	container_of(nm, struct analogix_dp_device, nm)
 
 static const bool verify_fast_training;
