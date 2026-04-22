@@ -16,6 +16,8 @@
 #include <drm/drm_mm.h>
 #include <drm/drm_print.h>
 
+DRM_CLASSMAP_USE(drm_debug_classes);
+
 enum {
 	BEST,
 	BOTTOMUP,
