@@ -30,6 +30,8 @@
 #include "rcar_du_drv.h"
 #include "rcar_du_kms.h"
 
+DRM_CLASSMAP_USE(drm_debug_classes);
+
 /* -----------------------------------------------------------------------------
  * Device Information
  */
