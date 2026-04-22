@@ -24,10 +24,13 @@
 #include <drm/drm_managed.h>
 #include <drm/drm_modeset_helper.h>
 #include <drm/drm_of.h>
+#include <drm/drm_print.h>
 
 #include "dc-de.h"
 #include "dc-drv.h"
 #include "dc-pe.h"
+
+DRM_CLASSMAP_USE(drm_debug_classes);
 
 struct dc_priv {
 	struct drm_device *drm;
