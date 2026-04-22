@@ -30,6 +30,8 @@
 
 #include "drm_sysfb_helper.h"
 
+DRM_CLASSMAP_USE(drm_debug_classes);
+
 #define DRIVER_NAME	"simpledrm"
 #define DRIVER_DESC	"DRM driver for simple-framebuffer platform devices"
 #define DRIVER_MAJOR	1
