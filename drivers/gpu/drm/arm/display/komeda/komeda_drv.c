@@ -12,8 +12,12 @@
 #include <drm/clients/drm_client_setup.h>
 #include <drm/drm_module.h>
 #include <drm/drm_of.h>
+#include <drm/drm_print.h>
+
 #include "komeda_dev.h"
 #include "komeda_kms.h"
+
+DRM_CLASSMAP_USE(drm_debug_classes);
 
 struct komeda_drv {
 	struct komeda_dev *mdev;
