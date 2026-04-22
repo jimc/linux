@@ -41,6 +41,8 @@
 #include "dw-hdmi-cec.h"
 #include "dw-hdmi.h"
 
+DRM_CLASSMAP_USE(drm_debug_classes);
+
 #define DDC_CI_ADDR		0x37
 #define DDC_SEGMENT_ADDR	0x30
 
