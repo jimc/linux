@@ -25,6 +25,8 @@
 #include "lsdc_gem.h"
 #include "lsdc_ttm.h"
 
+DRM_CLASSMAP_USE(drm_debug_classes);
+
 #define DRIVER_AUTHOR               "Sui Jingfeng <suijingfeng@loongson.cn>"
 #define DRIVER_NAME                 "loongson"
 #define DRIVER_DESC                 "drm driver for loongson graphics"
