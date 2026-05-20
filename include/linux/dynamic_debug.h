@@ -522,6 +522,26 @@ void ddebug_increment_call_count(void);
 #define DYNAMIC_DEBUG_BRANCH(descriptor) false
 #define DECLARE_DYNDBG_CLASSMAP(...)
 
+#if defined(DEBUG)
+#define _dynamic_func_call_cls(cls, fmt, func, ...)		\
+	func(NULL, ##__VA_ARGS__)
+#define _dynamic_func_call(fmt, func, ...)			\
+	func(NULL, ##__VA_ARGS__)
+#define _dynamic_func_call_cls_no_desc(cls, fmt, func, ...)	\
+	func(__VA_ARGS__)
+#define _dynamic_func_call_no_desc(fmt, func, ...)		\
+	func(__VA_ARGS__)
+#else
+#define _dynamic_func_call_cls(cls, fmt, func, ...)		\
+	({ if (0) func(NULL, ##__VA_ARGS__); 0; })
+#define _dynamic_func_call(fmt, func, ...)			\
+	({ if (0) func(NULL, ##__VA_ARGS__); 0; })
+#define _dynamic_func_call_cls_no_desc(cls, fmt, func, ...)	\
+	({ if (0) func(__VA_ARGS__); 0; })
+#define _dynamic_func_call_no_desc(fmt, func, ...)		\
+	({ if (0) func(__VA_ARGS__); 0; })
+#endif
+
 #define dynamic_pr_debug(fmt, ...)					\
 	no_printk(KERN_DEBUG pr_fmt(fmt), ##__VA_ARGS__)
 #define dynamic_dev_dbg(dev, fmt, ...)					\
