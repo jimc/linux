@@ -1172,29 +1172,46 @@ static const struct proc_ops proc_fops = {
  * of elements where ->mod_name matches @__di->mod_name.
  *
  * This scans the @_di->_vec for the first element matching the module
- * name, and counts contiguous matches to define the subrange.
+ * name, and counts contiguous matches to define the subrange.  Once
+ * the subrange is found, we ratchet past it so it is not re-attached
+ * incorrectly (in 2 "main"s scenario)
  *
  * @_i:   caller-provided index var
  * @_sp:  cursor into @_vec
  * @_di:  pointer to the struct _ddebug_info to be narrowed
  * @_vec: name of the vector member (must have .start and .len)
+ * @_src: ddebug_info of all builtins. subranges are consumed from here.
  */
-#define dd_set_module_subrange(_i, _sp, _di, _vec) ({			\
+#define dd_set_module_subrange(_i, _sp, _di, _vec, _src) ({		\
 	struct _ddebug_info *__di = (_di);				\
+	struct _ddebug_info *__src = (_src);				\
 	typeof(__di->_vec.start) __start = NULL;			\
-	int __nc = 0;							\
+	int __nc = 0, __first = -1;					\
 	for_subvec(_i, _sp, __di, _vec) {				\
 		if (!strcmp((_sp)->mod_name, __di->mod_name)) {		\
-			if (!__nc++)					\
-				__start = (_sp);			\
+			if ((_sp)->mod_name == __di->mod_name) {	\
+				if (__first < 0) {			\
+					__first = (_i);			\
+					__start = (_sp);		\
+				}					\
+				__nc++;					\
+			} else if (__nc) {				\
+				break;					\
+			}						\
 		} else if (__nc) {					\
-			break; /* end of consecutive matches */		\
+			break;						\
 		}							\
 	}								\
-	if (__nc)							\
+	if (__nc) {							\
 		__di->_vec.start = __start;				\
-	__di->_vec.len = __nc;						\
+		__di->_vec.len = __nc;					\
+		__src->_vec.start += (__first + __nc);			\
+		__src->_vec.len -= (__first + __nc);			\
+	} else {							\
+		__di->_vec.len = 0;					\
+	}								\
 })
+
 
 /*
  * Allocate a new ddebug_table for the given module
@@ -1226,7 +1243,10 @@ static int ddebug_add_module(struct _ddebug_info *di)
 
 	INIT_LIST_HEAD(&dt->link);
 
-	dd_set_module_subrange(i, cm, &dt->info, maps);
+	dd_set_module_subrange(i, cm, &dt->info, maps, di);
+
+	if (dt->info.maps.len)
+		vpr_info("module:%s attached %d classes\n", dt->info.mod_name, dt->info.maps.len);
 
 	mutex_lock(&ddebug_lock);
 	list_add_tail(&dt->link, &ddebug_tables);
