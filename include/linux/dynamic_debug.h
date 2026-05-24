@@ -198,15 +198,11 @@ struct _ddebug_class_param {
 		      "unknown class_map_type")
 
 /**
- * DYNAMIC_DEBUG_CLASSMAP_DEFINE - define debug classes used by a module.
- * @_var:   name of the classmap, exported for other modules coordinated use.
- * @_mapty: enum ddebug_class_map_type: 0:DISJOINT - independent, 1:LEVEL - v2>v1
- * @_base:  reserve N classids starting at _base, to split 0..62 classid space
- * @classes: names of the N classes.
- *
- * This tells dyndbg what class_ids the module is using: _base..+N, by
- * mapping names onto them.  This qualifies "class NAME" >controls on
- * the defining module, ignoring unknown names.
+ * DYNAMIC_DEBUG_CLASSMAP_DEFINE - declare classnames known by a module
+ * @_var:   a struct _ddebug_class_map, passed to module_param_cb
+ * @_mapty: enum ddebug_class_map_type, chooses bits/verbose
+ * @_base:  offset of 1st class-name. splits .class_id space
+ * @classes: class-names used to control class'd prdbgs
  */
 #define DYNAMIC_DEBUG_CLASSMAP_DEFINE(_var, _mapty, _base, ...)		\
 	static const char *_var##_classnames[] = { __VA_ARGS__ };	\
