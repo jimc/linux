@@ -223,7 +223,13 @@ struct _ddebug_class_param {
 	};								\
 	EXPORT_SYMBOL(_var)
 
-/*
+/**
+ * DECLARE_DYNDBG_CLASSMAP - declare classnames known by a module
+ * @_var:   a struct _ddebug_class_map, passed to module_param_cb
+ * @_maptype: enum ddebug_class_map_type, chooses bits/verbose
+ * @_base:  offset of 1st class-name. splits .class_id space
+ * @...: class-names used to control class'd prdbgs
+ *
  * XXX: keep this until DRM adapts to use the DEFINE/USE api, it
  * differs from DYNAMIC_DEBUG_CLASSMAP_DEFINE by the lack of the
  * extern/EXPORT on the struct init, and cascading thinkos.
