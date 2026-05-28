@@ -347,7 +347,8 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 
 		/* match against the module name */
 		if (query->module &&
-		    !match_wildcard(query->module, di->mod_name))
+		    !match_wildcard(query->module, di->mod_name) &&
+		    !match_wildcard(query->module, kbasename(di->mod_name)))
 			continue;
 
 		selected_class = _DPRINTK_CLASS_DFLT;
@@ -1446,14 +1447,15 @@ static void ddebug_apply_class_users(const struct _ddebug_info *di)
  * @_vec: name of the vector member (must have .start and .len)
  * @_src: ddebug_info of all builtins. subranges are consumed from here.
  */
-#define dd_set_module_subrange(_i, _sp, _di, _vec, _src) ({		\
+#define dd_attach_module_subrange(_i, _sp, _di, _vec, _src) ({		\
 	struct _ddebug_info *__di = (_di);				\
 	struct _ddebug_info *__src = (_src);				\
 	typeof(__di->_vec.start) __start = NULL;			\
 	int __nc = 0, __first = -1;					\
 	for_subvec(_i, _sp, __di, _vec) {				\
 		if (!strcmp((_sp)->mod_name, __di->mod_name)) {		\
-			if ((_sp)->mod_name == __di->mod_name) {	\
+			if ((_sp)->mod_name == __di->mod_name ||	\
+			    (__di->_vec.start == __src->_vec.start)) {	\
 				if (__first < 0) {			\
 					__first = (_i);			\
 					__start = (_sp);		\
@@ -1542,15 +1544,8 @@ static int ddebug_add_module(struct _ddebug_info *di)
 
 	INIT_LIST_HEAD(&dt->link);
 
-	dd_set_module_subrange(i, cm, &dt->info, maps, di);
-	dd_set_module_subrange(i, cli, &dt->info, users, di);
-
-#if 0
-	if (dt->info.maps.len)
-		ddebug_attach_module_class_maps(dt, di);
-	if (dt->info.users.len)
-		ddebug_attach_module_class_users(&dt->info, di);
-#endif
+	dd_attach_module_subrange(i, cm, &dt->info, maps, di);
+	dd_attach_module_subrange(i, cli, &dt->info, users, di);
 
 	/* validate the per-module shared 0..62 class_id space */
 	for_subvec(i, cm, &dt->info, maps)

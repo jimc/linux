@@ -225,7 +225,7 @@ function basic_tests {
     check_match_ct =p 0
 
     # module params are builtin to handle boot args
-    check_match_ct '\[params\]' 4 -r
+    check_match_ct '\[kernel/params\]' 4 -r
     ddcmd module params +mpf
     check_match_ct =pmf 4
 
@@ -247,7 +247,7 @@ function comma_terminator_tests {
 	return
     fi
     # try combos of spaces & commas
-    check_match_ct '\[params\]' 4 -r
+    check_match_ct '\[kernel/params\]' 4 -r
     ddcmd module,params,=_		# commas as spaces
     ddcmd module,params,+mpf		# turn on module's pr-debugs
     check_match_ct =pmf 4
@@ -352,8 +352,44 @@ function test_mod_submod {
     ifrmmod test_dynamic_debug
 }
 
+function test_slash_queries {
+    echo -e "${GREEN}# TEST_SLASH_QUERIES ${NC}"
+    ddcmd =_
+
+    # Find how many 'main' modules we have in total (by basename)
+    # Use a more precise regex to avoid false positives like [irqdomain]
+    local total_main=$(grep -c "\[\([^]]*/\)\?main\]" /proc/dynamic_debug/control)
+    echo "# found $total_main total 'main' modules"
+
+    if [ $total_main -eq 0 ]; then
+        echo "SKIP - no 'main' modules found to test slashes"
+        return
+    fi
+
+    echo "# testing 'module */main'"
+    ddcmd module "*/main" +p
+    # This should match modules that HAVE a slash and end in /main
+    local slash_main=$(grep -c "\[[^]]*/main\]" /proc/dynamic_debug/control)
+    check_match_ct =p $slash_main -r
+    
+    echo "# testing 'module init/main' (specific path)"
+    ddcmd =_
+    ddcmd module "init/main" +p
+    local init_main=$(grep -c "\[init/main\]" /proc/dynamic_debug/control)
+    check_match_ct =p $init_main -r
+
+    echo "# testing 'module main' (basename match)"
+    ddcmd =_
+    ddcmd module main +p
+    # This should match ALL $total_main entries due to kbasename matching
+    check_match_ct =p $total_main -r
+
+    ddcmd =_
+}
+
 tests_list=(
     basic_tests
+    test_slash_queries
     # these require test_dynamic_debug*.ko
     comma_terminator_tests
     test_multiquery_splitting
