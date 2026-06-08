@@ -656,6 +656,17 @@ static int parse_linerange(struct ddebug_query *query, const char *first)
 	} else {
 		query->last_lineno = query->first_lineno;
 	}
+
+	/* Clamp values > DDEBUG_LINE_MAX to DDEBUG_LINE_MAX per design */
+	if (query->first_lineno > DDEBUG_LINE_MAX) {
+		query->first_lineno = DDEBUG_LINE_MAX;
+		v3pr_info("clamping first_lineno to %d\n", DDEBUG_LINE_MAX);
+	}
+	if (query->last_lineno > DDEBUG_LINE_MAX && query->last_lineno != UINT_MAX) {
+		query->last_lineno = DDEBUG_LINE_MAX;
+		v3pr_info("clamping last_lineno to %d\n", DDEBUG_LINE_MAX);
+	}
+
 	v3pr_info("parsed line %d-%d\n", query->first_lineno,
 		 query->last_lineno);
 	return 0;
