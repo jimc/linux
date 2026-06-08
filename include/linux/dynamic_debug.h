@@ -35,7 +35,18 @@ struct _ddebug {
 	const char *function;
 	const char *filename;
 	const char *format;
-	unsigned int lineno:18;
+
+#define LINENO_BITS 16
+#define DDEBUG_LINE_MAX ((1U << LINENO_BITS) - 1)
+	/*
+	 * Limit line numbers to 16 bits (max 65535) to free up flags bits in
+	 * struct _ddebug. Currently, 18 bits are allocated for lineno, which
+	 * is more than necessary. A 14-bit field would be enough for almost
+	 * all files (16,383 lines max), but we shrink it to 16 bits for
+	 * now. Queries for lines greater than 65535 are clamped in the parser
+	 * to prevent mismatching with saturated descriptors.
+	 */
+	unsigned int lineno:LINENO_BITS;
 #define CLS_BITS 6
 	unsigned int class_id:CLS_BITS;
 #define _DPRINTK_CLASS_DFLT		((1 << CLS_BITS) - 1)
@@ -67,7 +78,7 @@ struct _ddebug {
 #else
 #define _DPRINTK_FLAGS_DEFAULT 0
 #endif
-	unsigned int flags:8;
+	unsigned int flags:10;
 #ifdef CONFIG_JUMP_LABEL
 	union {
 		struct static_key_true dd_key_true;
@@ -371,7 +382,7 @@ void __dynamic_ibdev_dbg(struct _ddebug *descriptor,
 		.function = __func__,				\
 		.filename = __FILE__,				\
 		.format = (fmt),				\
-		.lineno = __LINE__,				\
+		.lineno = (__LINE__ > DDEBUG_LINE_MAX ? DDEBUG_LINE_MAX : __LINE__), \
 		.flags = _DPRINTK_FLAGS_DEFAULT,		\
 		.class_id = cls,				\
 		_DPRINTK_KEY_INIT				\
