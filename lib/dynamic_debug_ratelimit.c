@@ -11,10 +11,14 @@
 #include <linux/refcount.h>
 #include "dynamic_debug_ratelimit.h"
 
-static int dyndbg_ratelimit_interval = 5; /* seconds */
-static int dyndbg_ratelimit_burst = 10;
-module_param_named(ratelimit_interval, dyndbg_ratelimit_interval, int, 0644);
-module_param_named(ratelimit_burst, dyndbg_ratelimit_burst, int, 0644);
+static int dyndbg_solo_interval = 5; /* seconds */
+static int dyndbg_solo_burst = 10;
+static int dyndbg_shared_interval = 10; /* seconds */
+static int dyndbg_shared_burst = 50;
+module_param_named(solo_interval, dyndbg_solo_interval, int, 0644);
+module_param_named(solo_burst, dyndbg_solo_burst, int, 0644);
+module_param_named(shared_interval, dyndbg_shared_interval, int, 0644);
+module_param_named(shared_burst, dyndbg_shared_burst, int, 0644);
 
 static DEFINE_MTREE(dd_ratelimits_solo);
 static DEFINE_MTREE(dd_ratelimits_shared);
@@ -104,7 +108,7 @@ void ddebug_ratelimit_update(struct _ddebug *dp, unsigned int oldflags, unsigned
 	if (new_solo && !old_solo) {
 		struct ddebug_ratelimit_solo *new_wrapper = kzalloc(sizeof(*new_wrapper), GFP_KERNEL);
 		if (new_wrapper) {
-			ratelimit_state_init(&new_wrapper->rs, dyndbg_ratelimit_interval * HZ, dyndbg_ratelimit_burst);
+			ratelimit_state_init(&new_wrapper->rs, dyndbg_solo_interval * HZ, dyndbg_solo_burst);
 			int rc = mtree_store(&dd_ratelimits_solo, (unsigned long)dp, new_wrapper, GFP_KERNEL);
 			if (rc) {
 				kfree(new_wrapper);
@@ -116,7 +120,7 @@ void ddebug_ratelimit_update(struct _ddebug *dp, unsigned int oldflags, unsigned
 		if (!query_shared_wrapper) {
 			query_shared_wrapper = kzalloc(sizeof(*query_shared_wrapper), GFP_KERNEL);
 			if (query_shared_wrapper) {
-				ratelimit_state_init(&query_shared_wrapper->rs, dyndbg_ratelimit_interval * HZ, dyndbg_ratelimit_burst);
+				ratelimit_state_init(&query_shared_wrapper->rs, dyndbg_shared_interval * HZ, dyndbg_shared_burst);
 				refcount_set(&query_shared_wrapper->refcount, 1); /* Base query reference */
 			}
 		}
