@@ -205,6 +205,7 @@ obj-$(CONFIG_HAVE_ARCH_TRACEHOOK) += syscall.o
 obj-$(CONFIG_ARCH_NEED_CMPXCHG_1_EMU) += cmpxchg-emu.o
 
 obj-$(CONFIG_DYNAMIC_DEBUG_CORE) += dynamic_debug.o
+obj-$(CONFIG_DYNAMIC_DEBUG_CORE) += dynamic_debug_ratelimit.o
 ifdef CONFIG_RUST
 obj-$(CONFIG_DYNAMIC_DEBUG_CORE) += dyndbg_parse.o
 endif
