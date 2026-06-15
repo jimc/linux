@@ -49,6 +49,8 @@ rm -f /tmp/dyndbg_seen_hashes_$$
 function GOLDEN_RECORDS {
     cat << 'EOF'
 #K: <md5_hash>                       <test_key>               <args>
+#K= 0cb77c6922d5c9bffd4ea5ef76e0a07c multiquery_split_prints_468 1
+#K= 83386a5763d4c98115fca8e926812b6f mod_submod_regression_prints_468 1
 EOF
 }
 
