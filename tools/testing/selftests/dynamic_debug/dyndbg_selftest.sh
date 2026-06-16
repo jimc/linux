@@ -14,6 +14,7 @@ BLUE="${ESC}[0;34m"
 MAGENTA="${ESC}[0;35m"
 CYAN="${ESC}[0;36m"
 NC="${ESC}[0;0m"
+CUMULATIVE_DDCMDS="init"
 error_msg=""
 V=${V:=0}  # invoke as V=1 $0  for global verbose
 
@@ -53,6 +54,14 @@ function ddcmd () {
 	exp_exit_code=1
     fi
     args=${@:1:$num_args}
+    
+    # Update cumulative state-machine lineage
+    if [[ "$args" == *"=_"* ]]; then
+        CUMULATIVE_DDCMDS="$args"
+    else
+        CUMULATIVE_DDCMDS="${CUMULATIVE_DDCMDS} -> $args"
+    fi
+
     output=$( (echo "$args" > /proc/dynamic_debug/control) 2>&1)
     exit_code=$?
     error_msg=$(echo "$output" | cut -d ":" -f 5 | sed -e 's/^[[:space:]]*//')
@@ -63,7 +72,7 @@ function handle_exit_code() {
     local exp_exit_code=0
     [ $# == 4 ] && exp_exit_code=$4
     if [ "$3" -ne $exp_exit_code ]; then
-        echo -e "${RED}: $BASH_SOURCE:$1 $2() expected to exit with code $exp_exit_code, got $3"
+        echo -e "${RED}: $BASH_SOURCE:$1 $2() expected to exit with code $exp_exit_code, got $3${NC}"
 	[ "$3" == 1 ] && echo "Error: '$error_msg'"
         exit $ksft_fail
     fi
@@ -94,15 +103,21 @@ function count_pr_debugs {
 
     # 1. Assert on Count (Strategy 1)
     if [ "$cnt" -ne "$expected_count" ]; then
-        echo -e "${RED}: $BASH_SOURCE:$BASH_LINENO check failed expected $expected_count matches of '$pattern' with flags '$expected_flags', got $cnt"
+        echo -e "${RED}: $BASH_SOURCE:$BASH_LINENO check failed expected $expected_count matches of '$pattern' with flags '$expected_flags', got $cnt${NC}"
         exit $ksft_fail
     else
-        [ "$V" -ge 1 ] && echo ": $cnt matches of '$pattern' with flags '$expected_flags'"
+        [ "$V" -ge 1 ] && echo -e "${GREEN}✔ Matches! [count:$cnt] pattern '$pattern' flags '$expected_flags'${NC}"
     fi
 
     # 2. Cryptographic Full-State Verification (Strategy 2 - Optional)
     if [ -n "$label" ]; then
         verify_ddctrl_state "$label" "1" "$pattern"
+    elif [ "$FINGER" = "1" ] || [ "$FINGER" = "y" ]; then
+        # Automatically generate a unique, self-documenting label on-the-fly!
+        local safe_pattern=$(echo "$pattern" | tr -c 'a-zA-Z0-9_' '_' | tr -s '_' | sed 's/^_//;s/_$//')
+        local safe_flags=$(echo "$expected_flags" | tr -c 'a-zA-Z0-9_' '_' | tr -s '_' | sed 's/^_//;s/_$//')
+        local auto_label="auto_${safe_pattern}_flags_${safe_flags}_line${BASH_LINENO[0]}"
+        verify_ddctrl_state "$auto_label" "1" "$pattern"
     fi
 }
 
@@ -127,8 +142,12 @@ function slice_and_hash_dmesg {
 
     # 1. Slice log buffer between our markers
     # 2. Exclude the start and end marker lines to keep the hash invariant to line/label shifts
-    # 3. Strip printk timestamps (e.g. "[ 123.456789] ") to ensure platform independence
-    local log_slice=$(dmesg | sed -n "/$start_marker/,/$end_marker/p" | grep -E -v "DYNDBG_START_|DYNDBG_END_" | sed -e 's/^\[[^]]*\] //')
+    # 3. Filter only target dynamic-debug and test module prints to ignore background scheduling noise
+    # 4. Strip printk timestamps (e.g. "[ 123.456789] ") to ensure platform independence
+    local log_slice=$(dmesg | sed -n "/$start_marker/,/$end_marker/p" | \
+        grep -E -v "DYNDBG_START_|DYNDBG_END_" | \
+        grep -E "dyndbg:|test_dd:|test_dynamic_debug|handling " | \
+        sed -e 's/^\[[^]]*\] //')
 
     # Calculate and print the invariant fingerprint
     echo "$log_slice" | tr -d '\r' | md5sum | cut -d' ' -f1
@@ -164,7 +183,7 @@ function verify_fingerprint {
     # 100% simple and robust lookup: check if the computed hash exists in GOLDEN_RECORDS
     if GOLDEN_RECORDS | grep -q "$fingerprint"; then
         local short_hash="${fingerprint:0:12}"
-        [ "$V" -ge 1 ] && echo -e "${GREEN}: Verified! $capture_desc matches '$label' ($short_hash)${NC}"
+        [ "$V" -ge 1 ] && echo -e "${GREEN}✔ Verified! [$extra_args] matches label '$label' ($short_hash) [via: '$CUMULATIVE_DDCMDS']${NC}"
         if [ $V -ge 2 ]; then
             echo -e "${CYAN}--- Captured Invariant ${capture_desc} Output ($label) ---"
             if [ "$capture_desc" = "Control File" ]; then
@@ -175,19 +194,33 @@ function verify_fingerprint {
             echo -e "-----------------------------------${NC}"
         fi
         echo "$fingerprint" >> /tmp/dyndbg_seen_hashes_$$
+
+        # Write to long-term drift telemetry (Host will capture and enrich via stdout TELEMETRY:)
+        local T="${T:-0}"
+        if [ "$T" != "0" ] && [ "$T" != "n" ]; then
+            echo "TELEMETRY: $label $fingerprint VERIFIED $extra_args [via:\"$CUMULATIVE_DDCMDS\"]"
+        fi
     else
         # Computed hash not found! Check if the label itself exists anywhere in the database
+        local status_str="UNREGISTERED"
         if GOLDEN_RECORDS | grep -q -E "[[:space:]]${label}[[:space:]]"; then
             # Label exists, but hash is different: OUTDATED / DRIFTED!
             local expected_hash=$(GOLDEN_RECORDS | grep -E "[[:space:]]${label}[[:space:]]" | head -n1 | awk '{print $2}')
             local short_expected="${expected_hash:0:12}"
             local short_got="${fingerprint:0:12}"
-            echo -e "${RED}: ${capture_desc^^} STATE DRIFTED! Label '$label' has changed."
+            echo -e "${RED}: ${capture_desc^^} STATE DRIFTED! Label '$label' has changed.${NC}"
             echo -e "Expected: '$short_expected' ($expected_hash)"
             echo -e "Got:      '$short_got' ($fingerprint)${NC}"
+            status_str="DRIFTED"
         else
             # Label does not exist: BRAND NEW!
             echo -e "${YELLOW}: NEW ${capture_desc^^} RECORD NEEDED! Label '$label' is unregistered.${NC}"
+        fi
+
+        # Write to long-term drift telemetry (Host will capture and enrich via stdout TELEMETRY:)
+        local T="${T:-0}"
+        if [ "$T" != "0" ] && [ "$T" != "n" ]; then
+            echo "TELEMETRY: $label $fingerprint $status_str $extra_args [via:\"$CUMULATIVE_DDCMDS\"]"
         fi
 
         echo -e "\nAdd or replace this line in GOLDEN_RECORDS():"
@@ -213,20 +246,28 @@ function verify_dmesg_fingerprint {
     # $3 - the calculated fingerprint hash to verify
 
     local label="$1"
-    local extra_args="$2"
+    local extra_args="dmesg:${2:-1}"
     local fingerprint="$3"
-
-    # Slices dmesg ONLY on failure path to keep success path fast and simple
-    if ! GOLDEN_RECORDS | grep -q "$fingerprint"; then
-        local start_marker="DYNDBG_START_${label}"
-        local end_marker="DYNDBG_END_${label}"
-        local log_slice=$(dmesg | sed -n "/$start_marker/,/$end_marker/p" | grep -E -v "DYNDBG_START_|DYNDBG_END_" | sed -e 's/^\[[^]]*\] //')
-        verify_fingerprint "$label" "$extra_args" "$fingerprint" "Dmesg Log" "$log_slice"
+# Slices dmesg ONLY on failure path to keep success path fast and simple
+if ! GOLDEN_RECORDS | grep -q "$fingerprint"; then
+    local start_marker="DYNDBG_START_${label}"
+    local end_marker="DYNDBG_END_${label}"
+    local log_slice=$(dmesg | sed -n "/$start_marker/,/$end_marker/p" | \
+        grep -E -v "DYNDBG_START_|DYNDBG_END_" | \
+        grep -E "dyndbg:|test_dd:|test_dynamic_debug|handling " | \
+        sed -e 's/^\[[^]]*\] //')
+    verify_fingerprint "$label" "$extra_args" "$fingerprint" "Dmesg Log" "$log_slice"
     else
         # Success path: log the hit
         local short_hash="${fingerprint:0:12}"
-        [ "$V" -ge 1 ] && echo -e "${GREEN}: Verified! Dmesg Log matches '$label' ($short_hash)${NC}"
+        [ "$V" -ge 1 ] && echo -e "${GREEN}✔ Verified! [$extra_args] matches label '$label' ($short_hash) [via: '$CUMULATIVE_DDCMDS']${NC}"
         echo "$fingerprint" >> /tmp/dyndbg_seen_hashes_$$
+
+        # Write to long-term drift telemetry (Host will capture and enrich via stdout TELEMETRY:)
+        local T="${T:-0}"
+        if [ "$T" != "0" ] && [ "$T" != "n" ]; then
+            echo "TELEMETRY: $label $fingerprint VERIFIED $extra_args [via:\"$CUMULATIVE_DDCMDS\"]"
+        fi
     fi
 }
 
@@ -238,9 +279,9 @@ function verify_ddctrl_fingerprint {
     # $4 - the pattern used to slice the control file
 
     local label="$1"
-    local extra_args="$2"
-    local fingerprint="$3"
     local pattern="$4"
+    local extra_args="control:\"$pattern\""
+    local fingerprint="$3"
 
     # Captures control lines ONLY on failure path
     if ! GOLDEN_RECORDS | grep -q "$fingerprint"; then
@@ -249,8 +290,14 @@ function verify_ddctrl_fingerprint {
     else
         # Success path: log the hit
         local short_hash="${fingerprint:0:12}"
-        [ "$V" -ge 1 ] && echo -e "${GREEN}: Verified! Control File matches '$label' ($short_hash)${NC}"
+        [ "$V" -ge 1 ] && echo -e "${GREEN}✔ Verified! [$extra_args] matches label '$label' ($short_hash) [via: '$CUMULATIVE_DDCMDS']${NC}"
         echo "$fingerprint" >> /tmp/dyndbg_seen_hashes_$$
+
+        # Write to long-term drift telemetry (Host will capture and enrich via stdout TELEMETRY:)
+        local T="${T:-0}"
+        if [ "$T" != "0" ] && [ "$T" != "n" ]; then
+            echo "TELEMETRY: $label $fingerprint VERIFIED $extra_args [via:\"$CUMULATIVE_DDCMDS\"]"
+        fi
     fi
 }
 
@@ -510,18 +557,18 @@ function test_multiquery_splitting {
     count_pr_debugs '\[test_dynamic_debug\]' '=pf' 1
     count_pr_debugs '\[test_dynamic_debug\]' '=ps' 1
     count_pr_debugs '\[test_dynamic_debug\]' '=pm' 1
-    count_pr_debugs '\[test_dynamic_debug\]' '=_' 20 "multiquery_split_ctrl_initial"
+    count_pr_debugs '\[test_dynamic_debug\]' '=_' 31 "multiquery_split_ctrl_initial"
     # add flags to those callsites
     ddcmd class,D2_CORE,+mf@class,D2_KMS,+ls@class,D2_ATOMIC,+ml
     count_pr_debugs '\[test_dynamic_debug\]' '=pmf' 1
     count_pr_debugs '\[test_dynamic_debug\]' '=psl' 1
     count_pr_debugs '\[test_dynamic_debug\]' '=pml' 1
-    count_pr_debugs '\[test_dynamic_debug\]' '=_' 20 "multiquery_split_ctrl_updated"
+    count_pr_debugs '\[test_dynamic_debug\]' '=_' 31 "multiquery_split_ctrl_updated"
 
     # --- Live Content Fingerprinting Phase ---
     local label="multiquery_split_prints_${BASH_LINENO[0]}"
     echo "DYNDBG_START_${label}" > /dev/kmsg
-    echo 1 > /sys/module/test_dynamic_debug/parameters/do_prints
+    echo 1 > /sys/module/test_dynamic_debug/parameters/do_bulk
     echo "DYNDBG_END_${label}" > /dev/kmsg
     local hash=$(slice_and_hash_dmesg "$label")
     verify_dmesg_fingerprint "$label" "1" "$hash"
@@ -543,15 +590,15 @@ function test_mod_submod {
     modprobe test_dynamic_debug \
 	dyndbg=class,D2_CORE,+pf@class,D2_KMS,+pt@class,D2_ATOMIC,+pm
 
-    count_pr_debugs '\[test_dynamic_debug\]' '=_' 20 "mod_submod_ctrl_initial"
+    count_pr_debugs '\[test_dynamic_debug\]' '=_' 31 "mod_submod_ctrl_initial"
     count_pr_debugs '\[test_dynamic_debug\]' '=pf' 1
     count_pr_debugs '\[test_dynamic_debug\]' '=pt' 1
     count_pr_debugs '\[test_dynamic_debug\]' '=pm' 1
 
     modprobe test_dynamic_debug_submod
-    count_pr_debugs '\[test_dynamic_debug_submod\]' '=_' 23 "mod_submod_sub_initial"
-    count_pr_debugs '\[test_dynamic_debug\]' '=_' 20
-    count_pr_debugs 'test_dynamic_debug' '=_' 43
+    count_pr_debugs '\[test_dynamic_debug_submod\]' '=_' 34 "mod_submod_sub_initial"
+    count_pr_debugs '\[test_dynamic_debug\]' '=_' 31
+    count_pr_debugs 'test_dynamic_debug' '=_' 65
 
     # no enablements propagate here
     count_pr_debugs '\[test_dynamic_debug\]' '=pf' 1
@@ -567,7 +614,7 @@ function test_mod_submod {
     count_pr_debugs '\[test_dynamic_debug_submod\]' '=mf' 1
     count_pr_debugs '\[test_dynamic_debug_submod\]' '=lt' 1
     count_pr_debugs '\[test_dynamic_debug_submod\]' '=ml' 1
-    count_pr_debugs 'test_dynamic_debug' '=_' 40 "mod_submod_ctrl_updated"
+    count_pr_debugs 'test_dynamic_debug' '=_' 62 "mod_submod_ctrl_updated"
 
     # now work the classmap-params
     # fresh start, to clear all above flags (test-fn limits)
@@ -601,14 +648,68 @@ function test_mod_submod {
     # --- Live Content Fingerprinting Phase ---
     local label="mod_submod_regression_prints_${BASH_LINENO[0]}"
     echo "DYNDBG_START_${label}" > /dev/kmsg
-    echo 1 > /sys/module/test_dynamic_debug/parameters/do_prints
-    echo 1 > /sys/module/test_dynamic_debug_submod/parameters/do_prints
+    echo 1 > /sys/module/test_dynamic_debug/parameters/do_classes
+    echo 1 > /sys/module/test_dynamic_debug_submod/parameters/do_classes
     echo "DYNDBG_END_${label}" > /dev/kmsg
     local hash=$(slice_and_hash_dmesg "$label")
     verify_dmesg_fingerprint "$label" "1" "$hash"
 
     ifrmmod test_dynamic_debug_submod
     ifrmmod test_dynamic_debug
+}
+
+function verify_modprobe_param_logging {
+    # $1 - parameter name (e.g. do_classes)
+    # $2 - parameter value (e.g. 1)
+    # $3 - short descriptive tag (e.g. classes)
+    local param="$1"
+    local val="$2"
+    local tag="$3"
+    local line_num="${BASH_LINENO[0]}"
+
+    # Make sure both modules are completely unloaded to trigger a fresh load
+    ifrmmod test_dynamic_debug_submod
+    ifrmmod test_dynamic_debug
+
+    ((TEST_SEQ_CTR++))
+    local label="modprobe_${tag}_line${line_num}_seq${TEST_SEQ_CTR}"
+
+    echo "DYNDBG_START_${label}" > /dev/kmsg
+    modprobe test_dynamic_debug "${param}=${val}"
+    echo "DYNDBG_END_${label}" > /dev/kmsg
+
+    local hash=$(slice_and_hash_dmesg "$label")
+    verify_dmesg_fingerprint "$label" "1" "$hash"
+}
+
+function test_modprobes {
+    echo -e "${GREEN}# TEST_MODPROBES ${NC}"
+    ddcmd =_
+    local verbose
+    
+    # Enable logging on the builtin kernel parameter parsing engine
+    ddcmd "file kernel/params.c +p"
+
+    for verbose in 1 2 3 4 0; do
+	echo $verbose > /sys/module/dynamic_debug/parameters/verbose
+
+	# Verify each parameter load sequence with 100% DRY modularity
+	verify_modprobe_param_logging "do_classes" "1" "classes_verb${verbose}"
+	verify_modprobe_param_logging "do_bulk" "1" "bulk_verb${verbose}"
+
+	# Sequence composite bitmasks to verify disjoint bit transitions
+	for mask in "0x05" "0x12" "0x1f" "0x00"; do
+            verify_modprobe_param_logging "p_disjoint_bits" "$mask" \
+					  "disjoint_${mask}_verb${verbose}"
+	done
+
+	# Sequence levels to verify both growing and shrinking verbose transitions
+	for lvl in "3" "5" "4" "0"; do
+            verify_modprobe_param_logging "p_level_num" "$lvl" \
+					  "level_${lvl}_verb${verbose}"
+	done
+    done # verbose loop
+    ddcmd =_
 }
 
 tests_list=(
@@ -619,6 +720,7 @@ tests_list=(
     comma_terminator_tests
     test_multiquery_splitting
     test_mod_submod
+    test_modprobes
 )
 
 # ==============================================================================
@@ -636,19 +738,80 @@ tests_list=(
 function GOLDEN_RECORDS {
     cat << 'EOF'
 #K: <md5_hash>                       <label>               <args>
-#K= d84cecc6a8d5a711e511f515b3d79a5d basic_tests_params_mpf   1
-#K= 4c8384ab6b340196d28dd61f956b1f45 basic_tests_params_multicmd 1
+#K= 57e5fc9552bd6f0ff6ff18101df74565 basic_tests_params_mpf   control:"\\[kernel/params\\]"
+#K= 12aab629bdd655c99970dcb397c33402 basic_tests_params_multicmd control:"\\[kernel/params\\]"
 #K= 0c34da74906e3bd3bb482b7b7553a153 path_module_queries_init_main 1
-#K= d84cecc6a8d5a711e511f515b3d79a5d comma_terminator_commas_as_spaces 1
-#K= 5b2778ff039ed87b6eac80817db9b933 comma_terminator_ignored_commas 1
-#K= 97300060442b5506eb47fff6e343f170 comma_terminator_quoted_commas 1
-#K= fdb1f0b253da9ff7ff87bb0d36752f13 multiquery_split_ctrl_initial 1
-#K= b25ceccf91f172c94ff8fa5d7783eedc multiquery_split_ctrl_updated 1
-#K= 0cb77c6922d5c9bffd4ea5ef76e0a07c multiquery_split_prints_689 1
-#K= b6978629223b41bea5ed2b9571d55388 mod_submod_ctrl_initial  1
-#K= 2c672c006d55348d36b68c00c3ce7cfe mod_submod_sub_initial   1
-#K= f819d46e208e1648a3227ca28eb725f7 mod_submod_ctrl_updated  1
-#K= 83386a5763d4c98115fca8e926812b6f mod_submod_regression_prints_689 1
+#K= 57e5fc9552bd6f0ff6ff18101df74565 comma_terminator_commas_as_spaces control:"kernel/params"
+#K= f70473f6896b9f4f13a785f2234177a7 comma_terminator_ignored_commas control:"kernel/params"
+#K= d5961d67b122d14ce67559c71564efd1 comma_terminator_quoted_commas control:"kernel/params"
+#K= bd9aa64f2a576145e76b7545512bea73 multiquery_split_ctrl_initial control:"\\[test_dynamic_debug\\]"
+#K= 3cbd8ca2cb8ae863f91b9e1e2523c9e6 multiquery_split_ctrl_updated control:"\\[test_dynamic_debug\\]"
+#K= 68b329da9893e34099c7d8ad5cb9c940 multiquery_split_prints_819 dmesg:1
+#K= adad029f83d694b7d98b227af9fc800a mod_submod_ctrl_initial  control:"\\[test_dynamic_debug\\]"
+#K= dffe8d7c914804645e0c71252a2b518a mod_submod_sub_initial   control:"\\[test_dynamic_debug_submod\\]"
+#K= 390594542cc1fd3e16b6a4a3c9f5922c mod_submod_ctrl_updated  control:"test_dynamic_debug"
+#K= 29d6c3d962400aa663d01a1ca665bc23 mod_submod_regression_prints_872 dmesg:1
+
+# --- MULTI-DIMENSIONAL VERBOSITY AND STATE TRANSITIONS DATABASE (50 CHECKPOINTS) ---
+# Verbosity = 0 (Pruned Silence)
+#K= 18f050243a98fee40ead8cd0f0b4a092 modprobe_classes_verb0_line691_seq41 dmesg:1
+#K= f5d6d4626f3744514db7f44db10f62f1 modprobe_bulk_verb0_line692_seq42 dmesg:1
+#K= 3ca925e6bded5cc9cd91ab839be6ef89 modprobe_disjoint_0x05_verb0_line696_seq43 dmesg:1
+#K= e02701932d7bcc8256b615fd9230e0a3 modprobe_disjoint_0x12_verb0_line696_seq44 dmesg:1
+#K= bb5db0f2facb9f8641aff2688d1378df modprobe_disjoint_0x1f_verb0_line696_seq45 dmesg:1
+#K= f75acea70622ac838300a4160a070f58 modprobe_disjoint_0x00_verb0_line696_seq46 dmesg:1
+#K= f2056de0523055068adbd82c5a5362ac modprobe_level_3_verb0_line702_seq47 dmesg:1
+#K= 8df4c82af2bf5ee0ae55df15fe479a51 modprobe_level_5_verb0_line702_seq48 dmesg:1
+#K= 386199938d3608a49460556ec31ee755 modprobe_level_4_verb0_line702_seq49 dmesg:1
+#K= 0c60b0b77f537e308c4aa86121388696 modprobe_level_0_verb0_line702_seq50 dmesg:1
+
+# Verbosity = 1 (Basic Verbose)
+#K= f30b35b60103fbe0c85a2a9752e6fd77 modprobe_classes_verb1_line691_seq1 dmesg:1
+#K= 6cffa5fe4ca2a8cfd4ddf79925ab9c7e modprobe_bulk_verb1_line692_seq2 dmesg:1
+#K= 7d970411668a1403a03f58e1b3b21e35 modprobe_disjoint_0x05_verb1_line696_seq3 dmesg:1
+#K= 5d4c9031d9d85d11ccd43e88a189bec0 modprobe_disjoint_0x12_verb1_line696_seq4 dmesg:1
+#K= a3d093f5b99ab0f87504359ab981bd26 modprobe_disjoint_0x1f_verb1_line696_seq5 dmesg:1
+#K= 5f40b6f69acca4019e1b7914ca3785db modprobe_disjoint_0x00_verb1_line696_seq6 dmesg:1
+#K= 4b96d415bd3c9b7f34079a6c8ace98a8 modprobe_level_3_verb1_line702_seq7 dmesg:1
+#K= 45ac4a3203ec9aa87fc5cb7df8239a58 modprobe_level_5_verb1_line702_seq8 dmesg:1
+#K= 4622dc4d2bd7539f3110abade501f40f modprobe_level_4_verb1_line702_seq9 dmesg:1
+#K= cb7540a964856e830d514cc3f80cb89b modprobe_level_0_verb1_line702_seq10 dmesg:1
+
+# Verbosity = 2 (High Verbose)
+#K= f909855177e883a881395683f79be894 modprobe_classes_verb2_line691_seq11 dmesg:1
+#K= 28f07d1490b058d0d0a924d04639b993 modprobe_bulk_verb2_line692_seq12 dmesg:1
+#K= fe4e677264349ce232ab6fa98e188464 modprobe_disjoint_0x05_verb2_line696_seq13 dmesg:1
+#K= 58fac3c5c9a955dabca609f65a424da8 modprobe_disjoint_0x12_verb2_line696_seq14 dmesg:1
+#K= abb4eddc361e2a40904b42f904720368 modprobe_disjoint_0x1f_verb2_line696_seq15 dmesg:1
+#K= 5797ced615a26bc508c247ff4b9b03fd modprobe_disjoint_0x00_verb2_line696_seq16 dmesg:1
+#K= 20b016ecce50138343662ad19c2b154c modprobe_level_3_verb2_line702_seq17 dmesg:1
+#K= d0507ffb1a46f467594b89a8fa6c47e9 modprobe_level_5_verb2_line702_seq18 dmesg:1
+#K= befff040cee395becc4df3ac09ec2c3b modprobe_level_4_verb2_line702_seq19 dmesg:1
+#K= 860b11fe198ec2a1ff5d09f438dd18b9 modprobe_level_0_verb2_line702_seq20 dmesg:1
+
+# Verbosity = 3 (Very High Verbose)
+#K= ea818358520568496b139670b8603d13 modprobe_classes_verb3_line691_seq21 dmesg:1
+#K= 3c6e0285f3f1af0a6e96225eccc8066f modprobe_bulk_verb3_line692_seq22 dmesg:1
+#K= ad7d94f6d2967857a71c05befc46c20d modprobe_disjoint_0x05_verb3_line696_seq23 dmesg:1
+#K= 918c4c3c8d453f9f2f745cb7b22b5581 modprobe_disjoint_0x12_verb3_line696_seq24 dmesg:1
+#K= bc56428a51993840fd2922c4a30b87a1 modprobe_disjoint_0x1f_verb3_line702_seq25 dmesg:1
+#K= 784b411a5aaa10c03046c4777260d446 modprobe_disjoint_0x00_verb3_line696_seq26 dmesg:1
+#K= f0902e959ce8c596e530f0f781257207 modprobe_level_3_verb3_line702_seq27 dmesg:1
+#K= 3ce245fe2c29a645d887a0cfa44f5263 modprobe_level_5_verb3_line702_seq28 dmesg:1
+#K= 29f5fcbeb11206404944fc0909215fc4 modprobe_level_4_verb3_line702_seq29 dmesg:1
+#K= c97b46246763073b635fdbb3afeafcd4 modprobe_level_0_verb3_line702_seq30 dmesg:1
+
+# Verbosity = 4 (Extremely High Verbose)
+#K= ea818358520568496b139670b8603d13 modprobe_classes_verb4_line691_seq31 dmesg:1
+#K= 3c6e0285f3f1af0a6e96225eccc8066f modprobe_bulk_verb4_line692_seq32 dmesg:1
+#K= 8d9866e5874970e4618e8f5b1ac0dc5c modprobe_disjoint_0x05_verb4_line696_seq33 dmesg:1
+#K= 7e1d4a40f1cb248da4e84be7d574d78a modprobe_disjoint_0x12_verb4_line696_seq34 dmesg:1
+#K= 291649e88d745ddffcfeb8d363c8da75 modprobe_disjoint_0x1f_verb4_line696_seq35 dmesg:1
+#K= 784b411a5aaa10c03046c4777260d446 modprobe_disjoint_0x00_verb4_line696_seq36 dmesg:1
+#K= 409c159e48dd03ea98e78e467acabe07 modprobe_level_3_verb4_line702_seq37 dmesg:1
+#K= 2073855f52b0a6e6ccd5d0b96b4b01d0 modprobe_level_5_verb4_line702_seq38 dmesg:1
+#K= a7e7108d476e6f077058c8de280d77c1 modprobe_level_4_verb4_line702_seq39 dmesg:1
+#K= c97b46246763073b635fdbb3afeafcd4 modprobe_level_0_verb4_line702_seq40 dmesg:1
 EOF
 }
 function audit_golden_records {
@@ -679,6 +842,13 @@ function audit_golden_records {
 
     if [ $stale_found -eq 0 ]; then
         echo -e "${GREEN}# All $total_records GOLDEN_RECORDS entries were successfully hit!${NC}"
+    fi
+
+    # Detect duplicate labels in the database
+    local dupes=$(GOLDEN_RECORDS | grep "^#K=" | awk '{print $3}' | sort | uniq -d)
+    if [ -n "$dupes" ]; then
+        echo -e "\n${RED}# WARNING: Duplicate labels detected in GOLDEN_RECORDS():${NC}"
+        echo "$dupes" | sed 's/^/#   /'
     fi
 
     # Clean up
