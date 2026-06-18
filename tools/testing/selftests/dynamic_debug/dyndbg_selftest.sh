@@ -556,10 +556,7 @@ function FT_comma_terminators {
 # more testing of multi-query command handling (newlines done in FT_basic_queries)
 function FT_multiquery_splitting {
     echo -e "${GREEN}# TEST_MULTIQUERY_SPLITTING - multi-command splitting on @ ${NC}"
-    if [ $LACK_TMOD -eq 1 ]; then
-	echo "SKIP - test requires test-dynamic-debug.ko"
-	return
-    fi
+
     ifrmmod test_dynamic_debug_submod
     ifrmmod test_dynamic_debug
     ddcmd =_
@@ -588,10 +585,7 @@ function FT_multiquery_splitting {
 
 function FT_classmap_inheritance {
     echo -e "${GREEN}# TEST_MOD_SUBMOD ${NC}"
-    if [ $LACK_TMOD -eq 1 ]; then
-	echo "SKIP - test requires test-dynamic-debug.ko"
-	return
-    fi
+
     ifrmmod test_dynamic_debug_submod
     ifrmmod test_dynamic_debug
     ddcmd =_
@@ -722,12 +716,16 @@ function FT_modprobe_parameter_transitions {
     ddcmd =_
 }
 
-tests_list=(
+# Built-in Feature Tests (Can run on any CONFIG_DYNAMIC_DEBUG kernel, modular or monolithic)
+builtin_tests=(
     FT_basic_queries
     FT_path_module_queries
     FT_hyphen_underscore
-    # these require test_dynamic_debug*.ko
     FT_comma_terminators
+)
+
+# Modular Feature Tests (Require CONFIG_MODULES=y and test_dynamic_debug*.ko available)
+modular_tests=(
     FT_multiquery_splitting
     FT_classmap_inheritance
     FT_modprobe_parameter_transitions
@@ -877,11 +875,27 @@ rm -f /tmp/dyndbg_new_hashes_$$
 
 ifrmmod test_dynamic_debug
 
-for test in "${tests_list[@]}"
-do
-    $test
+# Check if loadable module support or our test modules are missing
+LACK_TMOD=0
+modprobe -q -n test_dynamic_debug || LACK_TMOD=1
+
+# 1. Run all Built-in Feature Tests
+echo -e "${GREEN}# RUNNING BUILT-IN FEATURE TESTS ${NC}"
+for test_func in "${builtin_tests[@]}"; do
+    $test_func
     echo ""
 done
+
+# 2. Run Modular Feature Tests only if test modules are available
+if [ $LACK_TMOD -eq 0 ]; then
+    echo -e "${GREEN}# RUNNING MODULAR FEATURE TESTS ${NC}"
+    for test_func in "${modular_tests[@]}"; do
+        $test_func
+        echo ""
+    done
+else
+    echo -e "${YELLOW}# SKIPPING MODULAR TESTS: test_dynamic_debug.ko not available ${NC}"
+fi
 echo -en "${GREEN}# Done on: "
 date
 echo -en "${NC}"
