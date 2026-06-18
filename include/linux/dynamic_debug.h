@@ -236,7 +236,7 @@ struct _ddebug_class_param {
 	static const char *_var##_classnames[] = { __VA_ARGS__ };	\
 	__DYNAMIC_DEBUG_CLASSMAP_CHECK(_var##_classnames, (_base), (_mapty)); \
 	extern struct _ddebug_class_map _var;				\
-	struct _ddebug_class_map __aligned(8) __used			\
+	struct _ddebug_class_map __used				\
 		__section("__dyndbg_class_maps") _var = {		\
 		.mod = THIS_MODULE,					\
 		.mod_name = KBUILD_MODNAME,				\
@@ -254,7 +254,7 @@ struct _ddebug_class_param {
  */
 #define DECLARE_DYNDBG_CLASSMAP(_var, _maptype, _base, ...)		\
 	static const char *_var##_classnames[] = { __VA_ARGS__ };	\
-	static struct _ddebug_class_map __aligned(8) __used		\
+	static struct _ddebug_class_map __used			\
 		__section("__dyndbg_class_maps") _var = {			\
 		.mod = THIS_MODULE,					\
 		.mod_name = DDEBUG_MODNAME,				\
@@ -292,9 +292,9 @@ struct _ddebug_class_param {
 	extern struct _ddebug_class_map _var;				\
 	static_assert((_offset) >= 0 && (_offset) < _DPRINTK_CLASS_DFLT, \
 		      "classmap use offset must be in 0..62");          \
-	extern struct _ddebug_class_user __aligned(8)			\
+	extern struct _ddebug_class_user				\
 		__PASTE(_var ## _, __KBUILD_MODNAME);			\
-	struct _ddebug_class_user __aligned(8) __used			\
+	struct _ddebug_class_user __used				\
 		__section("__dyndbg_class_users")			\
 		__PASTE(_var ## _, __KBUILD_MODNAME) = {		\
 		.mod_name = KBUILD_MODNAME,				\
