@@ -23,6 +23,11 @@ V=${V:=0}  # invoke as V=1 $0  for global verbose
     exit $ksft_skip # nothing to test here, no good reason to fail.
 }
 
+lsmod 2>/dev/null || {
+    echo -e "${RED}: lsmod requires /proc/modules ${NC}"
+    exit $ksft_skip # maybe later we can do more
+}
+
 # need info to avoid failures due to untestable configs
 
 [ -f "$KCONFIG_CONFIG" ] || KCONFIG_CONFIG=".config"
