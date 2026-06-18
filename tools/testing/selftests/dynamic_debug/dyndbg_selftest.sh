@@ -278,7 +278,7 @@ if ! GOLDEN_RECORDS | grep -q "$fingerprint"; then
 
 function verify_ddctrl_fingerprint {
     # Verifies a control-file fingerprint against the GOLDEN_RECORDS database
-    # $1 - unique test key (e.g. basic_tests_params_mpf)
+    # $1 - unique test key (e.g. FT_basic_queries_params_mpf)
     # $2 - optional extra args
     # $3 - the calculated fingerprint hash to verify
     # $4 - the pattern used to slice the control file
@@ -309,7 +309,7 @@ function verify_ddctrl_fingerprint {
 function verify_ddctrl_state {
     # Captures the control-file state for a pattern, computes its hash,
     # and verifies it against the GOLDEN_RECORDS database.
-    # $1 - unique test key (e.g. basic_tests_params_mpf)
+    # $1 - unique test key (e.g. FT_basic_queries_params_mpf)
     # $2 - optional extra args
     # $3 - pattern to slice (e.g. "kernel/params")
 
@@ -364,7 +364,12 @@ function ifrmmod {
 # 2), caller line numbers will matter for the GOLDEN_SAMPLES.  We may
 # be able to improve this later.
 
-function basic_tests {
+# ==============================================================================
+# FEATURE TESTS (FT_*)
+# These functions define the specifications and behavioral compliance assertions
+# of the dynamic-debug core query parser, classmaps, and parameter interfaces.
+# ==============================================================================
+function FT_basic_queries {
     echo -e "${GREEN}# BASIC_TESTS ${NC}"
     if [ $LACK_DD_BUILTIN -eq 1 ]; then
 	echo "SKIP - test requires params, which is a builtin module"
@@ -376,7 +381,7 @@ function basic_tests {
     # module params are builtin to handle boot args
     count_pr_debugs '\[kernel/params\]' '=_' 4
     ddcmd module params +mpf
-    count_pr_debugs '\[kernel/params\]' '=pmf' 4 "basic_tests_params_mpf"
+    count_pr_debugs '\[kernel/params\]' '=pmf' 4 "FT_basic_queries_params_mpf"
 
     # multi-cmd input, newline separated, with embedded comments
     cat <<"EOF" > /proc/dynamic_debug/control
@@ -385,12 +390,12 @@ function basic_tests {
       module params func parse_args +sl		# other flags
 EOF
     count_pr_debugs '\[kernel/params\]' '=mf' 3
-    count_pr_debugs '\[kernel/params\]' '=mfsl' 1 "basic_tests_params_multicmd"
+    count_pr_debugs '\[kernel/params\]' '=mfsl' 1 "FT_basic_queries_params_multicmd"
 
     ddcmd =_
 }
 
-function test_path_module_queries {
+function FT_path_module_queries {
     echo -e "${GREEN}# TEST_PATH_MODULE_QUERIES ${NC}"
     ddcmd =_
 
@@ -415,7 +420,7 @@ function test_path_module_queries {
     ddcmd =_
     ddcmd module "init/main" +p
     local init_main=$(grep -c "\[init/main\]" /proc/dynamic_debug/control)
-    count_pr_debugs "\[init/main\]" '=p' $init_main "path_module_queries_init_main"
+    count_pr_debugs "\[init/main\]" '=p' $init_main "FT_FT_path_module_queries_init_main"
 
     echo "# testing 'module main' (basename match)"
     ddcmd =_
@@ -433,7 +438,7 @@ function test_path_module_queries {
     fi
 }
 
-function test_hyphen_underscore {
+function FT_hyphen_underscore {
     echo -e "${GREEN}# TEST_HYPHEN_UNDERSCORE ${NC}"
     ddcmd =_
 
@@ -517,7 +522,7 @@ function test_hyphen_underscore {
 }
 
 # test parsing on spaces, commas. testing agains builtin [kernel/params]
-function comma_terminator_tests {
+function FT_comma_terminators {
     echo -e "${GREEN}# COMMA_TERMINATOR_TESTS ${NC}"
     if [ $LACK_DD_BUILTIN -eq 1 ]; then
 	echo "SKIP - test requires params, which is a builtin module"
@@ -530,26 +535,26 @@ function comma_terminator_tests {
     count_pr_debugs '\[kernel/params\]' '=pmf' 4
 
     # 1. Verify exact control file state after commas-as-spaces query
-    verify_ddctrl_state "comma_terminator_commas_as_spaces" "1" "kernel/params"
+    verify_ddctrl_state "FT_comma_terminators_commas_as_spaces" "1" "kernel/params"
 
     # empty tokens in list are ignored
     ddcmd ,module ,, ,  params, -p
     count_pr_debugs '\[kernel/params\]' '=mf' 4
 
     # 2. Verify exact control file state after ignored-commas query
-    verify_ddctrl_state "comma_terminator_ignored_commas" "1" "kernel/params"
+    verify_ddctrl_state "FT_comma_terminators_ignored_commas" "1" "kernel/params"
 
     ddcmd " , module ,,, ,  params, -m"
     count_pr_debugs '\[kernel/params\]' '=f' 4
 
     # 3. Verify exact control file state after quoted-commas query
-    verify_ddctrl_state "comma_terminator_quoted_commas" "1" "kernel/params"
+    verify_ddctrl_state "FT_comma_terminators_quoted_commas" "1" "kernel/params"
 
     ddcmd =_
 }
 
-# more testing of multi-query command handling (newlines done in basic_tests)
-function test_multiquery_splitting {
+# more testing of multi-query command handling (newlines done in FT_basic_queries)
+function FT_multiquery_splitting {
     echo -e "${GREEN}# TEST_MULTIQUERY_SPLITTING - multi-command splitting on @ ${NC}"
     if [ $LACK_TMOD -eq 1 ]; then
 	echo "SKIP - test requires test-dynamic-debug.ko"
@@ -562,16 +567,16 @@ function test_multiquery_splitting {
     count_pr_debugs '\[test_dynamic_debug\]' '=pf' 1
     count_pr_debugs '\[test_dynamic_debug\]' '=ps' 1
     count_pr_debugs '\[test_dynamic_debug\]' '=pm' 1
-    count_pr_debugs '\[test_dynamic_debug\]' '=_' 31 "multiquery_split_ctrl_initial"
+    count_pr_debugs '\[test_dynamic_debug\]' '=_' 31 "FT_multiquery_splitting_ctrl_initial"
     # add flags to those callsites
     ddcmd class,D2_CORE,+mf@class,D2_KMS,+ls@class,D2_ATOMIC,+ml
     count_pr_debugs '\[test_dynamic_debug\]' '=pmf' 1
     count_pr_debugs '\[test_dynamic_debug\]' '=psl' 1
     count_pr_debugs '\[test_dynamic_debug\]' '=pml' 1
-    count_pr_debugs '\[test_dynamic_debug\]' '=_' 31 "multiquery_split_ctrl_updated"
+    count_pr_debugs '\[test_dynamic_debug\]' '=_' 31 "FT_multiquery_splitting_ctrl_updated"
 
     # --- Live Content Fingerprinting Phase ---
-    local label="multiquery_split_prints_${BASH_LINENO[0]}"
+    local label="FT_multiquery_splitting_prints_${BASH_LINENO[0]}"
     echo "DYNDBG_START_${label}" > /dev/kmsg
     echo 1 > /sys/module/test_dynamic_debug/parameters/do_bulk
     echo "DYNDBG_END_${label}" > /dev/kmsg
@@ -581,7 +586,7 @@ function test_multiquery_splitting {
     ifrmmod test_dynamic_debug
 }
 
-function test_mod_submod {
+function FT_classmap_inheritance {
     echo -e "${GREEN}# TEST_MOD_SUBMOD ${NC}"
     if [ $LACK_TMOD -eq 1 ]; then
 	echo "SKIP - test requires test-dynamic-debug.ko"
@@ -595,13 +600,13 @@ function test_mod_submod {
     modprobe test_dynamic_debug \
 	dyndbg=class,D2_CORE,+pf@class,D2_KMS,+pt@class,D2_ATOMIC,+pm
 
-    count_pr_debugs '\[test_dynamic_debug\]' '=_' 31 "mod_submod_ctrl_initial"
+    count_pr_debugs '\[test_dynamic_debug\]' '=_' 31 "FT_classmap_inheritance_ctrl_initial"
     count_pr_debugs '\[test_dynamic_debug\]' '=pf' 1
     count_pr_debugs '\[test_dynamic_debug\]' '=pt' 1
     count_pr_debugs '\[test_dynamic_debug\]' '=pm' 1
 
     modprobe test_dynamic_debug_submod
-    count_pr_debugs '\[test_dynamic_debug_submod\]' '=_' 34 "mod_submod_sub_initial"
+    count_pr_debugs '\[test_dynamic_debug_submod\]' '=_' 34 "FT_classmap_inheritance_sub_initial"
     count_pr_debugs '\[test_dynamic_debug\]' '=_' 31
     count_pr_debugs 'test_dynamic_debug' '=_' 65
 
@@ -619,7 +624,7 @@ function test_mod_submod {
     count_pr_debugs '\[test_dynamic_debug_submod\]' '=mf' 1
     count_pr_debugs '\[test_dynamic_debug_submod\]' '=lt' 1
     count_pr_debugs '\[test_dynamic_debug_submod\]' '=ml' 1
-    count_pr_debugs 'test_dynamic_debug' '=_' 62 "mod_submod_ctrl_updated"
+    count_pr_debugs 'test_dynamic_debug' '=_' 62 "FT_classmap_inheritance_ctrl_updated"
 
     # now work the classmap-params
     # fresh start, to clear all above flags (test-fn limits)
@@ -651,7 +656,7 @@ function test_mod_submod {
     count_pr_debugs 'test_dynamic_debug' '=p' 14
 
     # --- Live Content Fingerprinting Phase ---
-    local label="mod_submod_regression_prints_${BASH_LINENO[0]}"
+    local label="FT_classmap_inheritance_regression_prints_${BASH_LINENO[0]}"
     echo "DYNDBG_START_${label}" > /dev/kmsg
     echo 1 > /sys/module/test_dynamic_debug/parameters/do_classes
     echo 1 > /sys/module/test_dynamic_debug_submod/parameters/do_classes
@@ -687,7 +692,7 @@ function verify_modprobe_param_logging {
     verify_dmesg_fingerprint "$label" "1" "$hash"
 }
 
-function test_modprobes {
+function FT_modprobe_parameter_transitions {
     echo -e "${GREEN}# TEST_MODPROBES ${NC}"
     ddcmd =_
     local verbose
@@ -718,14 +723,14 @@ function test_modprobes {
 }
 
 tests_list=(
-    basic_tests
-    test_path_module_queries
-    test_hyphen_underscore
+    FT_basic_queries
+    FT_path_module_queries
+    FT_hyphen_underscore
     # these require test_dynamic_debug*.ko
-    comma_terminator_tests
-    test_multiquery_splitting
-    test_mod_submod
-    test_modprobes
+    FT_comma_terminators
+    FT_multiquery_splitting
+    FT_classmap_inheritance
+    FT_modprobe_parameter_transitions
 )
 
 # ==============================================================================
@@ -743,19 +748,19 @@ tests_list=(
 function GOLDEN_RECORDS {
     cat << 'EOF'
 #K: <md5_hash>                       <label>               <args>
-#K= 57e5fc9552bd6f0ff6ff18101df74565 basic_tests_params_mpf   control:"\\[kernel/params\\]"
-#K= 12aab629bdd655c99970dcb397c33402 basic_tests_params_multicmd control:"\\[kernel/params\\]"
-#K= 0c34da74906e3bd3bb482b7b7553a153 path_module_queries_init_main 1
-#K= 57e5fc9552bd6f0ff6ff18101df74565 comma_terminator_commas_as_spaces control:"kernel/params"
-#K= f70473f6896b9f4f13a785f2234177a7 comma_terminator_ignored_commas control:"kernel/params"
-#K= d5961d67b122d14ce67559c71564efd1 comma_terminator_quoted_commas control:"kernel/params"
-#K= bd9aa64f2a576145e76b7545512bea73 multiquery_split_ctrl_initial control:"\\[test_dynamic_debug\\]"
-#K= 3cbd8ca2cb8ae863f91b9e1e2523c9e6 multiquery_split_ctrl_updated control:"\\[test_dynamic_debug\\]"
-#K= 68b329da9893e34099c7d8ad5cb9c940 multiquery_split_prints_819 dmesg:1
-#K= adad029f83d694b7d98b227af9fc800a mod_submod_ctrl_initial  control:"\\[test_dynamic_debug\\]"
-#K= dffe8d7c914804645e0c71252a2b518a mod_submod_sub_initial   control:"\\[test_dynamic_debug_submod\\]"
-#K= 390594542cc1fd3e16b6a4a3c9f5922c mod_submod_ctrl_updated  control:"test_dynamic_debug"
-#K= 29d6c3d962400aa663d01a1ca665bc23 mod_submod_regression_prints_872 dmesg:1
+#K= 57e5fc9552bd6f0ff6ff18101df74565 FT_basic_queries_params_mpf   control:"\\[kernel/params\\]"
+#K= 12aab629bdd655c99970dcb397c33402 FT_basic_queries_params_multicmd control:"\\[kernel/params\\]"
+#K= 0c34da74906e3bd3bb482b7b7553a153 FT_FT_path_module_queries_init_main 1
+#K= 57e5fc9552bd6f0ff6ff18101df74565 FT_comma_terminators_commas_as_spaces control:"kernel/params"
+#K= f70473f6896b9f4f13a785f2234177a7 FT_comma_terminators_ignored_commas control:"kernel/params"
+#K= d5961d67b122d14ce67559c71564efd1 FT_comma_terminators_quoted_commas control:"kernel/params"
+#K= bd9aa64f2a576145e76b7545512bea73 FT_multiquery_splitting_ctrl_initial control:"\\[test_dynamic_debug\\]"
+#K= 3cbd8ca2cb8ae863f91b9e1e2523c9e6 FT_multiquery_splitting_ctrl_updated control:"\\[test_dynamic_debug\\]"
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_multiquery_splitting_prints_819 dmesg:1
+#K= adad029f83d694b7d98b227af9fc800a FT_classmap_inheritance_ctrl_initial  control:"\\[test_dynamic_debug\\]"
+#K= dffe8d7c914804645e0c71252a2b518a FT_classmap_inheritance_sub_initial   control:"\\[test_dynamic_debug_submod\\]"
+#K= 390594542cc1fd3e16b6a4a3c9f5922c FT_classmap_inheritance_ctrl_updated  control:"test_dynamic_debug"
+#K= 29d6c3d962400aa663d01a1ca665bc23 FT_classmap_inheritance_regression_prints_872 dmesg:1
 
 # --- MULTI-DIMENSIONAL VERBOSITY AND STATE TRANSITIONS DATABASE (50 CHECKPOINTS) ---
 # Verbosity = 0 (Pruned Silence)
