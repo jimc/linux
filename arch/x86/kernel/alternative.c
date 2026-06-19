@@ -2797,6 +2797,20 @@ static struct smp_text_poke_array {
 	int nr_entries;
 } text_poke_array;
 
+static int text_poke_batch_max = TEXT_POKE_ARRAY_MAX;
+
+static int __init setup_text_poke_batch_max(char *str)
+{
+	int val;
+
+	if (get_option(&str, &val) == 1 && val > 0 && val <= TEXT_POKE_ARRAY_MAX) {
+		text_poke_batch_max = val;
+		pr_info("x86/alternative: text_poke_batch_max set to %d\n", val);
+	}
+	return 1;
+}
+early_param("text_poke_batch_max", setup_text_poke_batch_max);
+
 static DEFINE_PER_CPU(atomic_t, text_poke_array_refs);
 
 /*
@@ -3196,7 +3210,7 @@ static void __smp_text_poke_batch_add(void *addr, const void *opcode, size_t len
  */
 void __ref smp_text_poke_batch_add(void *addr, const void *opcode, size_t len, const void *emulate)
 {
-	if (text_poke_array.nr_entries == TEXT_POKE_ARRAY_MAX)
+	if (text_poke_array.nr_entries >= text_poke_batch_max)
 		smp_text_poke_batch_finish();
 
 	__smp_text_poke_batch_add(addr, opcode, len, emulate);
