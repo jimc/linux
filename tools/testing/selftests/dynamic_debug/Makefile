@@ -5,5 +5,6 @@
 all:
 
 TEST_PROGS := dyndbg_selftest.sh
+TEST_FILES := syslog_hash_validation.sh
 
 include ../lib.mk
