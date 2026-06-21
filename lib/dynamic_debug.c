@@ -41,6 +41,31 @@
 #include <linux/device.h>
 #include <linux/netdevice.h>
 
+#if 0
+#include <linux/proc_fs.h>
+#include <linux/seq_file.h>
+#include <linux/list.h>
+#include <linux/sysctl.h>
+#include <linux/ctype.h>
+#include <linux/string.h>
+
+#include <linux/maple_tree.h>
+
+#include <linux/parser.h>
+#include <linux/string_helpers.h>
+#include <linux/uaccess.h>
+#include <linux/dynamic_debug.h>
+#include <linux/shrinker.h>
+
+#include <linux/debugfs.h>
+#include <linux/maple_tree.h>
+#include <linux/slab.h>
+#include <linux/jump_label.h>
+#include <linux/hardirq.h>
+#include <linux/sched.h>
+#include <linux/device.h>
+#endif
+
 #include <rdma/ib_verbs.h>
 
 extern struct _ddebug __start___dyndbg_descs[];
@@ -76,7 +101,13 @@ struct flag_settings {
 	unsigned int mask;
 };
 
+struct _dd_prefix_key_range {
+	unsigned long start;
+	unsigned long end;
+};
+
 static DEFINE_PER_CPU(unsigned long, ddebug_call_count);
+
 void ddebug_increment_call_count(void)
 {
 	this_cpu_inc(ddebug_call_count);
@@ -99,6 +130,16 @@ MODULE_PARM_DESC(verbose, " dynamic_debug/control processing "
 static DEFINE_MTREE(dd_func_map);
 static DEFINE_MTREE(dd_file_map);
 static DEFINE_MTREE(dd_mod_map);
+
+/* cache of composed prefixes for enabled and invoked pr_debugs */
+static DEFINE_MTREE(pr_prefixes);
+static DEFINE_SPINLOCK(pr_prefixes_lock);
+static unsigned int pr_prefixes_count;
+
+static unsigned long ddebug_prefix_key(const struct _ddebug *desc);
+static void ddebug_drop_cached_prefix(const struct _ddebug *dp);
+static void ddebug_prefix_range(const struct _ddebug *desc, struct _dd_prefix_key_range *range);
+#define prefix_flags(flags)  (flags & _DPRINTK_FLAGS_INCL_LOOKUP)
 
 /* Return the path relative to source root */
 static inline const char *trim_prefix(const char *path)
@@ -402,6 +443,10 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 			newflags = (dp->flags & modifiers->mask) | modifiers->flags;
 			if (newflags == dp->flags)
 				continue;
+
+			if (prefix_flags(dp->flags) != prefix_flags(newflags))
+				ddebug_drop_cached_prefix(dp);
+
 #ifdef CONFIG_JUMP_LABEL
 			if (dp->flags & _DPRINTK_FLAGS_ENABLED) {
 				if (!(newflags & _DPRINTK_FLAGS_ENABLED))
@@ -975,19 +1020,32 @@ static int remaining(int wrote)
 	return 0;
 }
 
-static char *__dynamic_emit_prefix(const struct _ddebug *desc, char *buf)
+static int __dynamic_emit_lookup(const struct _ddebug *desc, char *buf, int start)
 {
-	int pos_after_tid;
-	int pos = 0;
+	char *prefix, *new_prefix;
+	int pos = start;
+	struct _dd_prefix_key_range range;
+	unsigned long key;
+	unsigned long lock_flags;
 
-	if (desc->flags & _DPRINTK_FLAGS_INCL_TID) {
-		if (in_interrupt())
-			pos += snprintf(buf + pos, remaining(pos), "<intr> ");
-		else
-			pos += snprintf(buf + pos, remaining(pos), "[%d] ",
-					task_pid_vnr(current));
+	if (!(desc->flags & _DPRINTK_FLAGS_INCL_LOOKUP))
+		return pos;
+
+	key = ddebug_prefix_key(desc);
+
+	/* guard against other pr_debugs and prefix drops */
+	rcu_read_lock();
+	prefix = (char *) mtree_load(&pr_prefixes, key);
+	rcu_read_unlock();
+	if (prefix) {
+		pos += snprintf(buf + pos, remaining(pos), "%s", prefix);
+		v4pr_info("using cached prefix: %s\n", prefix);
+		return pos;
 	}
-	pos_after_tid = pos;
+	/*
+	 * Cache miss. Generate the prefix string into the on-stack buffer,
+	 * then allocate a string to store it in the cache.
+	 */
 	if (desc->flags & _DPRINTK_FLAGS_INCL_MODNAME)
 		pos += snprintf(buf + pos, remaining(pos), "%s:",
 				desc_modname(desc));
@@ -1000,8 +1058,49 @@ static char *__dynamic_emit_prefix(const struct _ddebug *desc, char *buf)
 	if (desc->flags & _DPRINTK_FLAGS_INCL_LINENO)
 		pos += snprintf(buf + pos, remaining(pos), "%d:",
 				desc->lineno);
-	if (pos - pos_after_tid)
-		pos += snprintf(buf + pos, remaining(pos), " ");
+	if (remaining(pos)) {
+		buf[pos++] = ' ';
+		buf[pos] = '\0';
+	}
+	new_prefix = kstrdup(buf + start, GFP_ATOMIC);
+	if (!new_prefix)
+		/* alloc failed, just use prefix, re-try later */
+		return pos;
+
+	/* Re-check for race while we were allocating */
+	spin_lock_irqsave(&pr_prefixes_lock, lock_flags);
+	prefix = mtree_load(&pr_prefixes, key);
+	if (prefix) {
+		/* Another thread won. Use theirs, free ours. */
+		spin_unlock_irqrestore(&pr_prefixes_lock, lock_flags);
+		kfree(new_prefix);
+	} else {
+		/* We are first. Store our new prefix. */
+		ddebug_prefix_range(desc, &range);
+		mtree_store_range(&pr_prefixes, range.start, range.end,
+				  (void *)new_prefix, GFP_ATOMIC);
+		spin_unlock_irqrestore(&pr_prefixes_lock, lock_flags);
+		v3pr_info("filled prefix cache: %s\n", new_prefix);
+		pr_prefixes_count++;
+	}
+	return pos;
+}
+
+static char *__dynamic_emit_prefix(const struct _ddebug *desc, char *buf)
+{
+	int pos = 0;
+
+	if (desc->flags & _DPRINTK_FLAGS_INCL_TID) {
+		if (in_interrupt())
+			pos += snprintf(buf + pos, remaining(pos), "<intr> ");
+		else
+			pos += snprintf(buf + pos, remaining(pos), "[%d] ",
+					task_pid_vnr(current));
+	}
+
+	if (unlikely(desc->flags & _DPRINTK_FLAGS_INCL_LOOKUP))
+		pos += __dynamic_emit_lookup(desc, buf, pos);
+
 	if (pos >= PREFIX_SIZE)
 		buf[PREFIX_SIZE - 1] = '\0';
 
@@ -1332,7 +1431,9 @@ static int ddebug_proc_show(struct seq_file *m, void *p)
 		return 0;
 	}
 	if (p == EPILOGUE_TOKEN) {
-		seq_printf(m, "#: total call-counts: %lu\n", get_ddebug_call_count());
+		seq_printf(m, "#: cached_prefixes=%u\n", pr_prefixes_count);
+		seq_printf(m, "#: total call-counts: %lu\n",
+			   get_ddebug_call_count());
 		return 0;
 	}
 
@@ -1863,6 +1964,12 @@ static int ddebug_remove_module(const char *mod_name)
 		 * incorrect.  Linker gives us this one.
 		 */
 		if (dt->info.mod_name == mod_name) {
+			int i;
+			struct _ddebug *dp;
+
+			for_subvec(i, dp, &dt->info, descs)
+				ddebug_drop_cached_prefix(dp);
+
 			ddebug_module_sites_clear(&dt->info);
 			ddebug_table_free(dt);
 			ret = 0;
@@ -1915,6 +2022,100 @@ static void ddebug_remove_all_tables(void)
 	mutex_unlock(&ddebug_lock);
 }
 
+/*
+ * dynamic prefix cache keys and descriptor ranges.
+ *
+ * ddebug_prefix_key() constructs the maple tree key by combining
+ * prefix flags with the descriptor address, creating separate
+ * key-spaces for different flag combinations.
+ *
+ * ddebug_prefix_range() determines the address range of descriptors
+ * that can share a dynamic prefix based on these flags.
+ */
+#define DDEBUG_PREFIX_KEY_FLAGS_SHIFT (BITS_PER_LONG - 4)
+
+static inline unsigned long ddebug_pack_key(unsigned long addr, uint8_t flags)
+{
+	/*
+	 * Prefix flags are at bits 1-4. Pack them into bits 0-3 then shift
+	 * to the top of the key to partition the key-space by flag-set.
+	 * Shift the address down 4 bits; since descs are 16-byte aligned,
+	 * they remain unique.
+	 */
+	return ((unsigned long)(flags >> 1) & 0xF) << DDEBUG_PREFIX_KEY_FLAGS_SHIFT |
+		(addr >> 4);
+}
+
+static unsigned long ddebug_prefix_key(const struct _ddebug *desc)
+{
+	return ddebug_pack_key((unsigned long)desc, prefix_flags(desc->flags));
+}
+
+static void ddebug_drop_cached_prefix(const struct _ddebug *dp)
+{
+	char *prefix;
+	unsigned long key = ddebug_prefix_key(dp);
+	unsigned long lock_flags;
+
+	spin_lock_irqsave(&pr_prefixes_lock, lock_flags);
+	prefix = mtree_erase(&pr_prefixes, key);
+	spin_unlock_irqrestore(&pr_prefixes_lock, lock_flags);
+	if (prefix) {
+		v3pr_info("drop cached prefix: %s\n", prefix);
+		kfree(prefix);
+		pr_prefixes_count--;
+	}
+}
+
+static void ddebug_prefix_range(const struct _ddebug *desc,
+				struct _dd_prefix_key_range *range)
+{
+	unsigned long addr = (unsigned long)desc;
+	unsigned long start = addr;
+	unsigned long end = addr;
+	uint8_t flags = prefix_flags(desc->flags);
+
+	if (flags & _DPRINTK_FLAGS_INCL_LINENO) {
+		/*
+		 * except for amdgpu, which has macros with 2+ pr_debugs,
+		 * all prefixes with line-numbers are unique.
+		 */
+		range->start = range->end = ddebug_prefix_key(desc);
+		return;
+	}
+
+	/* 1. Module Level (Always the base for sharing) */
+	{
+		MA_STATE(mod_mas, &dd_mod_map, addr, addr);
+		if (mas_walk(&mod_mas)) {
+			start = mod_mas.index;
+			end = mod_mas.last;
+		}
+	}
+
+	/* 2. File Level (Narrow further if +s is set) */
+	if (flags & _DPRINTK_FLAGS_INCL_SOURCENAME) {
+		MA_STATE(file_mas, &dd_file_map, addr, addr);
+		if (mas_walk(&file_mas)) {
+			start = max(start, file_mas.index);
+			end = min(end, file_mas.last);
+		}
+	}
+
+	/* 3. Function Level (Narrow if +f is set) */
+	if (flags & _DPRINTK_FLAGS_INCL_FUNCNAME) {
+		MA_STATE(func_mas, &dd_func_map, addr, addr);
+		if (mas_walk(&func_mas)) {
+			start = max(start, func_mas.index);
+			end = min(end, func_mas.last);
+		}
+	}
+
+	/* Convert descriptor addresses to top-shifted flag-partitioned keys */
+	range->start = ddebug_pack_key(start, flags);
+	range->end = ddebug_pack_key(end, flags);
+}
+
 static __initdata int ddebug_init_success;
 
 static int __init dynamic_debug_init_control(void)
@@ -1945,6 +2146,45 @@ struct ddebug_mod_info {
 	const char *mod_name;
 	unsigned long start_addr;
 	unsigned long end_addr;
+};
+
+static unsigned long ddebug_shrinker_count(struct shrinker *s,
+					   struct shrink_control *sc)
+{
+	return pr_prefixes_count;
+}
+
+static unsigned long ddebug_shrinker_scan(struct shrinker *s,
+					  struct shrink_control *sc)
+{
+	unsigned long freed = 0;
+	void *prefix;
+	MA_STATE(mas, &pr_prefixes, 0, ULONG_MAX);
+	unsigned long lock_flags;
+
+	if (sc->nr_to_scan == 0)
+		return 0;
+
+	mutex_lock(&ddebug_lock);
+	spin_lock_irqsave(&pr_prefixes_lock, lock_flags);
+
+	while ((prefix = mas_erase(&mas))) {
+		kfree(prefix);
+		pr_prefixes_count--;
+		freed++;
+		if (freed >= sc->nr_to_scan)
+			break;
+	}
+
+	spin_unlock_irqrestore(&pr_prefixes_lock, lock_flags);
+	mutex_unlock(&ddebug_lock);
+	return freed;
+}
+
+static struct shrinker ddebug_shrinker = {
+	.count_objects = ddebug_shrinker_count,
+	.scan_objects = ddebug_shrinker_scan,
+	.seeks = DEFAULT_SEEKS,
 };
 
 static int __init dynamic_debug_init(void)
@@ -2052,6 +2292,7 @@ static int __init dynamic_debug_init(void)
 	parse_args("dyndbg params", cmdline, NULL,
 		   0, 0, 0, NULL, &ddebug_dyndbg_boot_param_cb);
 	kfree(cmdline);
+	shrinker_register(&ddebug_shrinker);
 	return 0;
 
 out_err:
@@ -2063,6 +2304,7 @@ out_err:
 	ddebug_remove_all_tables();
 	return ret;
 }
+
 /* Allow early initialization for boot messages via boot param */
 early_initcall(dynamic_debug_init);
 
