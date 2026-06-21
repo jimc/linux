@@ -36,7 +36,6 @@ static void do_bulk(unsigned int);    /* device under test */
 
 static int param_set_do_repeats(const char *instr, const struct kernel_param *kp)
 {
-	void (*fn)(unsigned int) = (void (*)(unsigned int))kp->arg;
 	int rc;
 	unsigned int ct;
 	void (*repeat_fn)(unsigned int) = kp->arg;
@@ -206,23 +205,6 @@ static void do_levels(void)
 	prdbg(V5);
 	prdbg(V6);
 	prdbg(V7);
-}
-
-static void do_bulk(unsigned int ct)
-{
-	/* print loop counter ct to ensure every logged line is globally unique */
-	for (; ct; ct--) {
-		pr_debug("bulk msg 1 count %u\n", ct);
-		pr_debug("bulk msg 2 count %u\n", ct);
-		pr_debug("bulk msg 3 count %u\n", ct);
-		pr_debug("bulk msg 4 count %u\n", ct);
-		pr_debug("bulk msg 5 count %u\n", ct);
-		pr_debug("bulk msg 6 count %u\n", ct);
-		pr_debug("bulk msg 7 count %u\n", ct);
-		pr_debug("bulk msg 8 count %u\n", ct);
-		pr_debug("bulk msg 9 count %u\n", ct);
-		pr_debug("bulk msg 10 count %u\n", ct);
-	}
 }
 
 static void do_classes(unsigned int ct)
