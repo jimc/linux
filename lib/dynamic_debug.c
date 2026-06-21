@@ -32,6 +32,7 @@
 #include <linux/string_helpers.h>
 #include <linux/uaccess.h>
 #include <linux/dynamic_debug.h>
+#include "dynamic_debug_ratelimit.h"
 
 #include <linux/debugfs.h>
 #include <linux/slab.h>
@@ -152,7 +153,7 @@ static inline const char *trim_prefix(const char *path)
 	return path + skip;
 }
 
-static const struct { unsigned flag:8; char opt_char; } opt_array[] = {
+static const struct { unsigned flag:12; char opt_char; } opt_array[] = {
 	{ _DPRINTK_FLAGS_PRINT, 'p' },
 	{ _DPRINTK_FLAGS_INCL_MODNAME, 'm' },
 	{ _DPRINTK_FLAGS_INCL_FUNCNAME, 'f' },
@@ -161,6 +162,8 @@ static const struct { unsigned flag:8; char opt_char; } opt_array[] = {
 	{ _DPRINTK_FLAGS_INCL_TID, 't' },
 	{ _DPRINTK_FLAGS_INCL_STACK, 'd' },
 	{ _DPRINTK_FLAGS_COUNT, 'c' },
+	{ _DPRINTK_FLAGS_RATELIMIT_SOLO, 'r' },
+	{ _DPRINTK_FLAGS_RATELIMIT_SHARED, 'R' },
 	{ _DPRINTK_FLAGS_NONE, '_' },
 };
 
@@ -460,6 +463,7 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 				  di->mod_name, desc_function(dp),
 				  ddebug_describe_flags(dp->flags, &fbuf),
 				  ddebug_describe_flags(newflags, &nbuf));
+			ddebug_ratelimit_update(dp, dp->flags, newflags);
 			dp->flags = newflags;
 		}
 	}
@@ -1123,6 +1127,9 @@ void __dynamic_pr_debug(struct _ddebug *descriptor, const char *fmt, ...)
 	BUG_ON(!descriptor);
 	BUG_ON(!fmt);
 
+	if (!ddebug_apply_ratelimit_all(descriptor))
+		return;
+
 	va_start(args, fmt);
 
 	vaf.fmt = fmt;
@@ -1142,6 +1149,9 @@ void __dynamic_dev_dbg(struct _ddebug *descriptor,
 
 	BUG_ON(!descriptor);
 	BUG_ON(!fmt);
+
+	if (!ddebug_apply_ratelimit_all(descriptor))
+		return;
 
 	va_start(args, fmt);
 
@@ -1173,6 +1183,9 @@ void __dynamic_netdev_dbg(struct _ddebug *descriptor,
 
 	BUG_ON(!descriptor);
 	BUG_ON(!fmt);
+
+	if (!ddebug_apply_ratelimit_all(descriptor))
+		return;
 
 	va_start(args, fmt);
 
@@ -1209,6 +1222,12 @@ void __dynamic_ibdev_dbg(struct _ddebug *descriptor,
 {
 	struct va_format vaf;
 	va_list args;
+
+	BUG_ON(!descriptor);
+	BUG_ON(!fmt);
+
+	if (!ddebug_apply_ratelimit_all(descriptor))
+		return;
 
 	va_start(args, fmt);
 
@@ -1913,6 +1932,7 @@ int ddebug_dyndbg_module_param_cb(char *param, char *val, const char *module)
 
 static void ddebug_table_free(struct ddebug_table *dt)
 {
+	ddebug_ratelimit_free_info(&dt->info);
 	list_del_init(&dt->link);
 	kfree(dt);
 }

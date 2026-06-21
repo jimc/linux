@@ -493,6 +493,60 @@ function FT_modprobe_parameter_transitions {
     ddcmd =_
 }
 
+function FT_ratelimiting {
+    echo -e "${GREEN}# TEST_RATELIMITING - solo and shared rate-limiting tests on unclassed do_bulk sites ${NC}"
+    if [ $LACK_TMOD -eq 1 ]; then
+        echo "SKIP - test requires test-dynamic-debug.ko"
+        return
+    fi
+    ifrmmod test_dynamic_debug_submod
+    ifrmmod test_dynamic_debug
+    ddcmd =_
+
+    modprobe test_dynamic_debug
+
+    # 1. Enable standard printing and verify unsuppressed log content (5 repeats)
+    ddcmd file test_dynamic_debug.c func do_bulk +p
+    count_pr_debugs "bulk msg" "=p" 10
+    do_logging_and_verify 5 "normal"
+
+    # 2. Test SOLO rate-limiting (+r) unsuppressed (3 repeats < solo_burst=10)
+    # Under solo (+r), each of the 10 callsites gets its own independent 10-burst budget.
+    # Triggering 3 repeats is under the 10-burst limit per-site, so all 30 prints pass unsuppressed!
+    ddcmd file test_dynamic_debug.c func do_bulk +r
+    count_pr_debugs "bulk msg" "=pr" 10
+    do_logging_and_verify 3 "solo_unsuppressed"
+
+    # 3. Test SOLO rate-limiting (+r) suppression (12 repeats > solo_burst=10)
+    # Triggering 12 repeats (total 120 executions). Since we already used 3 prints in step 2,
+    # each site has exactly 7 left in its independent 10-burst budget.
+    # Each site prints exactly 7 times and suppresses the remaining 5, yielding exactly 70 total lines!
+    do_logging_and_verify 12 "solo_suppressed"
+
+    # 4. Test SHARED rate-limiting (+R) suppression (8 repeats > shared_burst=50)
+    # Under shared (+R), the entire group of 10 callsites shares a single 50-burst budget.
+    # Triggering 8 repeats runs the group 80 times, which exceeds the shared 50-burst budget.
+    # It allows exactly 50 total prints group-wide, suppressing the other 30, yielding exactly 50 total lines!
+    ddcmd file test_dynamic_debug.c func do_bulk -r
+    ddcmd file test_dynamic_debug.c func do_bulk +R
+    count_pr_debugs "bulk msg" "=pR" 10
+    do_logging_and_verify 8 "shared_suppressed"
+
+    # 5. Test Overriding/Shadowing (+R and +r co-existing)
+    # Override a single site (bulk msg 1 on line 226) with an individual solo limit
+    ddcmd file test_dynamic_debug.c line 226 +r
+    # "bulk msg 1" should now show both flags active (prR)
+    count_pr_debugs "bulk msg" "=prR" 1
+    # The remaining 9 sites should still have only 'pR'
+    count_pr_debugs "bulk msg" "=pR" 9
+
+    # 6. Fallback behavior (removing solo override puts it back into the shared group)
+    ddcmd file test_dynamic_debug.c line 226 -r
+    count_pr_debugs "bulk msg" "=pR" 10
+
+    ifrmmod test_dynamic_debug
+}
+
 # Built-in Feature Tests (Can run on any CONFIG_DYNAMIC_DEBUG kernel, modular or monolithic)
 builtin_tests=(
     FT_basic_queries
@@ -506,6 +560,7 @@ modular_tests=(
     FT_multiquery_splitting
     FT_classmap_inheritance
     FT_modprobe_parameter_transitions
+    FT_ratelimiting
 )
 
 # ==============================================================================

@@ -32,6 +32,8 @@ const FLAG_INCL_SOURCENAME: u32 = 1 << 4;
 const FLAG_INCL_TID: u32 = 1 << 5;
 const FLAG_INCL_STACK: u32 = 1 << 6;
 const FLAG_COUNT: u32 = 1 << 7;
+const FLAG_RATELIMIT_SOLO: u32 = 1 << 8;
+const FLAG_RATELIMIT_SHARED: u32 = 1 << 9;
 
 const DDEBUG_LINE_MAX: u32 = 65535;
 
@@ -149,6 +151,8 @@ fn parse_flags(
             's' => FLAG_INCL_SOURCENAME,
             'd' => FLAG_INCL_STACK,
             'c' => FLAG_COUNT,
+            'r' => FLAG_RATELIMIT_SOLO,
+            'R' => FLAG_RATELIMIT_SHARED,
             '_' => continue, // Accept '_' as a flag placeholder
             _ => return Err("unknown flag"),
         };
