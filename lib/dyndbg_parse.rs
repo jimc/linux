@@ -28,8 +28,8 @@ const FLAG_PRINT: u32 = 1 << 0;
 const FLAG_INCL_MODNAME: u32 = 1 << 1;
 const FLAG_INCL_FUNCNAME: u32 = 1 << 2;
 const FLAG_INCL_LINENO: u32 = 1 << 3;
-const FLAG_INCL_TID: u32 = 1 << 4;
-const FLAG_INCL_SOURCENAME: u32 = 1 << 5;
+const FLAG_INCL_SOURCENAME: u32 = 1 << 4;
+const FLAG_INCL_TID: u32 = 1 << 5;
 const FLAG_INCL_STACK: u32 = 1 << 6;
 const FLAG_COUNT: u32 = 1 << 7;
 
