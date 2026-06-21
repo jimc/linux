@@ -630,21 +630,21 @@ function FT_ratelimiting {
 
     # 1. Enable standard printing and verify unsuppressed log content (5 repeats)
     ddcmd file test_dynamic_debug.c func do_bulk +p
-    count_pr_debugs =p 10 -r
-    do_bulk_and_fingerprint 5 "normal"
+    count_pr_debugs "bulk msg" "=p" 10
+    do_logging_and_verify 5 "normal"
 
     # 2. Test SOLO rate-limiting (+r) unsuppressed (3 repeats < solo_burst=10)
     # Under solo (+r), each of the 10 callsites gets its own independent 10-burst budget.
     # Triggering 3 repeats is under the 10-burst limit per-site, so all 30 prints pass unsuppressed!
     ddcmd file test_dynamic_debug.c func do_bulk +r
-    count_pr_debugs =pr 10 -r
-    do_bulk_and_fingerprint 3 "solo_unsuppressed"
+    count_pr_debugs "bulk msg" "=pr" 10
+    do_logging_and_verify 3 "solo_unsuppressed"
 
     # 3. Test SOLO rate-limiting (+r) suppression (12 repeats > solo_burst=10)
     # Triggering 12 repeats (total 120 executions). Since we already used 3 prints in step 2,
     # each site has exactly 7 left in its independent 10-burst budget.
     # Each site prints exactly 7 times and suppresses the remaining 5, yielding exactly 70 total lines!
-    do_bulk_and_fingerprint 12 "solo_suppressed"
+    do_logging_and_verify 12 "solo_suppressed"
 
     # 4. Test SHARED rate-limiting (+R) suppression (8 repeats > shared_burst=50)
     # Under shared (+R), the entire group of 10 callsites shares a single 50-burst budget.
@@ -652,20 +652,20 @@ function FT_ratelimiting {
     # It allows exactly 50 total prints group-wide, suppressing the other 30, yielding exactly 50 total lines!
     ddcmd file test_dynamic_debug.c func do_bulk -r
     ddcmd file test_dynamic_debug.c func do_bulk +R
-    count_pr_debugs =pR 10 -r
-    do_bulk_and_fingerprint 8 "shared_suppressed"
+    count_pr_debugs "bulk msg" "=pR" 10
+    do_logging_and_verify 8 "shared_suppressed"
 
     # 5. Test Overriding/Shadowing (+R and +r co-existing)
-    # Override a single site (bulk msg 1 on line 208) with an individual solo limit
-    ddcmd file test_dynamic_debug.c line 208 +r
+    # Override a single site (bulk msg 1 on line 226) with an individual solo limit
+    ddcmd file test_dynamic_debug.c line 226 +r
     # "bulk msg 1" should now show both flags active (prR)
-    count_pr_debugs =prR 1 -r
+    count_pr_debugs "bulk msg" "=prR" 1
     # The remaining 9 sites should still have only 'pR'
-    count_pr_debugs =pR 9 -r
+    count_pr_debugs "bulk msg" "=pR" 9
 
     # 6. Fallback behavior (removing solo override puts it back into the shared group)
-    ddcmd file test_dynamic_debug.c line 208 -r
-    count_pr_debugs =pR 10 -r
+    ddcmd file test_dynamic_debug.c line 226 -r
+    count_pr_debugs "bulk msg" "=pR" 10
 
     ifrmmod test_dynamic_debug
 }
