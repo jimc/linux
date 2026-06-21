@@ -67,6 +67,11 @@ struct _ddebug {
 #define _DPRINTK_FLAGS_INCL_TID		(1<<5)
 #define _DPRINTK_FLAGS_INCL_STACK	(1<<6)
 #define _DPRINTK_FLAGS_COUNT		(1<<7)
+#define _DPRINTK_FLAGS_RATELIMIT_SOLO	(1<<8)
+#define _DPRINTK_FLAGS_RATELIMIT_SHARED	(1<<9)
+
+#define _DPRINTK_FLAGS_ANY_RATELIMIT \
+	(_DPRINTK_FLAGS_RATELIMIT_SOLO | _DPRINTK_FLAGS_RATELIMIT_SHARED)
 
 #define _DPRINTK_FLAGS_ENABLED (_DPRINTK_FLAGS_PRINT | _DPRINTK_FLAGS_COUNT)
 #define _DPRINTK_FLAGS_ACTIVE  (_DPRINTK_FLAGS_PRINT)
@@ -84,6 +89,7 @@ struct _ddebug {
 #define _DPRINTK_FLAGS_DEFAULT 0
 #endif
 	unsigned int flags:11;
+
 #ifdef CONFIG_JUMP_LABEL
 	union {
 		struct static_key_true dd_key_true;
