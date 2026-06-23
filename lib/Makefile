@@ -206,6 +206,9 @@ obj-$(CONFIG_HAVE_ARCH_TRACEHOOK) += syscall.o
 obj-$(CONFIG_ARCH_NEED_CMPXCHG_1_EMU) += cmpxchg-emu.o
 
 obj-$(CONFIG_DYNAMIC_DEBUG_CORE) += dynamic_debug.o
+ifdef CONFIG_RUST
+obj-$(CONFIG_DYNAMIC_DEBUG_CORE) += dyndbg_parse.o
+endif
 #ensure exported functions have prototypes
 CFLAGS_dynamic_debug.o := -DDYNAMIC_DEBUG_MODULE
 CFLAGS_test_dynamic_debug.o := -DDYNAMIC_DEBUG_MODULE
