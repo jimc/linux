@@ -407,6 +407,12 @@ static char *skip_spaces_and_commas(const char *str)
  * embedded or escaped \".  Return the number of words
  * or <0 on error.
  */
+#if IS_ENABLED(CONFIG_RUST)
+extern int rust_ddebug_parse_query(char *query_str, const char *modname,
+				   struct ddebug_query *query,
+				   struct flag_settings *modifiers);
+#define ddebug_parse_query rust_ddebug_parse_query
+#else
 static int ddebug_tokenize(char *buf, char *words[], int maxwords)
 {
 	int nwords = 0;
@@ -544,8 +550,8 @@ static int check_set(const char **dest, char *src, char *name)
  * Only 1 of each type is allowed.
  * Returns 0 on success, <0 on error.
  */
-static int ddebug_parse_query(char *words[], int nwords,
-			struct ddebug_query *query, const char *modname)
+static int ddebug_parse_query_words(char *words[], int nwords,
+				    struct ddebug_query *query, const char *modname)
 {
 	unsigned int i;
 	int rc = 0;
@@ -662,13 +668,13 @@ static int ddebug_parse_flags(const char *str, struct flag_settings *modifiers)
 	return 0;
 }
 
-static int ddebug_exec_query(char *query_string, const char *modname)
+static int ddebug_parse_query(char *query_string, const char *modname,
+			      struct ddebug_query *query,
+			      struct flag_settings *modifiers)
 {
-	struct flag_settings modifiers = {};
-	struct ddebug_query query = {};
 #define MAXWORDS 15
-	int nwords, nfound;
 	char *words[MAXWORDS];
+	int nwords;
 
 	nwords = ddebug_tokenize(query_string, words, MAXWORDS);
 	if (nwords <= 0) {
@@ -676,11 +682,25 @@ static int ddebug_exec_query(char *query_string, const char *modname)
 		return -EINVAL;
 	}
 	/* check flags 1st (last arg) so query is pairs of spec,val */
-	if (ddebug_parse_flags(words[nwords-1], &modifiers)) {
+	if (ddebug_parse_flags(words[nwords-1], modifiers)) {
 		pr_err("flags parse failed\n");
 		return -EINVAL;
 	}
-	if (ddebug_parse_query(words, nwords-1, &query, modname)) {
+	if (ddebug_parse_query_words(words, nwords-1, query, modname)) {
+		pr_err("query parse failed\n");
+		return -EINVAL;
+	}
+	return 0;
+}
+#endif
+
+static int ddebug_exec_query(char *query_string, const char *modname)
+{
+	struct flag_settings modifiers = {};
+	struct ddebug_query query = {};
+	int nfound;
+
+	if (ddebug_parse_query(query_string, modname, &query, &modifiers)) {
 		pr_err("query parse failed\n");
 		return -EINVAL;
 	}
