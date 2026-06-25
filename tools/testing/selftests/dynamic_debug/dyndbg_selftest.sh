@@ -1,0 +1,869 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
+
+# Standard kselftest exit codes
+ksft_pass=0
+ksft_fail=1
+ksft_skip=4
+
+ESC=$'\033'
+RED="${ESC}[0;31m"
+GREEN="${ESC}[0;32m"
+YELLOW="${ESC}[0;33m"
+BLUE="${ESC}[0;34m"
+MAGENTA="${ESC}[0;35m"
+CYAN="${ESC}[0;36m"
+NC="${ESC}[0;0m"
+CUMULATIVE_DDCMDS="init"
+error_msg=""
+V=${V:=0}  # invoke as V=1 $0  for global verbose
+
+# Sanitize V to ensure it is a valid integer
+if [[ ! "$V" =~ ^[0-9]+$ ]]; then
+    V=0
+fi
+
+function v_echo {
+    [ "${V:-0}" -ge 1 ] && echo -e "$@"
+}
+
+[ -e /proc/dynamic_debug/control ] || {
+    echo -e "${RED}: this test requires CONFIG_DYNAMIC_DEBUG=y ${NC}"
+    exit $ksft_skip # nothing to test here, no good reason to fail.
+}
+
+lsmod >/dev/null 2>&1 || {
+    echo -e "${RED}: lsmod requires /proc/modules ${NC}"
+    exit $ksft_skip # maybe later we can do more
+}
+
+# need info to avoid failures due to untestable configs
+
+[ -f "$KCONFIG_CONFIG" ] || KCONFIG_CONFIG=".config"
+if [ -f "$KCONFIG_CONFIG" ]; then
+    v_echo "# consulting KCONFIG_CONFIG: $KCONFIG_CONFIG"
+    grep -q "CONFIG_DYNAMIC_DEBUG=y" $KCONFIG_CONFIG ; LACK_DD_BUILTIN=$?
+    grep -q "CONFIG_TEST_DYNAMIC_DEBUG=m" $KCONFIG_CONFIG ; LACK_TMOD=$?
+else
+    # if no config, try runtime probes
+    modprobe -n test_dynamic_debug 2>/dev/null ; LACK_TMOD=$?
+    # assume builtin dyndbg if control exists (checked above)
+    LACK_DD_BUILTIN=0
+fi
+
+# Clean up any leftover loaded test modules at initialization
+grep -q "^test_dynamic_debug_submod " /proc/modules 2>/dev/null && rmmod test_dynamic_debug_submod
+grep -q "^test_dynamic_debug " /proc/modules 2>/dev/null && rmmod test_dynamic_debug
+
+# ==============================================================================
+# TESTING STRATEGY 1.
+#   Change and observe control-file settings:
+#     ddcmd: ie echo $dd_query_cmd > /proc/dynamic_debug/control
+#     read back control, count changes due to query_cmd
+# ==============================================================================
+
+function ddcmd () {
+    # ddcmd <query_args> [range_pattern] [pass|fail|log]
+    local args="$1"
+    local range_pattern="$2"
+    local action="${3:-pass}"
+
+    # Verify if range transition check is requested (non-empty pattern)
+    local do_range=0
+    if [ -n "$range_pattern" ]; then
+        do_range=1
+    fi
+
+    local exp_exit_code=0
+    local do_log=0
+
+    if [ "$action" = "fail" ]; then
+	exp_exit_code=1
+        do_log=1
+    elif [ "$action" = "log" ]; then
+        exp_exit_code=0
+        do_log=1
+    fi
+
+    # Update cumulative state-machine lineage
+    if [[ "$args" == *"=_"* ]]; then
+        CUMULATIVE_DDCMDS="$args"
+    else
+        CUMULATIVE_DDCMDS="${CUMULATIVE_DDCMDS}; $args"
+    fi
+
+    # Update local bookend command tracker
+    if [ "$IN_BOOKEND" -eq 1 ]; then
+        if [ -z "$LOCAL_DDCMDS" ]; then
+            LOCAL_DDCMDS="$args"
+        else
+            LOCAL_DDCMDS="${LOCAL_DDCMDS}; $args"
+        fi
+    else
+        LOCAL_DDCMDS="$args"
+    fi
+
+    # 1. Automatically start dmesg capture if requested (fail or log)
+    [ "$do_log" -eq 1 ] && log_start
+
+    # 2. Automatically take pre-state file snapshot if requested (non-empty range)
+    [ "$do_range" -eq 1 ] && capture_before "$range_pattern"
+
+    output=$( (echo "$args" > /proc/dynamic_debug/control) 2>&1)
+    exit_code=$?
+    error_msg=$(echo "$output" | cut -d ":" -f 5 | sed -e 's/^[[:space:]]*//')
+
+    # Handle the exit code check
+    handle_exit_code $BASH_LINENO $FUNCNAME $exit_code $exp_exit_code
+
+    # Close and verify dmesg capture if we started one
+    [ "$do_log" -eq 1 ] && log_stop
+
+    # Close and verify range transition diff if we started one (non-empty range)
+    [ "$do_range" -eq 1 ] && verify_after_change
+}
+
+function ddcmd_err () {
+    # ddcmd_err <query_args>
+    # Semantic wrapper for parser syntax & error validation
+    ddcmd "$1" "" fail
+}
+
+function ddcmd_load () {
+    # ddcmd_load <query_args> <range_pattern> <workload_param_path> <workload_val>
+    # Semantic wrapper for end-to-end filter setup and live workload logging
+    local query="$1"
+    local range="$2"
+    local param_path="$3"
+    local val="$4"
+
+    # 1. Setup the control filters (using positional ddcmd range-check)
+    ddcmd "$query" "$range"
+
+    # 2. Execute the workload and capture syslog prints
+    log_start
+    echo "$val" > "$param_path"
+    log_stop
+}
+
+function handle_exit_code() {
+    local exp_exit_code=0
+    [ $# == 4 ] && exp_exit_code=$4
+    if [ "$3" -ne $exp_exit_code ]; then
+        echo -e "${RED}: $BASH_SOURCE:$1 $2() " \
+            "expected to exit with code $exp_exit_code, got $3${NC}"
+	[ "$3" == 1 ] && echo "Error: '$error_msg'"
+        exit $ksft_fail
+    fi
+}
+
+# ==============================================================================
+# TESTING STRATEGY 2.
+#   do 1 to setup test expectations.
+#   run logging-workload
+#   capture output
+#   hash-validate it against GOLDEN_SAMPLE db (at file end)
+#
+# ==============================================================================
+# Source hash-based validation and state verification helper library
+DIR="$(dirname "$(readlink -f "$0")")"
+. "$DIR/syslog_hash_validation.sh"
+
+# Define target validation file path
+CONTROL_FILE="/proc/dynamic_debug/control"
+
+# App-specific wrappers mapping to generic library helpers
+function slice_and_hash_ddctrl {
+    local slice=$(slice_by_grep "$1" "$CONTROL_FILE")
+    echo "$slice" | tr -d '\r' | md5sum | cut -d' ' -f1
+}
+
+function verify_modprobe_param_logging {
+    # $1 - parameter name (e.g. do_classes)
+    # $2 - parameter value (e.g. 1)
+    # $3 - short descriptive tag (e.g. classes)
+    local param="$1"
+    local val="$2"
+    local tag="$3"
+
+    # Make sure both modules are completely unloaded to trigger a fresh load
+    ifrmmod test_dynamic_debug_submod
+    ifrmmod test_dynamic_debug
+
+    # Explicitly register the modprobe command as the local stimulus!
+    LOCAL_DDCMDS="modprobe test_dynamic_debug ${param}=${val}"
+
+    # 1. Capture and verify the load-time (modprobe) dmesg logs (R2)
+    log_start
+    modprobe test_dynamic_debug "${param}=${val}"
+
+    # If it is a state-controlling parameter, trigger the print-workload 'do_classes=1'
+    # inside the same syslog dmesg capture bookends to verify their actual pr_debug logging!
+    if [ "$param" = "p_disjoint_bits" ] || [ "$param" = "p_level_num" ]; then
+        LOCAL_DDCMDS="${LOCAL_DDCMDS}; echo 1 > "
+        LOCAL_DDCMDS="${LOCAL_DDCMDS}/sys/module/test_dynamic_debug/parameters/do_classes"
+        echo 1 > /sys/module/test_dynamic_debug/parameters/do_classes
+    fi
+
+    log_stop
+
+    # 2. If it is a state-controlling parameter, verify runtime unsetting (S2 ➔ R1)
+    if [ "$param" = "p_disjoint_bits" ] || [ "$param" = "p_level_num" ]; then
+        # Dynamically write 0 to unset the parameter at runtime via sysfs
+        LOCAL_DDCMDS="echo 0 > /sys/module/test_dynamic_debug/parameters/${param}"
+        echo 0 > "/sys/module/test_dynamic_debug/parameters/${param}"
+
+        # Verify that the resulting control-file state is completely cleared
+        local hash_unset=$(slice_and_hash_ddctrl '\[test_dynamic_debug\]')
+        local default_hash="fd89900c8614f23c3a6e8a8d45aa3280"
+	# Pristine fully-disabled slice hash
+
+        if [ "$hash_unset" != "$default_hash" ]; then
+            echo -e "${RED}: Runtime unsetting failed for ${param}! " \
+                "Expected default-disabled, got ${hash_unset}${NC}"
+            exit $ksft_fail
+        else
+            [ "$V" -ge 2 ] && echo -e "${GREEN}✔ Proven Runtime Unset: " \
+                "echo 0 > ${param} successfully cleared callsites${NC}"
+        fi
+    fi
+}
+
+# ==============================================================================
+function ifrmmod {
+    [ "${LACK_TMOD:-0}" -eq 1 ] && return
+    grep -q "^$1 " /proc/modules 2>/dev/null && rmmod $1
+}
+
+# ==============================================================================
+# FEATURE TESTS (FT_*)
+# These functions define the specifications and behavioral compliance
+# assertions of the dynamic-debug core query parser, classmaps, and
+# parameter interfaces.
+# ==============================================================================
+function FT_grammar_errs {
+    v_echo "${GREEN}# GRAMMAR_ERROR_TESTS ${NC}"
+    ddcmd =_
+    local verbose
+
+    # Reset before loop
+    echo 0 > /sys/module/dynamic_debug/parameters/verbose
+
+    # Sequence verbose level 0..3 to verify error diagnostics across all verbosity states!
+    for verbose in 0 1 2 3; do
+        echo $verbose > /sys/module/dynamic_debug/parameters/verbose
+        ddcmd =_ # Reset cumulative query log and control file state
+
+        # Semantic, zero-boilerplate, declarative error assertions.
+        # Because these expect failure, ddcmd_err automatically captures,
+        # hashes, and verifies their dmesg error diagnostics!
+        ddcmd_err 'module foobar format "parse'
+        ddcmd_err "module foobar unknown_keyword value"
+        ddcmd_err "module foobar %pm"
+        ddcmd_err "word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12"
+        ddcmd_err "module foobar line"
+
+        # Advanced parser error path coverage (EINVAL returns)
+        ddcmd_err "line 10 line 20"		# overridden line keyword
+        ddcmd_err "line 10a"			# line syntax trailing garbage
+        ddcmd_err "line 100-10"			# line range error (last < 1st)
+        ddcmd_err "module foobar module baz"	# overridden module keyword
+        ddcmd_err "class D2_CORE class D2_KMS"	# overridden class keyword
+        ddcmd_err "module foobar +x"		# unrecognized flag character
+    done
+
+    # Reset to default verbose level 0 at the end of basic errors
+    echo 0 > /sys/module/dynamic_debug/parameters/verbose
+    ddcmd =_
+}
+
+function FT_grammar_ok {
+    v_echo "${GREEN}# GRAMMAR_OK_TESTS ${NC}"
+    # Verify successful query syntax compiles and executes with code 0
+    # (success).  Since these are side-effect-free proofs carrying
+    # empty flags, we omit the range argument to bypass redundant
+    # diff-verification, completely removing golden records
+    # maintenance and target instability risks!
+    ddcmd "+_"
+    ddcmd "-_"
+
+    # Verify a comprehensive query containing all valid grammar keywords and value-pairs.
+    ddcmd "module foobar file foobar.c func foobar_func line 1-10 class D2_CORE +_"
+
+    # 3. Dedicated lineno range grammar assertions (side-effect-free proofs)
+    ddcmd "line 42 +_"       # test exact line syntax
+    ddcmd "line 10- +_"      # test open-ended line range (starting at 10)
+    ddcmd "line -100 +_"     # test open-ended line range (ending at 100)
+    ddcmd "line 10-100 +_"   # test closed-interval line range
+
+    # 4. Dedicated colon-delimited file:line and file:func assertions
+    ddcmd "file a_file.c:1-100 +_"  # test file:linerange syntax
+    ddcmd "file b_file.c:30 +_"     # test file:exact_line syntax
+    ddcmd "file c_file.c:c_func +_" # test file:function_name syntax
+    ddcmd "file c_file.c:start_* +_" # test file:wildcard_function syntax
+
+    # 5. Advanced formatting and separator checks (side-effect-free proofs)
+    ddcmd "format \"space\\040here\" +_" # test format query with octal escape
+    ddcmd "module,foobar +_"            # test comma token separator syntax
+    ddcmd "func *my_func* +_"           # test wildcard func syntax
+    ddcmd "file drivers/usb/* +_"       # test wildcard file path syntax
+}
+
+function FT_basic_queries {
+    v_echo "${GREEN}# BASIC_TESTS ${NC}"
+    if [ $LACK_DD_BUILTIN -eq 1 ]; then
+	echo "SKIP - test requires params, which is a builtin module"
+	return
+    fi
+    ddcmd =_ # zero everything
+
+    # 1. Verify params enablement and state transition on a single,
+    # clean line!  Use non-printing decorator flags (+mf) to avoid
+    # print-enabling (+p), to prevent syslog pollution
+    ddcmd "module params +mf" '\[kernel/params\]'
+
+    # 2. Verify subsequent flag accumulation and stripping toggles in sequence
+    ddcmd "module params +l" '\[kernel/params\]'
+    ddcmd "module params -m" '\[kernel/params\]'
+    ddcmd "module params =_" '\[kernel/params\]'
+
+    # 3. Verify multi-query command splitting on @ on a single line
+    ddcmd "module params +mf @ module params func parse_args +sl" 'kernel/params'
+
+    # 4. Verify multi-cmd input, newline separated, with embedded comments
+    ddcmd =_ # reset before multiline query to capture full transition
+    ddcmd "module params =_		# clear params
+      module params +ml			# set flags
+      module params func parse_args +fs # other flags" '\[kernel/params\]'
+
+    ddcmd =_
+}
+
+function FT_path_module_queries {
+    v_echo "${GREEN}# TEST_PATH_MODULE_QUERIES ${NC}"
+    ddcmd =_
+
+    # Find how many 'main' modules we have in total (by basename)
+    # Use a precise OR pattern to match exactly [main] or [*/main] and avoid irqdomain
+    local total_main=$(grep -c "\[main\]\|\[[^]]*/main\]" /proc/dynamic_debug/control)
+    v_echo "# found $total_main total 'main' modules"
+
+    if [ $total_main -eq 0 ]; then
+        echo "SKIP - no 'main' modules found to test slashes"
+        return
+    fi
+
+    # Verify a robust, cross-query state-interaction handshake between
+    # narrow path and wide wildcard/basename queries. This dynamically
+    # proves they interact with the exact same underlying callsites!
+
+    # 1. Turn ON specific path, verified under '[init/main]' range
+    ddcmd "module 'init/main' +p" "\[init/main\]"
+
+    # 2. Turn OFF using wide wildcard query,
+    ddcmd "module '*/main' =_" "\[init/main\]"
+
+    # 3. Turn ON using wide unscoped basename,
+    ddcmd "module 'main' +p" "\[init/main\]"
+
+    # 4. Turn OFF using specific narrow path,
+    ddcmd "module 'init/main' =_" "\[init/main\]"
+}
+
+function FT_hyphen_underscore {
+    v_echo "${GREEN}# TEST_HYPHEN_UNDERSCORE ${NC}"
+    ddcmd =_
+
+    # Find a module with a hyphen in its name (e.g., from the control file)
+    local mod_with_hyphen
+    mod_with_hyphen=$(awk -F'[][]' \
+        '/^[^#:]+:[0-9]+/ { if ($2 ~ /-/) { print $2; exit } }' \
+        /proc/dynamic_debug/control)
+
+    if [ -z "$mod_with_hyphen" ]; then
+        echo "SKIP - no module with hyphen found in /proc/dynamic_debug/control"
+        return
+    fi
+
+    v_echo "# testing hyphen/underscore equivalence for module: $mod_with_hyphen"
+    local mod_with_underscore=$(echo "$mod_with_hyphen" | tr '-' '_')
+    local base_hyphen=$(basename "$mod_with_hyphen")
+    local slice_pattern="\[[^]]*$base_hyphen\]"
+
+    # 1. Enable using literal hyphen name, and record the state fingerprint
+    v_echo "#   trying hyphen name: $mod_with_hyphen"
+    ddcmd "module $mod_with_hyphen +p"
+    # verify_file_slice "$slice_pattern"
+    local hash_hyphen=$(slice_and_hash_ddctrl "$slice_pattern")
+
+    # 2. Disable and enable using underscore name, record the state fingerprint
+    ddcmd =_
+    v_echo "#   trying underscore name: $mod_with_underscore"
+    ddcmd "module $mod_with_underscore +p"
+    # verify_file_slice "$slice_pattern"
+    local hash_underscore=$(slice_and_hash_ddctrl "$slice_pattern")
+
+    # Real-time mathematical proof of hyphen/underscore name equivalence!
+    if [ "$hash_hyphen" != "$hash_underscore" ]; then
+        echo -e "${RED}: Hyphen/Underscore equivalence check failed! " \
+            "Fingerprints do not match.${NC}"
+        echo -e "Hyphen name state hash:     $hash_hyphen"
+        echo -e "Underscore name state hash: $hash_underscore"
+        exit $ksft_fail
+    else
+        v_echo "${GREEN}: Proven: Hyphen/Underscore literal name equivalence matches!${NC}"
+    fi
+
+        # Try kbasename with hyphen (if it has a path)
+    if [ "$base_hyphen" != "$mod_with_hyphen" ]; then
+        ddcmd =_
+        v_echo "#   trying hyphen kbasename: $base_hyphen"
+        ddcmd "module $base_hyphen +pmf"
+        # verify_file_slice "$slice_pattern" # omitted: slice contains dynamic
+        # module info which drifts across different targets
+        local hash_base_hyphen=$(slice_and_hash_ddctrl "$slice_pattern")
+
+        # Prove kbasename hyphen name matches literal path hyphen name (with different flags)!
+        v_echo "#   trying full path hyphen with pmf flags"
+        ddcmd =_
+        ddcmd "module $mod_with_hyphen +pmf"
+        local hash_path_pmf=$(slice_and_hash_ddctrl "$slice_pattern")
+        if [ "$hash_path_pmf" != "$hash_base_hyphen" ]; then
+            echo -e "${RED}: Hyphen kbasename check failed! " \
+                "Fingerprints do not match full-path hyphen enablement.${NC}"
+            exit $ksft_fail
+        else
+            v_echo "${GREEN}: Proven: Hyphen kbasename matches " \
+                "full-path hyphen enablement!${NC}"
+        fi
+    fi
+
+    # 4. Try kbasename with underscore
+    local base_underscore=$(echo "$base_hyphen" | tr '-' '_')
+    ddcmd =_
+    v_echo "#   trying underscore kbasename: $base_underscore"
+    ddcmd "module $base_underscore +pmf"
+    # verify_file_slice "$slice_pattern" # omitted: slice contains dynamic
+    # module info which drifts across different targets
+    local hash_base_underscore=$(slice_and_hash_ddctrl "$slice_pattern")
+
+    # Real-time mathematical proof of hyphen/underscore kbasename equivalence!
+    if [ "$hash_base_hyphen" != "$hash_base_underscore" ] && \
+       [ -n "$hash_base_hyphen" ]; then
+        echo -e "${RED}: Hyphen/Underscore kbasename equivalence check " \
+            "failed! Fingerprints do not match.${NC}"
+        exit $ksft_fail
+    elif [ -n "$hash_base_hyphen" ]; then
+        v_echo "${GREEN}: Proven: Hyphen/Underscore kbasename " \
+            "equivalence matches!${NC}"
+    fi
+
+    ddcmd =_
+}
+
+# test parsing on spaces, commas. testing agains builtin [kernel/params]
+function FT_comma_terminators {
+    v_echo "${GREEN}# COMMA_TERMINATOR_TESTS ${NC}"
+    if [ $LACK_DD_BUILTIN -eq 1 ]; then
+	echo "SKIP - test requires params, which is a builtin module"
+	return
+    fi
+    ddcmd "module params =_"
+
+    # 1. Verify transition after commas-as-spaces query and splitting on @
+    # Use non-printing decorator flags (+mf) to avoid print-enabling (+p) and
+    # prevent syslog pollution
+    ddcmd "module,params,=_ @ module,params,+mf" 'kernel/params'
+
+    # 2. Verify transition after ignored-commas query
+    ddcmd ",module ,, ,  params, -p" 'kernel/params'
+
+    # 3. Verify transition after quoted-commas query
+    ddcmd " , module ,,, ,  params, -m" 'kernel/params'
+
+    ddcmd =_
+}
+
+# testing classmap-based query enablers and class configurations
+function FT_test_classes {
+    v_echo "${GREEN}# TEST_CLASSES - classmap-based query enablers and class configs ${NC}"
+
+    ifrmmod test_dynamic_debug_submod
+    ifrmmod test_dynamic_debug
+    ddcmd =_
+
+    # 1. Verify initial multi-query enablement state via file slice
+    modprobe test_dynamic_debug \
+        dyndbg=class,D2_CORE,+pf@class,D2_KMS,+ps@class,D2_ATOMIC,+pm
+    verify_file_slice '\[test_dynamic_debug\]'
+
+    # 2. Verify state transition and live-printing end-to-end via ddcmd_load!
+    ddcmd_load "class,D2_CORE,+pmf@class,D2_KMS,+pls@class,D2_ATOMIC,+pml" \
+        '\[test_dynamic_debug\]' \
+        "/sys/module/test_dynamic_debug/parameters/do_classes" "1"
+
+    ifrmmod test_dynamic_debug
+}
+
+function FT_classmap_inheritance {
+    v_echo "${GREEN}# TEST_MOD_SUBMOD ${NC}"
+
+    ifrmmod test_dynamic_debug_submod
+    ifrmmod test_dynamic_debug
+    ddcmd =_
+
+    # modprobe with class enablements
+    modprobe test_dynamic_debug \
+	dyndbg=class,D2_CORE,+pf@class,D2_KMS,+pt@class,D2_ATOMIC,+pm
+
+    verify_file_slice '\[test_dynamic_debug\]'
+
+    modprobe test_dynamic_debug_submod
+    verify_file_slice '\[test_dynamic_debug_submod\]'
+
+    # Verify multi-module class control propagation and transition diff on a single line!
+    ddcmd "class,D2_CORE,+pmf @ class,D2_KMS,+plt @ class,D2_ATOMIC,+pml" 'test_dynamic_debug' \
+        "# add some prefixes"
+
+    # now work the classmap-params
+    # fresh start, to clear all above flags (test-fn limits)
+    ifrmmod test_dynamic_debug_submod
+    ifrmmod test_dynamic_debug
+    modprobe test_dynamic_debug_submod # get supermod too
+
+    echo 1 > /sys/module/test_dynamic_debug/parameters/p_disjoint_bits
+    echo 4 > /sys/module/test_dynamic_debug/parameters/p_level_num
+    # 2 mods * ( V1-3 + D2_CORE )
+    verify_file_slice 'test_dynamic_debug'
+    echo 3 > /sys/module/test_dynamic_debug/parameters/p_disjoint_bits
+    echo 0 > /sys/module/test_dynamic_debug/parameters/p_level_num
+    # 2 mods * ( D2_CORE, D2_DRIVER )
+    verify_file_slice 'test_dynamic_debug'
+    echo 0x16 > /sys/module/test_dynamic_debug/parameters/p_disjoint_bits
+    echo 0 > /sys/module/test_dynamic_debug/parameters/p_level_num
+    # 2 mods * ( D2_DRIVER, D2_KMS, D2_ATOMIC )
+    verify_file_slice 'test_dynamic_debug'
+
+    # recap DRM_USE_DYNAMIC_DEBUG regression
+    ifrmmod test_dynamic_debug_submod
+    ifrmmod test_dynamic_debug
+    # set super-mod params at load-time
+    modprobe test_dynamic_debug p_disjoint_bits=0x16 p_level_num=5
+    verify_file_slice '\[test_dynamic_debug\]'
+    modprobe test_dynamic_debug_submod
+    # see them picked up by submod
+    verify_file_slice 'test_dynamic_debug'
+
+    # Real-time mathematical proof that load-time (modprobe) parameter parsing
+    # and runtime (sysfs write) parameter configurations are perfectly equivalent!
+    local hash_modprobe=$(slice_and_hash_ddctrl '\[test_dynamic_debug\]')
+
+    # Fresh load with default parameters, then configure them dynamically at runtime
+    ifrmmod test_dynamic_debug_submod
+    ifrmmod test_dynamic_debug
+    modprobe test_dynamic_debug
+    modprobe test_dynamic_debug_submod
+    echo 0x16 > /sys/module/test_dynamic_debug/parameters/p_disjoint_bits
+    echo 5 > /sys/module/test_dynamic_debug/parameters/p_level_num
+
+    local hash_sysfs=$(slice_and_hash_ddctrl '\[test_dynamic_debug\]')
+    if [ "$hash_modprobe" != "$hash_sysfs" ]; then
+        echo -e "${RED}: Load-time vs runtime parameter equivalence check failed!${NC}"
+        exit $ksft_fail
+    else
+        v_echo "${GREEN}: Proven: parameter load-time (modprobe) " \
+            "and runtime (sysfs write) are equivalent!${NC}"
+    fi
+
+    # --- Live Content Fingerprinting Phase ---
+    log_start
+    echo 1 > /sys/module/test_dynamic_debug/parameters/do_classes
+    echo 1 > /sys/module/test_dynamic_debug_submod/parameters/do_classes
+    log_stop
+
+    ifrmmod test_dynamic_debug_submod
+    ifrmmod test_dynamic_debug
+}
+
+function FT_modprobe_w_param {
+    v_echo "${GREEN}# TEST_MODPROBES ${NC}"
+    ddcmd =_
+    local verbose
+
+    # Enable logging on the builtin kernel parameter parsing engine with rich
+    # decorator context (+pmf)
+    ddcmd "file kernel/params.c +pmf"
+
+    for verbose in 1 2 3 4 0; do
+	echo $verbose > /sys/module/dynamic_debug/parameters/verbose
+
+	# Verify each parameter load sequence with 100% DRY modularity
+	verify_modprobe_param_logging "do_classes" "1" "classes_verb${verbose}"
+	verify_modprobe_param_logging "do_bulk" "1" "bulk_verb${verbose}"
+
+	# Sequence composite bitmasks to verify disjoint bit transitions
+	for mask in "0x05" "0x12" "0x1f" "0x00"; do
+            verify_modprobe_param_logging "p_disjoint_bits" "$mask" \
+					  "disjoint_${mask}_verb${verbose}"
+	done
+
+	# Sequence levels to verify both growing and shrinking verbose transitions
+	for lvl in "3" "5" "4" "0"; do
+            verify_modprobe_param_logging "p_level_num" "$lvl" \
+					  "level_${lvl}_verb${verbose}"
+	done
+    done # verbose loop
+    ddcmd =_
+}
+
+# Built-in Feature Tests (Can run on any CONFIG_DYNAMIC_DEBUG kernel, modular or monolithic)
+builtin_tests=(
+    FT_grammar_ok
+    FT_grammar_errs
+    FT_basic_queries
+    FT_path_module_queries
+    FT_hyphen_underscore
+    FT_comma_terminators
+)
+
+# Modular Feature Tests (Require CONFIG_MODULES=y and test_dynamic_debug*.ko available)
+modular_tests=(
+    FT_test_classes
+    FT_classmap_inheritance
+    FT_modprobe_w_param
+)
+
+# ==============================================================================
+# GOLDEN_RECORDS (MD5 Fingerprint Verification Database)
+#
+# This database stores the expected invariant log content hashes for our tests.
+# Since the key has the line-number of the callsite, we dont yet
+# support looping over a test-call, maybe we'll need to address that
+# later.
+#
+# NB: records have lineno of the test in code above. table at bottom
+# means inserts dont shift test-lines.
+#
+# ==============================================================================
+function GOLDEN_RECORDS {
+    cat << 'EOF' | {
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.1        dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.2        dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.3        dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.4        dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.5        dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.6        dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.7        dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.8        dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.9        dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.10       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.11       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.12       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.13       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.14       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.15       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.16       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.17       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.18       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.19       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.20       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.21       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.22       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.23       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.24       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.25       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.26       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.27       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.28       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.29       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.30       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.31       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.32       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.33       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.34       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.35       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.36       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.37       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.38       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.39       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.40       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.41       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.42       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.43       dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_grammar_errs.44       dmesg
+#K= 24d85e3b86f3d5f7640995922d91e08c FT_basic_queries.1       "\[kernel/params\]"
+#K= 958898bcd9736a94e1f8b293b230a96a FT_basic_queries.2       "\[kernel/params\]"
+#K= 130118da5a296e4039865d167e06cacd FT_basic_queries.3       "\[kernel/params\]"
+#K= da6bd1c6a299290150668186f8263b82 FT_basic_queries.4       "\[kernel/params\]"
+#K= 82572e8d20c4b567afac783006d1a935 FT_basic_queries.5       "kernel/params"
+#K= baea1247680e8151c121539f4b90a6d8 FT_basic_queries.6       "\[kernel/params\]"
+#K= 0b5cae527b414cdcc31a92eb31a27682 FT_path_module_queries.1 "\[init/main\]"
+#K= 57e10cafef647d6b51e435fb430512cc FT_path_module_queries.2 "\[init/main\]"
+#K= 0b5cae527b414cdcc31a92eb31a27682 FT_path_module_queries.3 "\[init/main\]"
+#K= 57e10cafef647d6b51e435fb430512cc FT_path_module_queries.4 "\[init/main\]"
+#K= 24d85e3b86f3d5f7640995922d91e08c FT_comma_terminators.1   "kernel/params"
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_comma_terminators.2   "kernel/params"
+#K= f85c977f05f152b368e0460d28ff241a FT_comma_terminators.3   "kernel/params"
+#K= 48c19fd4f58019d5f5b7b6a2e74d78c7 FT_test_classes.1        "\[test_dynamic_debug\]"
+#K= c2bed077cf647192be32cfea96b23909 FT_test_classes.2        "\[test_dynamic_debug\]"
+#K= 8a491819b146f1360bbdcd90a3efe9ce FT_test_classes.3        dmesg
+#K= 8ddbca66047a9bcb365c83ba86e64dff FT_classmap_inheritance.1 "\[test_dynamic_debug\]"
+#K= 40547b5bf57fbe362e12b160f77a96e7 FT_classmap_inheritance.2 "\[test_dynamic_debug_submod\]"
+#K= cc7321681d48292b22f2d7bc3d7713e3 FT_classmap_inheritance.3 "test_dynamic_debug"
+#K= be22d46fe4a8535612ff6d985c4b9e57 FT_classmap_inheritance.4 "test_dynamic_debug"
+#K= bcac079cef963e3e3cedd75c123fd618 FT_classmap_inheritance.5 "test_dynamic_debug"
+#K= c6bd6a197fc1bbff7eac50b18c907bd4 FT_classmap_inheritance.6 "test_dynamic_debug"
+#K= 89a2be5de17c0992c2226b3b5d74cf18 FT_classmap_inheritance.7 "\[test_dynamic_debug\]"
+#K= d6cd17cc2be4aac80d0c94367f4c423e FT_classmap_inheritance.8 "test_dynamic_debug"
+#K= 29d6c3d962400aa663d01a1ca665bc23 FT_classmap_inheritance.9 dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_modprobe_w_param.1    dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_modprobe_w_param.2    dmesg
+#K= 06585a61fecd49f826b624a493f8186a FT_modprobe_w_param.3    dmesg
+#K= 9a4d3232a7d9263158dbf59b4685b32c FT_modprobe_w_param.4    dmesg
+#K= 6abbd7b226a87b21aebab6f037ece451 FT_modprobe_w_param.5    dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_modprobe_w_param.6    dmesg
+#K= 14cf091423c69a188ba45cc39414c1b9 FT_modprobe_w_param.7    dmesg
+#K= 713b6e5c4af67d59a1896c8181a7e1b5 FT_modprobe_w_param.8    dmesg
+#K= 67fa99b23bfafccc66b023970b71cbd8 FT_modprobe_w_param.9    dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_modprobe_w_param.10   dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_modprobe_w_param.11   dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_modprobe_w_param.12   dmesg
+#K= 06585a61fecd49f826b624a493f8186a FT_modprobe_w_param.13   dmesg
+#K= 9a4d3232a7d9263158dbf59b4685b32c FT_modprobe_w_param.14   dmesg
+#K= 6abbd7b226a87b21aebab6f037ece451 FT_modprobe_w_param.15   dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_modprobe_w_param.16   dmesg
+#K= 14cf091423c69a188ba45cc39414c1b9 FT_modprobe_w_param.17   dmesg
+#K= 713b6e5c4af67d59a1896c8181a7e1b5 FT_modprobe_w_param.18   dmesg
+#K= 67fa99b23bfafccc66b023970b71cbd8 FT_modprobe_w_param.19   dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_modprobe_w_param.20   dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_modprobe_w_param.21   dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_modprobe_w_param.22   dmesg
+#K= 06585a61fecd49f826b624a493f8186a FT_modprobe_w_param.23   dmesg
+#K= 9a4d3232a7d9263158dbf59b4685b32c FT_modprobe_w_param.24   dmesg
+#K= 6abbd7b226a87b21aebab6f037ece451 FT_modprobe_w_param.25   dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_modprobe_w_param.26   dmesg
+#K= 14cf091423c69a188ba45cc39414c1b9 FT_modprobe_w_param.27   dmesg
+#K= 713b6e5c4af67d59a1896c8181a7e1b5 FT_modprobe_w_param.28   dmesg
+#K= 67fa99b23bfafccc66b023970b71cbd8 FT_modprobe_w_param.29   dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_modprobe_w_param.30   dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_modprobe_w_param.31   dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_modprobe_w_param.32   dmesg
+#K= 06585a61fecd49f826b624a493f8186a FT_modprobe_w_param.33   dmesg
+#K= 9a4d3232a7d9263158dbf59b4685b32c FT_modprobe_w_param.34   dmesg
+#K= 6abbd7b226a87b21aebab6f037ece451 FT_modprobe_w_param.35   dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_modprobe_w_param.36   dmesg
+#K= 14cf091423c69a188ba45cc39414c1b9 FT_modprobe_w_param.37   dmesg
+#K= 713b6e5c4af67d59a1896c8181a7e1b5 FT_modprobe_w_param.38   dmesg
+#K= 67fa99b23bfafccc66b023970b71cbd8 FT_modprobe_w_param.39   dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_modprobe_w_param.40   dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_modprobe_w_param.41   dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_modprobe_w_param.42   dmesg
+#K= 06585a61fecd49f826b624a493f8186a FT_modprobe_w_param.43   dmesg
+#K= 9a4d3232a7d9263158dbf59b4685b32c FT_modprobe_w_param.44   dmesg
+#K= 6abbd7b226a87b21aebab6f037ece451 FT_modprobe_w_param.45   dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_modprobe_w_param.46   dmesg
+#K= 14cf091423c69a188ba45cc39414c1b9 FT_modprobe_w_param.47   dmesg
+#K= 713b6e5c4af67d59a1896c8181a7e1b5 FT_modprobe_w_param.48   dmesg
+#K= 67fa99b23bfafccc66b023970b71cbd8 FT_modprobe_w_param.49   dmesg
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_modprobe_w_param.50   dmesg
+EOF
+        # Read the K-recs and skip those for tests that can't run
+        while read -r line; do
+            # Filter built-in if needed
+            if [ "${LACK_DD_BUILTIN:-0}" -eq 1 ]; then
+                # Extract pattern (4th field) from #K= line
+                local pattern=$(echo "$line" | awk '{print $4}')
+                if [[ "$pattern" == *params* || "$pattern" == *main* ]]; then
+                    continue
+                fi
+            fi
+            # Filter modular if needed
+            if [ "${LACK_TMOD:-0}" -eq 1 ]; then
+                # Extract label (3rd field) from #K= line
+                local label=$(echo "$line" | awk '{print $3}')
+                if [[ "$label" == FT_test_classes* \
+			  || "$label" == FT_classmap_inheritance* \
+			  || "$label" == FT_modprobe_w_param* ]]; then
+                    continue
+                fi
+            fi
+            echo "$line"
+        done
+    }
+}
+
+# ==============================================================================
+# Run tests
+
+# Clear any stale seen/unregistered/drifted hashes from previous runs
+rm -f "$SEEN_HASHES_FILE" "$UNREG_HASHES_FILE" "$DRIFT_HASHES_FILE"
+
+ifrmmod test_dynamic_debug
+
+# Check if loadable module support or our test modules are missing/builtin
+LACK_TMOD=0
+if [ -d "/sys/module/test_dynamic_debug" ]; then
+    # If module is present but not in /proc/modules,
+    # it is a builtin module (cannot unload/reload)
+    if ! grep -q "^test_dynamic_debug " /proc/modules 2>/dev/null; then
+        LACK_TMOD=1
+    fi
+else
+    # Check if we can modprobe it from disk
+    modprobe -q -n test_dynamic_debug || LACK_TMOD=1
+fi
+
+# 1. Run all Built-in Feature Tests
+v_echo "${GREEN}# RUNNING BUILT-IN FEATURE TESTS ${NC}"
+for test_func in "${builtin_tests[@]}"; do
+    $test_func
+    v_echo ""
+done
+
+# 2. Run Modular Feature Tests only if test modules are available
+if [ $LACK_TMOD -eq 0 ]; then
+    v_echo "${GREEN}# RUNNING MODULAR FEATURE TESTS ${NC}"
+    for test_func in "${modular_tests[@]}"; do
+        $test_func
+        v_echo ""
+    done
+else
+    v_echo "${YELLOW}# SKIPPING MODULAR TESTS: test_dynamic_debug.ko not available ${NC}"
+fi
+
+if [ "$V" -ge 1 ]; then
+    echo -en "${GREEN}# Done on: "
+    date
+    echo -en "${NC}"
+fi
+
+audit_golden_records
+
+# Output consolidated blocks of unregistered and drifted fingerprints
+failed=0
+
+if [ -s "$UNREG_HASHES_FILE" ]; then
+    echo -e "${YELLOW}\n# --- Unregistered Baselines ---"
+    cat "$UNREG_HASHES_FILE"
+    echo -e "# ------------------------------${NC}"
+    rm -f "$UNREG_HASHES_FILE"
+    failed=1
+fi
+
+if [ -s "$DRIFT_HASHES_FILE" ]; then
+    echo -e "${RED}\n# --- Drifted Baselines ---"
+    cat "$DRIFT_HASHES_FILE"
+    echo -e "# -------------------------${NC}"
+    rm -f "$DRIFT_HASHES_FILE"
+    failed=1
+fi
+
+# Cleanup
+rm -f "$UNREG_HASHES_FILE" "$DRIFT_HASHES_FILE"
+
+if [ $failed -eq 1 ]; then
+    exit $ksft_fail
+fi
+
+exit $ksft_pass
+
