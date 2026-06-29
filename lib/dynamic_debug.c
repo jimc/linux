@@ -396,19 +396,25 @@ static bool ddebug_match_desc(const struct ddebug_query *query,
 			      int selected_class)
 {
 	struct ddebug_class_map *site_map;
+	const char *dp_filename = NULL, *dp_function = NULL;
+
+	/* get site vals needed to match this query */
+	ddebug_resolve_site(&dd_site_map, dp, NULL,
+			    query->filename ? &dp_filename : NULL,
+			    query->function ? &dp_function : NULL);
 
 	/* match against the source filename */
 	if (query->filename &&
-	    !match_wildcard(query->filename, desc_filename(dp)) &&
+	    !match_wildcard(query->filename, dp_filename) &&
 	    !match_wildcard(query->filename,
-			    kbasename(desc_filename(dp))) &&
+			    kbasename(dp_filename)) &&
 	    !match_wildcard(query->filename,
-			    trim_prefix(desc_filename(dp))))
+			    trim_prefix(dp_filename)))
 		return false;
 
 	/* match against the function */
 	if (query->function &&
-	    !match_wildcard(query->function, desc_function(dp)))
+	    !match_wildcard(query->function, dp_function))
 		return false;
 
 	/* match against the format */
