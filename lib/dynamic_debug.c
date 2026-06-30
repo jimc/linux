@@ -1480,7 +1480,7 @@ static int ddebug_proc_show(struct seq_file *m, void *p)
 	struct ddebug_iter *iter = m->private;
 	struct _ddebug *dp = p;
 	struct flagsbuf flags;
-	char const *class;
+	char const *class, *filename, *function;
 
 	if (p == SEQ_START_TOKEN) {
 		seq_puts(m,
@@ -1494,9 +1494,11 @@ static int ddebug_proc_show(struct seq_file *m, void *p)
 		return 0;
 	}
 
+	ddebug_resolve_site(&dd_site_map, dp, NULL, &filename, &function);
+
 	seq_printf(m, "%s:%u [%s]%s =%s \"",
-		   trim_prefix(desc_filename(dp)), dp->lineno,
-		   iter->table->info.mod_name, desc_function(dp),
+		   trim_prefix(filename), dp->lineno,
+		   iter->table->info.mod_name, function,
 		   ddebug_describe_flags(dp->flags, &flags));
 	seq_escape_str(m, dp->format, ESCAPE_SPACE, "\t\r\n\"");
 	seq_putc(m, '"');
