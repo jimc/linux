@@ -126,11 +126,17 @@ static DEFINE_MTREE(dd_site_map);
 
 /* cache of composed prefixes for enabled and invoked pr_debugs */
 static DEFINE_MTREE(pr_prefixes);
-static DEFINE_SPINLOCK(pr_prefixes_lock);
+static unsigned int pr_prefixes_count;
 
 static unsigned long ddebug_prefix_key(const struct _ddebug *desc);
-static void ddebug_drop_cached_prefix(const struct _ddebug *dp);
+
+//static void ddebug_drop_cached_prefix(const struct _ddebug *dp);
 //static void ddebug_prefix_range(const struct _ddebug *desc, struct _dd_prefix_key_range *range);
+
+static void ddebug_add_cached_prefix(struct _ddebug *dp);
+static void ddebug_drop_all_cached_prefixes(const struct _ddebug_info *di);
+static void ddebug_prefix_range(const struct _ddebug *desc, struct _dd_prefix_key_range *range);
+
 #define prefix_flags(flags)  (flags & _DPRINTK_FLAGS_INCL_LOOKUP)
 
 /* Return the path relative to source root */
@@ -480,9 +486,6 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 			if (newflags == dp->flags)
 				continue;
 
-			if (prefix_flags(dp->flags) != prefix_flags(newflags))
-				ddebug_drop_cached_prefix(dp);
-
 #ifdef CONFIG_JUMP_LABEL
 			if (dp->flags & _DPRINTK_FLAGS_ENABLED) {
 				if (!(newflags & _DPRINTK_FLAGS_ENABLED))
@@ -497,6 +500,8 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 				  ddebug_describe_flags(dp->flags, &fbuf),
 				  ddebug_describe_flags(newflags, &nbuf));
 			dp->flags = newflags;
+			if (prefix_flags(newflags))
+				ddebug_add_cached_prefix(dp);
 		}
 	}
 	mutex_unlock(&ddebug_lock);
@@ -1430,7 +1435,7 @@ static int ddebug_proc_show(struct seq_file *m, void *p)
 	struct ddebug_iter *iter = m->private;
 	struct _ddebug *dp = p;
 	struct flagsbuf flags;
-	char const *class;
+	char const *class, *filename, *function;
 
 	if (p == SEQ_START_TOKEN) {
 		seq_puts(m,
@@ -1444,9 +1449,11 @@ static int ddebug_proc_show(struct seq_file *m, void *p)
 		return 0;
 	}
 
+	ddebug_resolve_site(&dd_site_map, dp, NULL, &filename, &function);
+
 	seq_printf(m, "%s:%u [%s]%s =%s \"",
-		   trim_prefix(desc_filename(dp)), dp->lineno,
-		   iter->table->info.mod_name, desc_function(dp),
+		   trim_prefix(filename), dp->lineno,
+		   iter->table->info.mod_name, function,
 		   ddebug_describe_flags(dp->flags, &flags));
 	seq_escape_str(m, dp->format, ESCAPE_SPACE, "\t\r\n\"");
 	seq_putc(m, '"');
@@ -2001,11 +2008,7 @@ static int ddebug_remove_module(const char *mod_name)
 		 * incorrect.  Linker gives us this one.
 		 */
 		if (dt->info.mod_name == mod_name) {
-			int i;
-			struct _ddebug *dp;
-
-			for_subvec(i, dp, &dt->info, descs)
-				ddebug_drop_cached_prefix(dp);
+			ddebug_drop_all_cached_prefixes(&dt->info);
 
 			ddebug_module_sites_clear(&dt->info);
 			ddebug_table_free(dt);
@@ -2088,18 +2091,71 @@ static unsigned long ddebug_prefix_key(const struct _ddebug *desc)
 	return ddebug_pack_key((unsigned long)desc, prefix_flags(desc->flags));
 }
 
-static void ddebug_drop_cached_prefix(const struct _ddebug *dp)
+static void ddebug_drop_all_cached_prefixes(const struct _ddebug_info *di)
 {
-	char *prefix;
-	unsigned long key = ddebug_prefix_key(dp);
-	unsigned long lock_flags;
+	int i, f;
+	struct _ddebug *dp;
 
-	spin_lock_irqsave(&pr_prefixes_lock, lock_flags);
-	prefix = mtree_erase(&pr_prefixes, key);
-	spin_unlock_irqrestore(&pr_prefixes_lock, lock_flags);
-	if (prefix) {
-		v3pr_info("drop cached prefix: %s\n", prefix);
+	for_subvec(i, dp, di, descs) {
+		for (f = 0; f < 16; f++) {
+			unsigned long key = ((unsigned long)f << DDEBUG_PREFIX_KEY_FLAGS_SHIFT) |
+					    ((unsigned long)dp >> 4);
+			char *prefix = mtree_erase(&pr_prefixes, key);
+			if (prefix) {
+				pr_prefixes_count--;
+				v3pr_info("drop cached prefix: %s\n", prefix);
+				kfree(prefix);
+			}
+		}
+	}
+}
+
+static void ddebug_add_cached_prefix(struct _ddebug *dp)
+{
+	unsigned long key = ddebug_prefix_key(dp);
+	char *prefix;
+	char buf[PREFIX_SIZE] = "";
+	int pos = 0;
+	struct _dd_prefix_key_range range;
+
+	prefix = mtree_load(&pr_prefixes, key);
+	if (prefix)
+		return;
+
+	{
+		const char *mod = NULL, *file = NULL, *func = NULL;
+
+		ddebug_resolve_site(&dd_site_map, dp,
+				    (dp->flags & _DPRINTK_FLAGS_INCL_MODNAME) ? &mod : NULL,
+				    (dp->flags & _DPRINTK_FLAGS_INCL_SOURCENAME) ? &file : NULL,
+				    (dp->flags & _DPRINTK_FLAGS_INCL_FUNCNAME) ? &func : NULL);
+
+		if (mod)
+			pos += snprintf(buf + pos, remaining(pos), "%s:", mod);
+		if (func)
+			pos += snprintf(buf + pos, remaining(pos), "%s:", func);
+		if (file)
+			pos += snprintf(buf + pos, remaining(pos), "%s:", trim_prefix(file));
+	}
+	if (dp->flags & _DPRINTK_FLAGS_INCL_LINENO)
+		pos += snprintf(buf + pos, remaining(pos), "%d:",
+				dp->lineno);
+	if (remaining(pos)) {
+		buf[pos++] = ' ';
+		buf[pos] = '\0';
+	}
+
+	prefix = kstrdup(buf, GFP_KERNEL);
+	if (!prefix)
+		return;
+
+	ddebug_prefix_range(dp, &range);
+
+	if (mtree_store_range(&pr_prefixes, range.start, range.end, prefix, GFP_KERNEL)) {
 		kfree(prefix);
+	} else {
+		pr_prefixes_count++;
+		v3pr_info("eagerly filled prefix cache: %s [%lx-%lx]\n", prefix, range.start, range.end);
 	}
 }
 
@@ -2208,7 +2264,6 @@ static void ddebug_prefix_range(const struct _ddebug *desc,
 	range->start = ddebug_pack_key(start, flags);
 	range->end = ddebug_pack_key(end, flags);
 }
-#endif
 
 static __initdata int ddebug_init_success;
 
