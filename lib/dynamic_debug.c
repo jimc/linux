@@ -642,8 +642,8 @@ static bool ddebug_match_desc(const struct ddebug_query *query,
 	if (query->format) {
 		if (!dp->format) {
 			pr_err_ratelimited("ddebug: NULL format string at %s:%s:%u\n",
-					   dp->filename ? dp->filename : "?",
-					   dp->function ? dp->function : "?",
+					   desc_filename(dp) ?: "?",
+					   desc_function(dp) ?: "?",
 					   dp->lineno);
 			return false;
 		}
