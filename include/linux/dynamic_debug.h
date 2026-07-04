@@ -58,23 +58,36 @@ struct _ddebug {
 	 * The bits here are changed dynamically when the user
 	 * writes commands to <debugfs>/dynamic_debug/control
 	 */
-#define _DPRINTK_FLAGS_NONE	0
-#define _DPRINTK_FLAGS_PRINT	(1<<0) /* printk() a message using the format */
+/* Virtual Flags used during user queries parsing and validation only */
+#define _DPRINTK_FLAGS_PRINT		(1<<0)
+#define _DPRINTK_FLAGS_COUNT		(1<<7)
+#define _DPRINTK_FLAGS_RATELIMIT_SOLO	(1<<8)
+#define _DPRINTK_FLAGS_RATELIMIT_SHARED	(1<<9)
+#define _DPRINTK_FLAGS_ONCE		(1<<10)
+
+/* Actual physical flags stored inside struct _ddebug .flags bitfield */
+#define _DPRINTK_FLAGS_NONE		0
 #define _DPRINTK_FLAGS_INCL_MODNAME	(1<<1)
 #define _DPRINTK_FLAGS_INCL_FUNCNAME	(1<<2)
 #define _DPRINTK_FLAGS_INCL_LINENO	(1<<3)
 #define _DPRINTK_FLAGS_INCL_SOURCENAME	(1<<4)
 #define _DPRINTK_FLAGS_INCL_TID		(1<<5)
 #define _DPRINTK_FLAGS_INCL_STACK	(1<<6)
-#define _DPRINTK_FLAGS_COUNT		(1<<7)
-#define _DPRINTK_FLAGS_RATELIMIT_SOLO	(1<<8)
-#define _DPRINTK_FLAGS_RATELIMIT_SHARED	(1<<9)
 
-#define _DPRINTK_FLAGS_ANY_RATELIMIT \
-	(_DPRINTK_FLAGS_RATELIMIT_SOLO | _DPRINTK_FLAGS_RATELIMIT_SHARED)
+/* 3-Bit Mutually Exclusive Mode Sub-Field (stored at bits 7, 8, 9) */
+#define _DPRINTK_MODE_SHIFT		7
+#define _DPRINTK_MODE_MASK		(7 << _DPRINTK_MODE_SHIFT)
 
-#define _DPRINTK_FLAGS_ENABLED (_DPRINTK_FLAGS_PRINT | _DPRINTK_FLAGS_COUNT)
-#define _DPRINTK_FLAGS_ACTIVE  (_DPRINTK_FLAGS_PRINT)
+#define _DPRINTK_MODE_DISABLED		(0 << _DPRINTK_MODE_SHIFT)
+#define _DPRINTK_MODE_PRINT		(1 << _DPRINTK_MODE_SHIFT)
+#define _DPRINTK_MODE_COUNT		(2 << _DPRINTK_MODE_SHIFT)
+#define _DPRINTK_MODE_PRINT_COUNT	(3 << _DPRINTK_MODE_SHIFT)
+#define _DPRINTK_MODE_ONCE		(4 << _DPRINTK_MODE_SHIFT)
+#define _DPRINTK_MODE_ONCE_FIRED	(5 << _DPRINTK_MODE_SHIFT)
+#define _DPRINTK_MODE_RATELIMIT_SOLO	(6 << _DPRINTK_MODE_SHIFT)
+#define _DPRINTK_MODE_RATELIMIT_SHARED	(7 << _DPRINTK_MODE_SHIFT)
+
+#define _DPRINTK_FLAGS_ACTIVE  _DPRINTK_FLAGS_ENABLED
 
 #define _DPRINTK_FLAGS_INCL_LOOKUP					\
 	(_DPRINTK_FLAGS_INCL_MODNAME | _DPRINTK_FLAGS_INCL_FUNCNAME |	\
@@ -84,7 +97,7 @@ struct _ddebug {
 	 _DPRINTK_FLAGS_INCL_STACK)
 
 #if defined DEBUG
-#define _DPRINTK_FLAGS_DEFAULT _DPRINTK_FLAGS_PRINT
+#define _DPRINTK_FLAGS_DEFAULT _DPRINTK_MODE_PRINT
 #else
 #define _DPRINTK_FLAGS_DEFAULT 0
 #endif
@@ -97,6 +110,56 @@ struct _ddebug {
 	} key;
 #endif
 } __attribute__((aligned(8)));
+
+static inline unsigned int ddebug_get_mode(unsigned int flags)
+{
+	return flags & _DPRINTK_MODE_MASK;
+}
+
+static inline void ddebug_set_mode(struct _ddebug *desc, unsigned int mode)
+{
+	desc->flags = (desc->flags & ~_DPRINTK_MODE_MASK) | (mode & _DPRINTK_MODE_MASK);
+}
+
+static inline bool ddebug_mode_has_print(unsigned int flags)
+{
+	unsigned int mode = ddebug_get_mode(flags);
+	return mode == _DPRINTK_MODE_PRINT ||
+	       mode == _DPRINTK_MODE_PRINT_COUNT ||
+	       mode == _DPRINTK_MODE_ONCE ||
+	       mode == _DPRINTK_MODE_ONCE_FIRED ||
+	       mode == _DPRINTK_MODE_RATELIMIT_SOLO ||
+	       mode == _DPRINTK_MODE_RATELIMIT_SHARED;
+}
+
+static inline bool ddebug_mode_has_count(unsigned int flags)
+{
+	unsigned int mode = ddebug_get_mode(flags);
+	return mode == _DPRINTK_MODE_COUNT ||
+	       mode == _DPRINTK_MODE_PRINT_COUNT;
+}
+
+static inline bool ddebug_mode_has_ratelimit(unsigned int flags)
+{
+	unsigned int mode = ddebug_get_mode(flags);
+	return mode == _DPRINTK_MODE_RATELIMIT_SOLO ||
+	       mode == _DPRINTK_MODE_RATELIMIT_SHARED;
+}
+
+static inline bool ddebug_mode_enabled(unsigned int flags)
+{
+	return ddebug_get_mode(flags) != _DPRINTK_MODE_DISABLED;
+}
+
+#define _DPRINTK_FLAGS_ANY_RATELIMIT \
+	(_DPRINTK_MODE_RATELIMIT_SOLO | _DPRINTK_MODE_RATELIMIT_SHARED)
+
+#define _DPRINTK_FLAGS_ENABLED \
+	(_DPRINTK_MODE_PRINT | _DPRINTK_MODE_COUNT | _DPRINTK_MODE_PRINT_COUNT | \
+	 _DPRINTK_MODE_ONCE | _DPRINTK_MODE_ONCE_FIRED | \
+	 _DPRINTK_MODE_RATELIMIT_SOLO | _DPRINTK_MODE_RATELIMIT_SHARED)
+
+#define _DPRINTK_FLAGS_ACTIVE  _DPRINTK_FLAGS_ENABLED
 
 enum ddebug_class_map_type {
 	DD_CLASS_TYPE_DISJOINT_BITS,
@@ -447,17 +510,17 @@ void __dynamic_ibdev_dbg(struct _ddebug *descriptor,
 
 #ifdef DEBUG
 #define DYNAMIC_DEBUG_BRANCH(descriptor) \
-	likely(descriptor.flags & _DPRINTK_FLAGS_PRINT)
+	likely(ddebug_mode_enabled(descriptor.flags))
 #else
 #define DYNAMIC_DEBUG_BRANCH(descriptor) \
-	unlikely(descriptor.flags & _DPRINTK_FLAGS_PRINT)
+	unlikely(ddebug_mode_enabled(descriptor.flags))
 #endif
 
 #endif /* CONFIG_JUMP_LABEL */
 
 void ddebug_increment_call_count(void);
 #define DYNAMIC_DEBUG_COUNT(descriptor) {			\
-	if (unlikely(descriptor.flags & _DPRINTK_FLAGS_COUNT))	\
+	if (unlikely(ddebug_mode_has_count(descriptor.flags)))	\
 		ddebug_increment_call_count();			\
 	}
 
@@ -473,17 +536,56 @@ void ddebug_increment_call_count(void);
  * (|_no_desc):	former gets callsite descriptor as 1st arg (for prdbgs)
  */
 
+bool ddebug_apply_ratelimit_solo(struct _ddebug *desc);
+bool ddebug_apply_ratelimit_shared(struct _ddebug *desc);
+
+/* 
+ * ddebug_apply_execution_state - Evaluates the 3-bit mode state machine.
+ * Returns true if printing should proceed, false if printing is suppressed.
+ */
+static __always_inline bool ddebug_apply_execution_state(struct _ddebug *desc)
+{
+	unsigned int mode = ddebug_get_mode(desc->flags);
+
+	/* 1. If disabled, short-circuit immediately */
+	if (unlikely(mode == _DPRINTK_MODE_DISABLED))
+		return false;
+
+	/* 2. Handle execution counting (for '+c' or '+pc' modes) */
+	if (unlikely(mode == _DPRINTK_MODE_COUNT || mode == _DPRINTK_MODE_PRINT_COUNT)) {
+		ddebug_increment_call_count();
+		if (mode == _DPRINTK_MODE_COUNT)
+			return false; /* Count-only mode, suppress printing */
+	}
+
+	/* 3. Handle once-only transitions ('+o' armed -> '+ox' fired) */
+	if (unlikely(mode == _DPRINTK_MODE_ONCE)) {
+		ddebug_set_mode(desc, _DPRINTK_MODE_ONCE_FIRED);
+		return true; /* Allow the first execution to print */
+	}
+	if (unlikely(mode == _DPRINTK_MODE_ONCE_FIRED)) {
+		return false; /* Already fired, suppress subsequent prints */
+	}
+
+	/* 4. Handle solo and shared ratelimiting */
+	if (unlikely(mode == _DPRINTK_MODE_RATELIMIT_SOLO)) {
+		return ddebug_apply_ratelimit_solo(desc);
+	}
+	if (unlikely(mode == _DPRINTK_MODE_RATELIMIT_SHARED)) {
+		return ddebug_apply_ratelimit_shared(desc);
+	}
+
+	return true; /* Standard print (_DPRINTK_MODE_PRINT) */
+}
+
 #define __dynamic_func_call_cls(id, cls, fmt, func, ...) \
 	__dynamic_func_call_flags_cls(id, cls, _DPRINTK_FLAGS_DEFAULT, fmt, func, ##__VA_ARGS__)
 
 #define __dynamic_func_call_flags_cls(id, cls, init_flags, fmt, func, ...) do { \
 	DEFINE_DYNAMIC_DEBUG_METADATA_FLAGS_CLS(id, cls, init_flags, fmt); \
-	if (DYNAMIC_DEBUG_BRANCH(id)) {				\
-		DYNAMIC_DEBUG_COUNT(id);			\
-		if (id.flags & _DPRINTK_FLAGS_ACTIVE) {		\
-			func(&id, ##__VA_ARGS__);		\
-			__dynamic_dump_stack(id);		\
-		}						\
+	if (DYNAMIC_DEBUG_BRANCH(id) && ddebug_apply_execution_state(&id)) {  \
+		func(&id, ##__VA_ARGS__);		\
+		__dynamic_dump_stack(id);		\
 	}							\
 } while (0)
 #define __dynamic_func_call(id, fmt, func, ...)				\
@@ -492,12 +594,9 @@ void ddebug_increment_call_count(void);
 
 #define __dynamic_func_call_cls_no_desc(id, cls, fmt, func, ...) do {	\
 	DEFINE_DYNAMIC_DEBUG_METADATA_CLS(id, cls, fmt);		\
-	if (DYNAMIC_DEBUG_BRANCH(id)) {					\
-		DYNAMIC_DEBUG_COUNT(id);				\
-		if (id.flags & _DPRINTK_FLAGS_ACTIVE) {			\
-			func(__VA_ARGS__);				\
-			__dynamic_dump_stack(id);			\
-		}							\
+	if (DYNAMIC_DEBUG_BRANCH(id) && ddebug_apply_execution_state(&id)) { \
+		func(__VA_ARGS__);				\
+		__dynamic_dump_stack(id);			\
 	}								\
 } while (0)
 #define __dynamic_func_call_no_desc(id, fmt, func, ...)			\

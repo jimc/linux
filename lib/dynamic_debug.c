@@ -246,6 +246,7 @@ static const struct { unsigned flag:12; char opt_char; } opt_array[] = {
 	{ _DPRINTK_FLAGS_COUNT, 'c' },
 	{ _DPRINTK_FLAGS_RATELIMIT_SOLO, 'r' },
 	{ _DPRINTK_FLAGS_RATELIMIT_SHARED, 'R' },
+	{ _DPRINTK_FLAGS_ONCE, 'o' },
 	{ _DPRINTK_FLAGS_NONE, '_' },
 };
 
@@ -1079,6 +1080,59 @@ static int ddebug_parse_flags(const char *str, struct flag_settings *modifiers)
 	}
 	v3pr_info("parsed flags=0x%x maskp=0x%x\n", modifiers->flags, modifiers->mask);
 
+	/* 1. Count how many mutually exclusive limiting modes are requested */
+	int limit_mode = 0;
+	if (modifiers->flags & _DPRINTK_FLAGS_ONCE)             limit_mode++;
+	if (modifiers->flags & _DPRINTK_FLAGS_RATELIMIT_SOLO)   limit_mode++;
+	if (modifiers->flags & _DPRINTK_FLAGS_RATELIMIT_SHARED) limit_mode++;
+
+	if (limit_mode > 1) {
+		pr_err("dyndbg: flag combo error: once ('o'), solo-ratelimit ('r'), and shared-ratelimit ('R') are mutually exclusive\n");
+		return -EINVAL;
+	}
+
+	/* 2. Prevent count ('c') from being combined with any limiting mode */
+	if ((modifiers->flags & _DPRINTK_FLAGS_COUNT) && limit_mode) {
+		pr_err("dyndbg: flag combo error: count ('c') cannot be combined with once ('o') or ratelimiting ('r', 'R')\n");
+		return -EINVAL;
+	}
+
+	/* 3. Translate parsed virtual flags to 3-bit mode */
+	{
+		unsigned int virt_flags = modifiers->flags;
+		unsigned int mode = _DPRINTK_MODE_DISABLED;
+
+		if (virt_flags & _DPRINTK_FLAGS_ONCE)
+			mode = _DPRINTK_MODE_ONCE;
+		else if (virt_flags & _DPRINTK_FLAGS_RATELIMIT_SOLO)
+			mode = _DPRINTK_MODE_RATELIMIT_SOLO;
+		else if (virt_flags & _DPRINTK_FLAGS_RATELIMIT_SHARED)
+			mode = _DPRINTK_MODE_RATELIMIT_SHARED;
+		else if ((virt_flags & _DPRINTK_FLAGS_PRINT) && (virt_flags & _DPRINTK_FLAGS_COUNT))
+			mode = _DPRINTK_MODE_PRINT_COUNT;
+		else if (virt_flags & _DPRINTK_FLAGS_PRINT)
+			mode = _DPRINTK_MODE_PRINT;
+		else if (virt_flags & _DPRINTK_FLAGS_COUNT)
+			mode = _DPRINTK_MODE_COUNT;
+
+		/* Clear virtual flags from modifiers flags and mask */
+		modifiers->flags &= ~(_DPRINTK_FLAGS_PRINT | _DPRINTK_FLAGS_COUNT |
+		                      _DPRINTK_FLAGS_RATELIMIT_SOLO | _DPRINTK_FLAGS_RATELIMIT_SHARED |
+		                      _DPRINTK_FLAGS_ONCE);
+		modifiers->mask &= ~(_DPRINTK_FLAGS_PRINT | _DPRINTK_FLAGS_COUNT |
+		                     _DPRINTK_FLAGS_RATELIMIT_SOLO | _DPRINTK_FLAGS_RATELIMIT_SHARED |
+		                     _DPRINTK_FLAGS_ONCE);
+
+		/* Merge the computed 3-bit mode back */
+		modifiers->flags |= mode;
+		if (mode == _DPRINTK_MODE_DISABLED) {
+			modifiers->mask &= ~_DPRINTK_MODE_MASK;
+		} else {
+			modifiers->mask &= ~_DPRINTK_MODE_MASK;
+			modifiers->mask |= _DPRINTK_MODE_MASK;
+		}
+	}
+
 	return 0;
 }
 
@@ -1441,9 +1495,6 @@ void __dynamic_pr_debug(struct _ddebug *descriptor, const char *fmt, ...)
 	BUG_ON(!descriptor);
 	BUG_ON(!fmt);
 
-	if (!ddebug_apply_ratelimit_all(descriptor))
-		return;
-
 	va_start(args, fmt);
 
 	vaf.fmt = fmt;
@@ -1463,9 +1514,6 @@ void __dynamic_dev_dbg(struct _ddebug *descriptor,
 
 	BUG_ON(!descriptor);
 	BUG_ON(!fmt);
-
-	if (!ddebug_apply_ratelimit_all(descriptor))
-		return;
 
 	va_start(args, fmt);
 
@@ -1497,9 +1545,6 @@ void __dynamic_netdev_dbg(struct _ddebug *descriptor,
 
 	BUG_ON(!descriptor);
 	BUG_ON(!fmt);
-
-	if (!ddebug_apply_ratelimit_all(descriptor))
-		return;
 
 	va_start(args, fmt);
 
@@ -1539,9 +1584,6 @@ void __dynamic_ibdev_dbg(struct _ddebug *descriptor,
 
 	BUG_ON(!descriptor);
 	BUG_ON(!fmt);
-
-	if (!ddebug_apply_ratelimit_all(descriptor))
-		return;
 
 	va_start(args, fmt);
 
@@ -2149,7 +2191,7 @@ static int ddebug_add_module(struct _ddebug_info *di)
 	/* Eagerly allocate wrappers for descriptors initialized with compile-time ratelimiting and printing */
 	for (i = 0; i < dt->info.descs.len; i++) {
 		struct _ddebug *dp = &dt->info.descs.start[i];
-		if ((dp->flags & _DPRINTK_FLAGS_ANY_RATELIMIT) && (dp->flags & _DPRINTK_FLAGS_PRINT))
+		if (ddebug_mode_has_ratelimit(dp->flags) && ddebug_mode_has_print(dp->flags))
 			ddebug_ratelimit_update(dp, 0, dp->flags);
 	}
 	ddebug_ratelimit_clear_query();

@@ -69,6 +69,7 @@ bool ddebug_apply_ratelimit_solo(struct _ddebug *desc)
 
 	return ret;
 }
+EXPORT_SYMBOL_GPL(ddebug_apply_ratelimit_solo);
 
 bool ddebug_apply_ratelimit_shared(struct _ddebug *desc)
 {
@@ -81,16 +82,17 @@ bool ddebug_apply_ratelimit_shared(struct _ddebug *desc)
 
 	return ret;
 }
+EXPORT_SYMBOL_GPL(ddebug_apply_ratelimit_shared);
 
 /* Store the shared wrapper during query building */
 static struct ddebug_ratelimit_shared *query_shared_wrapper;
 
 void ddebug_ratelimit_update(struct _ddebug *dp, unsigned int oldflags, unsigned int newflags)
 {
-	bool old_solo = (oldflags & _DPRINTK_FLAGS_RATELIMIT_SOLO) && (oldflags & _DPRINTK_FLAGS_PRINT);
-	bool old_shared = (oldflags & _DPRINTK_FLAGS_RATELIMIT_SHARED) && (oldflags & _DPRINTK_FLAGS_PRINT);
-	bool new_solo = (newflags & _DPRINTK_FLAGS_RATELIMIT_SOLO) && (newflags & _DPRINTK_FLAGS_PRINT);
-	bool new_shared = (newflags & _DPRINTK_FLAGS_RATELIMIT_SHARED) && (newflags & _DPRINTK_FLAGS_PRINT);
+	bool old_solo = (ddebug_get_mode(oldflags) == _DPRINTK_MODE_RATELIMIT_SOLO) && ddebug_mode_has_print(oldflags);
+	bool old_shared = (ddebug_get_mode(oldflags) == _DPRINTK_MODE_RATELIMIT_SHARED) && ddebug_mode_has_print(oldflags);
+	bool new_solo = (ddebug_get_mode(newflags) == _DPRINTK_MODE_RATELIMIT_SOLO) && ddebug_mode_has_print(newflags);
+	bool new_shared = (ddebug_get_mode(newflags) == _DPRINTK_MODE_RATELIMIT_SHARED) && ddebug_mode_has_print(newflags);
 
 	/* 1. Tear down old state if transitioning off or changing type */
 	if (old_solo && !new_solo) {
