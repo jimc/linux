@@ -170,6 +170,10 @@ struct ddebug_query {
 	const char *format;
 	const char *class_string;
 	unsigned int first_lineno, last_lineno;
+
+	/* Flags filter state */
+	unsigned int filter_set;
+	unsigned int filter_clear;
 };
 
 struct ddebug_iter {
@@ -666,6 +670,12 @@ static bool ddebug_match_desc(const struct ddebug_query *query,
 	    dp->lineno > query->last_lineno)
 		return false;
 
+	/* match against the flags filter */
+	if (query->filter_set && (dp->flags & query->filter_set) != query->filter_set)
+		return false;
+	if (query->filter_clear && (dp->flags & query->filter_clear) != 0)
+		return false;
+
 	/*
 	 * above are all satisfied, so we can make final decisions:
 	 * 1- class FOO or implied class __DEFAULT__
@@ -968,6 +978,25 @@ static int ddebug_parse_query(char *words[], int nwords,
 				return -EINVAL;
 		} else if (!strcmp(keyword, "class")) {
 			rc = check_set(&query->class_string, arg, "class");
+		} else if (!strcmp(keyword, "flags")) {
+			const char *p = arg;
+			int op = 0, j;
+			while (*p) {
+				if (*p == '+' || *p == '-' || *p == '=') {
+					op = *p++;
+					continue;
+				}
+				for (j = 0; j < ARRAY_SIZE(opt_array); j++) {
+					if (*p == opt_array[j].opt_char) {
+						if (op == '+')
+							query->filter_set |= opt_array[j].flag;
+						else if (op == '-')
+							query->filter_clear |= opt_array[j].flag;
+						break;
+					}
+				}
+				p++;
+			}
 		} else {
 			pr_err("unknown keyword \"%s\"\n", keyword);
 			return -EINVAL;
