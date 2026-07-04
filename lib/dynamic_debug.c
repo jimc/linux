@@ -2102,6 +2102,13 @@ static int ddebug_add_module(struct _ddebug_info *di)
 
 	mutex_lock(&ddebug_lock);
 	list_add_tail(&dt->link, &ddebug_tables);
+	/* Eagerly allocate wrappers for descriptors initialized with compile-time ratelimiting and printing */
+	for (i = 0; i < dt->info.descs.len; i++) {
+		struct _ddebug *dp = &dt->info.descs.start[i];
+		if ((dp->flags & _DPRINTK_FLAGS_ANY_RATELIMIT) && (dp->flags & _DPRINTK_FLAGS_PRINT))
+			ddebug_ratelimit_update(dp, 0, dp->flags);
+	}
+	ddebug_ratelimit_clear_query();
 	mutex_unlock(&ddebug_lock);
 	if (dt->info.users.len)
 		ddebug_apply_class_users(&dt->info);

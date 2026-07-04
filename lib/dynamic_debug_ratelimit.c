@@ -87,10 +87,10 @@ static struct ddebug_ratelimit_shared *query_shared_wrapper;
 
 void ddebug_ratelimit_update(struct _ddebug *dp, unsigned int oldflags, unsigned int newflags)
 {
-	bool old_solo = !!(oldflags & _DPRINTK_FLAGS_RATELIMIT_SOLO);
-	bool old_shared = !!(oldflags & _DPRINTK_FLAGS_RATELIMIT_SHARED);
-	bool new_solo = !!(newflags & _DPRINTK_FLAGS_RATELIMIT_SOLO);
-	bool new_shared = !!(newflags & _DPRINTK_FLAGS_RATELIMIT_SHARED);
+	bool old_solo = (oldflags & _DPRINTK_FLAGS_RATELIMIT_SOLO) && (oldflags & _DPRINTK_FLAGS_PRINT);
+	bool old_shared = (oldflags & _DPRINTK_FLAGS_RATELIMIT_SHARED) && (oldflags & _DPRINTK_FLAGS_PRINT);
+	bool new_solo = (newflags & _DPRINTK_FLAGS_RATELIMIT_SOLO) && (newflags & _DPRINTK_FLAGS_PRINT);
+	bool new_shared = (newflags & _DPRINTK_FLAGS_RATELIMIT_SHARED) && (newflags & _DPRINTK_FLAGS_PRINT);
 
 	/* 1. Tear down old state if transitioning off or changing type */
 	if (old_solo && !new_solo) {
