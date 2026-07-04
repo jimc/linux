@@ -994,46 +994,61 @@ static int ddebug_parse_query(char *words[], int nwords,
 static int ddebug_parse_flags(const char *str, struct flag_settings *modifiers)
 {
 	int op, i;
+	unsigned int flags;
 
-	switch (*str) {
-	case '+':
-	case '-':
-	case '=':
-		op = *str++;
-		break;
-	default:
-		pr_err("bad flag-op %c, at start of %s\n", *str, str);
-		return -EINVAL;
-	}
+	/* Initialize to keep existing flags by default */
+	modifiers->mask = ~0U;
+	modifiers->flags = 0;
 
-	for (; *str ; ++str) {
-		for (i = ARRAY_SIZE(opt_array) - 1; i >= 0; i--) {
-			if (*str == opt_array[i].opt_char) {
-				modifiers->flags |= opt_array[i].flag;
-				break;
-			}
-		}
-		if (i < 0) {
-			pr_err("unknown flag '%c'\n", *str);
+	while (*str) {
+		switch (*str) {
+		case '+':
+		case '-':
+		case '=':
+			op = *str++;
+			break;
+		default:
+			pr_err("bad flag-op %c, at start of %s\n", *str, str);
 			return -EINVAL;
 		}
-	}
 
-	/* calculate final flags, mask based upon op */
-	switch (op) {
-	case '=':
-		/* modifiers->flags already set */
-		modifiers->mask = 0;
-		break;
-	case '+':
-		modifiers->mask = ~0U;
-		break;
-	case '-':
-		modifiers->mask = ~modifiers->flags;
-		modifiers->flags = 0;
-		break;
+		if (!*str) {
+			pr_err("missing flags after op %c\n", op);
+			return -EINVAL;
+		}
+
+		flags = 0;
+		for (; *str && *str != '+' && *str != '-' && *str != '='; ++str) {
+			for (i = ARRAY_SIZE(opt_array) - 1; i >= 0; i--) {
+				if (*str == opt_array[i].opt_char) {
+					flags |= opt_array[i].flag;
+					break;
+				}
+			}
+			if (i < 0) {
+				pr_err("unknown flag '%c'\n", *str);
+				return -EINVAL;
+			}
+		}
+
+		/* Sequentially compound this operation to overall mask/flags */
+		switch (op) {
+		case '=':
+			modifiers->mask = 0;
+			modifiers->flags = flags;
+			break;
+		case '+':
+			modifiers->mask |= flags;
+			modifiers->flags |= flags;
+			break;
+		case '-':
+			modifiers->mask &= ~flags;
+			modifiers->flags &= ~flags;
+			break;
+		}
+		v3pr_info("op='%c' flags=0x%x maskp=0x%x\n", op, modifiers->flags, modifiers->mask);
 	}
-	v3pr_info("op='%c' flags=0x%x maskp=0x%x\n", op, modifiers->flags, modifiers->mask);
+	v3pr_info("parsed flags=0x%x maskp=0x%x\n", modifiers->flags, modifiers->mask);
 
 	return 0;
 }
