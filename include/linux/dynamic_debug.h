@@ -400,7 +400,7 @@ void __dynamic_ibdev_dbg(struct _ddebug *descriptor,
 		dump_stack();					\
 }
 
-#define DEFINE_DYNAMIC_DEBUG_METADATA_CLS(name, cls, fmt, ...)	\
+#define DEFINE_DYNAMIC_DEBUG_METADATA_FLAGS_CLS(name, cls, init_flags, fmt, ...) \
 	static const char __section("__dyndbg_strings_mod") name ##_mod[] = DDEBUG_MODNAME; \
 	static const char __section("__dyndbg_strings_file") name ##_file[] = __FILE__; \
 	static const struct _ddebug_site  __aligned(8) __used	\
@@ -413,12 +413,15 @@ void __dynamic_ibdev_dbg(struct _ddebug *descriptor,
 	__section("__dyndbg_descs") name = {			\
 		.format = (fmt),				\
 		.lineno = (__LINE__ > DDEBUG_LINE_MAX ? DDEBUG_LINE_MAX : __LINE__), \
-		.flags = _DPRINTK_FLAGS_DEFAULT,		\
+		.flags = (init_flags),				\
 		.class_id = cls,				\
 		_DPRINTK_KEY_INIT				\
 	};							\
 	BUILD_BUG_ON_MSG(cls > _DPRINTK_CLASS_DFLT,		\
 			 "classid value overflow")
+
+#define DEFINE_DYNAMIC_DEBUG_METADATA_CLS(name, cls, fmt, ...)	\
+	DEFINE_DYNAMIC_DEBUG_METADATA_FLAGS_CLS(name, cls, _DPRINTK_FLAGS_DEFAULT, fmt, ##__VA_ARGS__)
 
 #define DEFINE_DYNAMIC_DEBUG_METADATA(name, fmt)		\
 	DEFINE_DYNAMIC_DEBUG_METADATA_CLS(name, _DPRINTK_CLASS_DFLT, fmt)
@@ -470,8 +473,11 @@ void ddebug_increment_call_count(void);
  * (|_no_desc):	former gets callsite descriptor as 1st arg (for prdbgs)
  */
 
-#define __dynamic_func_call_cls(id, cls, fmt, func, ...) do {	\
-	DEFINE_DYNAMIC_DEBUG_METADATA_CLS(id, cls, fmt);	\
+#define __dynamic_func_call_cls(id, cls, fmt, func, ...) \
+	__dynamic_func_call_flags_cls(id, cls, _DPRINTK_FLAGS_DEFAULT, fmt, func, ##__VA_ARGS__)
+
+#define __dynamic_func_call_flags_cls(id, cls, init_flags, fmt, func, ...) do { \
+	DEFINE_DYNAMIC_DEBUG_METADATA_FLAGS_CLS(id, cls, init_flags, fmt); \
 	if (DYNAMIC_DEBUG_BRANCH(id)) {				\
 		DYNAMIC_DEBUG_COUNT(id);			\
 		if (id.flags & _DPRINTK_FLAGS_ACTIVE) {		\
@@ -510,6 +516,11 @@ void ddebug_increment_call_count(void);
 	__dynamic_func_call_cls(__UNIQUE_ID(_ddebug), cls, fmt, func, ##__VA_ARGS__)
 #define _dynamic_func_call(fmt, func, ...)				\
 	_dynamic_func_call_cls(_DPRINTK_CLASS_DFLT, fmt, func, ##__VA_ARGS__)
+
+#define _dynamic_func_call_flags_cls(cls, flags, fmt, func, ...)	\
+	__dynamic_func_call_flags_cls(__UNIQUE_ID(_ddebug), cls, flags, fmt, func, ##__VA_ARGS__)
+#define _dynamic_func_call_flags(flags, fmt, func, ...)			\
+	_dynamic_func_call_flags_cls(_DPRINTK_CLASS_DFLT, flags, fmt, func, ##__VA_ARGS__)
 
 /*
  * A variant that does the same, except that the descriptor is not
