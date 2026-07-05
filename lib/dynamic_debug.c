@@ -256,10 +256,35 @@ struct flagsbuf { char buf[ARRAY_SIZE(opt_array)+1]; };
 static char *ddebug_describe_flags(unsigned int flags, struct flagsbuf *fb)
 {
 	char *p = fb->buf;
+	unsigned int virt_flags = flags & ~_DPRINTK_MODE_MASK;
 	int i;
 
+	switch (ddebug_get_mode(flags)) {
+	case _DPRINTK_MODE_PRINT:
+		virt_flags |= _DPRINTK_FLAGS_PRINT;
+		break;
+	case _DPRINTK_MODE_COUNT:
+		virt_flags |= _DPRINTK_FLAGS_COUNT;
+		break;
+	case _DPRINTK_MODE_PRINT_COUNT:
+		virt_flags |= _DPRINTK_FLAGS_PRINT | _DPRINTK_FLAGS_COUNT;
+		break;
+	case _DPRINTK_MODE_ONCE:
+	case _DPRINTK_MODE_ONCE_FIRED:
+		virt_flags |= _DPRINTK_FLAGS_ONCE;
+		break;
+	case _DPRINTK_MODE_RATELIMIT_SOLO:
+		virt_flags |= _DPRINTK_FLAGS_RATELIMIT_SOLO;
+		break;
+	case _DPRINTK_MODE_RATELIMIT_SHARED:
+		virt_flags |= _DPRINTK_FLAGS_RATELIMIT_SHARED;
+		break;
+	default:
+		break;
+	}
+
 	for (i = 0; i < ARRAY_SIZE(opt_array); ++i)
-		if (flags & opt_array[i].flag)
+		if (virt_flags & opt_array[i].flag)
 			*p++ = opt_array[i].opt_char;
 	if (p == fb->buf)
 		*p++ = '_';
