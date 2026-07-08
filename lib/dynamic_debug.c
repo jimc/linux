@@ -40,6 +40,8 @@
 #include <linux/sched.h>
 #include <linux/device.h>
 #include <linux/netdevice.h>
+#include <linux/zstd.h>
+#include <linux/vmalloc.h>
 
 #include <rdma/ib_verbs.h>
 
@@ -55,6 +57,8 @@ extern struct ddebug_class_user __stop___dyndbg_class_users[];
 struct ddebug_table {
 	struct list_head link;
 	struct _ddebug_info info;
+	void *compressed_sites;
+	unsigned long compressed_len;
 };
 
 struct ddebug_query {
@@ -123,6 +127,7 @@ static unsigned int pr_prefixes_count;
 
 static unsigned long ddebug_prefix_key(const struct _ddebug *desc);
 static void ddebug_drop_cached_prefix(const struct _ddebug *dp);
+static int ddebug_reconstruct_site_map(void);
 #define prefix_flags(flags)  (flags & _DPRINTK_FLAGS_INCL_LOOKUP)
 
 /* Return the path relative to source root */
@@ -415,6 +420,11 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 
 	/* search for matching ddebugs */
 	mutex_lock(&ddebug_lock);
+
+	/* Reconstruct the global site map if it was shrunk */
+	if (ddebug_reconstruct_site_map())
+		pr_warn("Failed to reconstruct site map\n");
+
 	list_for_each_entry(dt, &ddebug_tables, link) {
 		struct _ddebug_info *di = &dt->info;
 		struct ddebug_class_map *mods_map;
@@ -1405,6 +1415,7 @@ static int ddebug_proc_show(struct seq_file *m, void *p)
 		return 0;
 	}
 
+	ddebug_reconstruct_site_map();
 	ddebug_resolve_site(&dd_site_map, dp, NULL, &filename, &function);
 
 	seq_printf(m, "%s:%u [%s]%s =%s \"",
@@ -1751,6 +1762,169 @@ static int ddebug_grow_tree(struct _ddebug_info *di,
 	return count;
 }
 
+static void *dd_builtin_compressed_sites;
+static unsigned long dd_builtin_compressed_len;
+
+static void *ddebug_zstd_alloc(void *opaque, size_t size)
+{
+	return kvmalloc(size, GFP_KERNEL);
+}
+
+static void ddebug_zstd_free(void *opaque, void *address)
+{
+	kvfree(address);
+}
+
+static const ZSTD_customMem ddebug_zstd_mem = {
+	.customAlloc = ddebug_zstd_alloc,
+	.customFree = ddebug_zstd_free,
+	.opaque = NULL,
+};
+
+static int ddebug_compress_sites(const char *name,
+				 const struct _ddebug_site *sites,
+				 unsigned int count,
+				 void **out_buf,
+				 unsigned long *out_len)
+{
+	unsigned long src_len = count * sizeof(struct _ddebug_site);
+	unsigned long max_dst_len = ZSTD_compressBound(src_len);
+	ZSTD_CCtx *cctx;
+	void *dst;
+	size_t clen;
+
+	if (!count) {
+		*out_buf = NULL;
+		*out_len = 0;
+		return 0;
+	}
+
+	cctx = ZSTD_createCCtx_advanced(ddebug_zstd_mem);
+	if (!cctx)
+		return -ENOMEM;
+
+	dst = kvmalloc(max_dst_len, GFP_KERNEL);
+	if (!dst) {
+		ZSTD_freeCCtx(cctx);
+		return -ENOMEM;
+	}
+
+	clen = ZSTD_compressCCtx(cctx, dst, max_dst_len, sites, src_len, 3);
+	ZSTD_freeCCtx(cctx);
+
+	if (ZSTD_isError(clen)) {
+		kvfree(dst);
+		return -EINVAL;
+	}
+
+	*out_len = clen;
+	/* Reallocate to exact size to save memory */
+	*out_buf = kvmalloc(clen, GFP_KERNEL);
+	if (!*out_buf) {
+		kvfree(dst);
+		return -ENOMEM;
+	}
+	memcpy(*out_buf, dst, clen);
+	kvfree(dst);
+
+	v3pr_info("compressed %s sites: %u records, %lu bytes -> %zu bytes (%lu%% savings)\n",
+		  name, count, src_len, clen,
+		  src_len ? 100 - (clen * 100 / src_len) : 0);
+	return 0;
+}
+
+static int ddebug_decompress_sites(void *src, unsigned long src_len,
+				   struct _ddebug_site **out_sites,
+				   unsigned int count)
+{
+	unsigned long dst_len = count * sizeof(struct _ddebug_site);
+	struct _ddebug_site *dst;
+	ZSTD_DCtx *dctx;
+	size_t dlen;
+
+	if (!count || !src) {
+		*out_sites = NULL;
+		return 0;
+	}
+
+	dctx = ZSTD_createDCtx_advanced(ddebug_zstd_mem);
+	if (!dctx)
+		return -ENOMEM;
+
+	dst = kvmalloc(dst_len, GFP_KERNEL);
+	if (!dst) {
+		ZSTD_freeDCtx(dctx);
+		return -ENOMEM;
+	}
+
+	dlen = ZSTD_decompressDCtx(dctx, dst, dst_len, src, src_len);
+	ZSTD_freeDCtx(dctx);
+
+	if (ZSTD_isError(dlen)) {
+		kvfree(dst);
+		return -EINVAL;
+	}
+
+	*out_sites = dst;
+	return 0;
+}
+
+static void ddebug_condense_sites(struct _ddebug_info *di);
+
+static int ddebug_reconstruct_site_map(void)
+{
+	struct ddebug_table *dt;
+	struct _ddebug_info di;
+	struct _ddebug_site *decompressed_sites = NULL;
+	int ret;
+
+	if (!mtree_empty(&dd_site_map))
+		return 0;
+
+	/* 1. Reconstruct built-in site map */
+	if (dd_builtin_compressed_sites) {
+		unsigned int count = __stop___dyndbg_descs - __start___dyndbg_descs;
+
+		ret = ddebug_decompress_sites(dd_builtin_compressed_sites,
+					      dd_builtin_compressed_len,
+					      &decompressed_sites, count);
+		if (ret)
+			return ret;
+
+		di.descs.start = __start___dyndbg_descs;
+		di.descs.len = count;
+		di.sites.start = decompressed_sites;
+		di.sites.len = count;
+
+		ddebug_condense_sites(&di);
+		kvfree(decompressed_sites);
+	}
+
+	/* 2. Reconstruct loadable module site maps */
+	list_for_each_entry(dt, &ddebug_tables, link) {
+		if (dt->info.descs.start >= __start___dyndbg_descs &&
+		    dt->info.descs.start < __stop___dyndbg_descs)
+			continue;
+
+		if (dt->compressed_sites) {
+			ret = ddebug_decompress_sites(dt->compressed_sites,
+						      dt->compressed_len,
+						      &decompressed_sites,
+						      dt->info.descs.len);
+			if (ret)
+				continue;
+
+			di = dt->info;
+			di.sites.start = decompressed_sites;
+			di.sites.len = dt->info.descs.len;
+
+			ddebug_condense_sites(&di);
+			kvfree(decompressed_sites);
+		}
+	}
+
+	return 0;
+}
 static void ddebug_condense_sites(struct _ddebug_info *di)
 {
 	int funcs = 0, files = 0, mods = 0;
@@ -1811,7 +1985,16 @@ static int ddebug_add_module(struct _ddebug_info *di)
 	 * the module's presence.
 	 */
 	dt->info = *di;
-	ddebug_condense_sites(&dt->info);
+
+	if (dt->info.sites.len) {
+		unsigned int count = dt->info.sites.len;
+
+		ddebug_condense_sites(&dt->info);
+
+		/* Compress the sites data so we can shrink the tree later */
+		ddebug_compress_sites(dt->info.mod_name, dt->info.sites.start, count,
+				      &dt->compressed_sites, &dt->compressed_len);
+	}
 	dd_set_module_subrange(i, cm, &dt->info, maps);
 	dd_set_module_subrange(i, cli, &dt->info, users);
 
@@ -1915,6 +2098,7 @@ int ddebug_dyndbg_module_param_cb(char *param, char *val, const char *module)
 static void ddebug_table_free(struct ddebug_table *dt)
 {
 	list_del_init(&dt->link);
+	kvfree(dt->compressed_sites);
 	kfree(dt);
 }
 
@@ -2064,15 +2248,65 @@ static void ddebug_drop_cached_prefix(const struct _ddebug *dp)
 	}
 }
 
+#include <linux/shrinker.h>
+
+static unsigned long ddebug_shrinker_count(struct shrinker *shrinker,
+					   struct shrink_control *sc)
+{
+	unsigned long count = 0;
+
+	mutex_lock(&ddebug_lock);
+	if (!mtree_empty(&dd_site_map))
+		count += 1000; /* Arbitrary high cost for site tree */
+
+	if (!mtree_empty(&pr_prefixes))
+		count += pr_prefixes_count;
+	mutex_unlock(&ddebug_lock);
+
+	return count ? count : SHRINK_EMPTY;
+}
+
+static unsigned long ddebug_shrinker_scan(struct shrinker *shrinker,
+					  struct shrink_control *sc)
+{
+	unsigned long freed = 0;
+
+	mutex_lock(&ddebug_lock);
+
+	/* 1. Free global site map */
+	if (!mtree_empty(&dd_site_map)) {
+		__mt_destroy(&dd_site_map);
+		freed += 1000;
+	}
+
+	/* 2. Free prefix cache */
+	if (!mtree_empty(&pr_prefixes)) {
+		__mt_destroy(&pr_prefixes);
+		pr_prefixes_count = 0;
+		freed += 1000;
+	}
+
+	mutex_unlock(&ddebug_lock);
+
+	return freed ? freed : SHRINK_STOP;
+}
 static __initdata int ddebug_init_success;
 
 static int __init dynamic_debug_init_control(void)
 {
 	struct proc_dir_entry *procfs_dir;
 	struct dentry *debugfs_dir;
+	struct shrinker *shrinker;
 
 	if (!ddebug_init_success)
 		return -ENODEV;
+
+	shrinker = shrinker_alloc(0, "dynamic_debug");
+	if (shrinker) {
+		shrinker->count_objects = ddebug_shrinker_count;
+		shrinker->scan_objects = ddebug_shrinker_scan;
+		shrinker_register(shrinker);
+	}
 
 	/* Create the control file in debugfs if it is enabled */
 	if (debugfs_initialized()) {
@@ -2131,6 +2365,8 @@ static int __init dynamic_debug_init(void)
 		const char *cur_mod = di.sites.start[0]._modname;
 
 		ddebug_condense_sites(&di);
+		ddebug_compress_sites("builtin", di.sites.start, count,
+				      &dd_builtin_compressed_sites, &dd_builtin_compressed_len);
 
 		for (i = 0; i < count; i++) {
 			const char *p_mod = di.sites.start[i]._modname;
