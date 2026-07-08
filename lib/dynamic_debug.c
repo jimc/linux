@@ -55,6 +55,7 @@ extern struct ddebug_class_user __stop___dyndbg_class_users[];
 struct ddebug_table {
 	struct list_head link;
 	struct _ddebug_info info;
+	struct maple_tree *site_map;
 };
 
 struct ddebug_query {
@@ -106,7 +107,12 @@ MODULE_PARM_DESC(verbose, " dynamic_debug/control processing "
  * non-overlapping) ranges intrinsically.  At runtime, they provide
  * values for use in `cat control` & `echo $cmd >control`
  */
-static DEFINE_MTREE(dd_site_map);
+static DEFINE_MTREE(dd_builtin_site_map);
+
+static inline struct maple_tree *ddebug_get_site_map(struct ddebug_table *dt)
+{
+	return dt && dt->site_map ? dt->site_map : &dd_builtin_site_map;
+}
 
 #define DD_KEY_ALIGN_MASK   7UL
 
@@ -348,14 +354,32 @@ static void ddebug_resolve_site(struct maple_tree *mt, const struct _ddebug *dp,
 static const char *desc_function(struct _ddebug const *dp)
 {
 	const char *func;
-	ddebug_resolve_site(&dd_site_map, dp, NULL, NULL, &func);
+	struct ddebug_table *dt;
+	struct maple_tree *site_map = &dd_builtin_site_map;
+	list_for_each_entry(dt, &ddebug_tables, link) {
+		if (dp >= dt->info.descs.start &&
+		    dp < dt->info.descs.start + dt->info.descs.len) {
+			site_map = ddebug_get_site_map(dt);
+			break;
+		}
+	}
+	ddebug_resolve_site(site_map, dp, NULL, NULL, &func);
 	return func;
 }
 
 static const char *desc_filename(struct _ddebug const *dp)
 {
 	const char *file;
-	ddebug_resolve_site(&dd_site_map, dp, NULL, &file, NULL);
+	struct ddebug_table *dt;
+	struct maple_tree *site_map = &dd_builtin_site_map;
+	list_for_each_entry(dt, &ddebug_tables, link) {
+		if (dp >= dt->info.descs.start &&
+		    dp < dt->info.descs.start + dt->info.descs.len) {
+			site_map = ddebug_get_site_map(dt);
+			break;
+		}
+	}
+	ddebug_resolve_site(site_map, dp, NULL, &file, NULL);
 	return file;
 }
 
@@ -370,11 +394,12 @@ static bool ddebug_match_desc(const struct ddebug_query *query,
 			      struct _ddebug_info *di,
 			      int selected_class)
 {
-	struct ddebug_class_map *site_map;
+	struct ddebug_class_map *class_map;
+	struct ddebug_table *dt = container_of(di, struct ddebug_table, info);
 	const char *dp_filename = NULL, *dp_function = NULL;
 
 	/* get site vals needed to match this query */
-	ddebug_resolve_site(&dd_site_map, dp, NULL,
+	ddebug_resolve_site(ddebug_get_site_map(dt), dp, NULL,
 			    query->filename ? &dp_filename : NULL,
 			    query->function ? &dp_function : NULL);
 
@@ -435,14 +460,14 @@ static bool ddebug_match_desc(const struct ddebug_query *query,
 		return true;
 	}
 	/* site is class'd */
-	site_map = ddebug_find_map_by_class_id(di, dp->class_id);
-	if (!site_map) {
+	class_map = ddebug_find_map_by_class_id(di, dp->class_id);
+	if (!class_map) {
 		pr_warn_ratelimited("unknown class_id %d, check %s's CLASSMAP definitions\n",
 			  dp->class_id, di->mod_name);
 		return false;
 	}
 	/* module(-param) decides protection */
-	return !ddebug_class_wants_protection(site_map);
+	return !ddebug_class_wants_protection(class_map);
 }
 
 static int ddebug_change(const struct ddebug_query *query, struct flag_settings *modifiers)
@@ -1061,8 +1086,21 @@ static int __dynamic_emit_lookup(const struct _ddebug *desc, char *buf, int star
 	 */
 	{
 		const char *mod = NULL, *file = NULL, *func = NULL;
+		struct ddebug_table *dt;
+		struct maple_tree *site_map = &dd_builtin_site_map;
 
-		ddebug_resolve_site(&dd_site_map, desc,
+		/* Locate the table for this descriptor to find its specific site_map */
+		mutex_lock(&ddebug_lock);
+		list_for_each_entry(dt, &ddebug_tables, link) {
+			if (desc >= dt->info.descs.start &&
+			    desc < dt->info.descs.start + dt->info.descs.len) {
+				site_map = ddebug_get_site_map(dt);
+				break;
+			}
+		}
+		mutex_unlock(&ddebug_lock);
+
+		ddebug_resolve_site(site_map, desc,
 				    (desc->flags & _DPRINTK_FLAGS_INCL_MODNAME) ? &mod : NULL,
 				    (desc->flags & _DPRINTK_FLAGS_INCL_SOURCENAME) ? &file : NULL,
 				    (desc->flags & _DPRINTK_FLAGS_INCL_FUNCNAME) ? &func : NULL);
@@ -1449,7 +1487,7 @@ static int ddebug_proc_show(struct seq_file *m, void *p)
 		return 0;
 	}
 
-	ddebug_resolve_site(&dd_site_map, dp, NULL, &filename, &function);
+	ddebug_resolve_site(ddebug_get_site_map(iter->table), dp, NULL, &filename, &function);
 
 	seq_printf(m, "%s:%u [%s]%s =%s \"",
 		   trim_prefix(filename), dp->lineno,
@@ -1804,7 +1842,7 @@ static int ddebug_grow_tree(struct _ddebug_info *di,
 	return count;
 }
 
-static void ddebug_condense_sites(struct _ddebug_info *di)
+static void ddebug_condense_sites(struct _ddebug_info *di, struct maple_tree *mt)
 {
 	int funcs = 0, files = 0, mods = 0;
 
@@ -1814,11 +1852,11 @@ static void ddebug_condense_sites(struct _ddebug_info *di)
 	if (WARN_ON(di->descs.len != di->sites.len))
 		return;
 
-	funcs = ddebug_grow_tree(di, &dd_site_map,
+	funcs = ddebug_grow_tree(di, mt,
 				 "func", ddebug_get_function, DD_TAG_FUNC);
-	files = ddebug_grow_tree(di, &dd_site_map,
+	files = ddebug_grow_tree(di, mt,
 				 "file", ddebug_get_filename, DD_TAG_FILE);
-	mods = ddebug_grow_tree(di, &dd_site_map,
+	mods = ddebug_grow_tree(di, mt,
 				"mod", ddebug_get_modname, DD_TAG_MOD);
 
 	ddebug_log_compression_stats(di->descs.len, mods, files, funcs);
@@ -1864,7 +1902,22 @@ static int ddebug_add_module(struct _ddebug_info *di)
 	 * the module's presence.
 	 */
 	dt->info = *di;
-	ddebug_condense_sites(&dt->info);
+	
+	/*
+	 * Built-in modules (which have di->sites.len == 0 here because they
+	 * were condensed globally in dynamic_debug_init) will leave site_map NULL.
+	 * Loadable modules get their own dedicated site_map tree.
+	 */
+	if (dt->info.sites.len) {
+		dt->site_map = kzalloc(sizeof(*dt->site_map), GFP_KERNEL);
+		if (!dt->site_map) {
+			err = -ENOMEM;
+			goto cleanup;
+		}
+		mt_init_flags(dt->site_map, MT_FLAGS_USE_RCU);
+		ddebug_condense_sites(&dt->info, dt->site_map);
+	}
+
 	dd_set_module_subrange(i, cm, &dt->info, maps);
 	dd_set_module_subrange(i, cli, &dt->info, users);
 
@@ -1974,22 +2027,21 @@ static void ddebug_table_free(struct ddebug_table *dt)
 #ifdef CONFIG_MODULES
 
 /*
- * clear the 3 maple trees containing __dyndbg_sites info of their
+ * clear the maple tree containing __dyndbg_sites info of their
  * contents for a module being rmmod'd.
  */
-static void ddebug_module_sites_clear(const struct _ddebug_info *di)
+static void ddebug_module_sites_clear(struct ddebug_table *dt)
 {
-	unsigned long start = (unsigned long) di->descs.start;
-	unsigned long end = (unsigned long) &di->descs.start[di->descs.len - 1];
-
-	MA_STATE(mas, &dd_site_map, start - DD_KEY_MOD_OFFSET, end);
+	if (!dt->site_map)
+		return; /* Built-in modules share the global tree */
 
 	v2pr_info("clearing %3d debugs of removed module %s\n",
-		  di->descs.len, di->mod_name);
+		  dt->info.descs.len, dt->info.mod_name);
 
-	mas_lock(&mas);
-	mas_erase(&mas);
-	mas_unlock(&mas);
+	/* Safely destroy the isolated per-module site map and free the tree allocation */
+	mtree_destroy(dt->site_map);
+	kfree(dt->site_map);
+	dt->site_map = NULL;
 }
 
 /*
@@ -2010,7 +2062,7 @@ static int ddebug_remove_module(const char *mod_name)
 		if (dt->info.mod_name == mod_name) {
 			ddebug_drop_all_cached_prefixes(&dt->info);
 
-			ddebug_module_sites_clear(&dt->info);
+			ddebug_module_sites_clear(dt);
 			ddebug_table_free(dt);
 			ret = 0;
 			break;
@@ -2124,8 +2176,18 @@ static void ddebug_add_cached_prefix(struct _ddebug *dp)
 
 	{
 		const char *mod = NULL, *file = NULL, *func = NULL;
+		struct ddebug_table *dt;
+		struct maple_tree *site_map = &dd_builtin_site_map;
 
-		ddebug_resolve_site(&dd_site_map, dp,
+		list_for_each_entry(dt, &ddebug_tables, link) {
+			if (dp >= dt->info.descs.start &&
+			    dp < dt->info.descs.start + dt->info.descs.len) {
+				site_map = ddebug_get_site_map(dt);
+				break;
+			}
+		}
+
+		ddebug_resolve_site(site_map, dp,
 				    (dp->flags & _DPRINTK_FLAGS_INCL_MODNAME) ? &mod : NULL,
 				    (dp->flags & _DPRINTK_FLAGS_INCL_SOURCENAME) ? &file : NULL,
 				    (dp->flags & _DPRINTK_FLAGS_INCL_FUNCNAME) ? &func : NULL);
@@ -2226,6 +2288,8 @@ static void ddebug_prefix_range(const struct _ddebug *desc,
 	unsigned long start = addr;
 	unsigned long end = addr;
 	uint8_t flags = prefix_flags(desc->flags);
+	struct ddebug_table *dt;
+	struct maple_tree *site_map = &dd_builtin_site_map;
 
 	if (flags & _DPRINTK_FLAGS_INCL_LINENO) {
 		/*
@@ -2236,10 +2300,18 @@ static void ddebug_prefix_range(const struct _ddebug *desc,
 		return;
 	}
 
+	list_for_each_entry(dt, &ddebug_tables, link) {
+		if (desc >= dt->info.descs.start &&
+		    desc < dt->info.descs.start + dt->info.descs.len) {
+			site_map = ddebug_get_site_map(dt);
+			break;
+		}
+	}
+
 	/* 1. Module Level (Always the base for sharing) */
 	{
 		unsigned long mod_start, mod_end;
-		ddebug_resolve_range(&dd_site_map, addr, &mod_start, &mod_end, DD_TAG_MOD);
+		ddebug_resolve_range(site_map, addr, &mod_start, &mod_end, DD_TAG_MOD);
 		start = mod_start;
 		end = mod_end;
 	}
@@ -2247,7 +2319,7 @@ static void ddebug_prefix_range(const struct _ddebug *desc,
 	/* 2. File Level (Narrow further if +s is set) */
 	if (flags & _DPRINTK_FLAGS_INCL_SOURCENAME) {
 		unsigned long file_start, file_end;
-		ddebug_resolve_range(&dd_site_map, addr, &file_start, &file_end, DD_TAG_FILE);
+		ddebug_resolve_range(site_map, addr, &file_start, &file_end, DD_TAG_FILE);
 		start = max(start, file_start);
 		end = min(end, file_end);
 	}
@@ -2255,7 +2327,7 @@ static void ddebug_prefix_range(const struct _ddebug *desc,
 	/* 3. Function Level (Narrow if +f is set) */
 	if (flags & _DPRINTK_FLAGS_INCL_FUNCNAME) {
 		unsigned long func_start, func_end;
-		ddebug_resolve_range(&dd_site_map, addr, &func_start, &func_end, DD_TAG_FUNC);
+		ddebug_resolve_range(site_map, addr, &func_start, &func_end, DD_TAG_FUNC);
 		start = max(start, func_start);
 		end = min(end, func_end);
 	}
@@ -2337,7 +2409,7 @@ static int __init dynamic_debug_init(void)
 	 * their intervals, and then walk the module intervals and
 	 * call add_module for each.
 	 */
-	ddebug_condense_sites(&di);
+	ddebug_condense_sites(&di, &dd_builtin_site_map);
 
 	/*
 	 * under rcu-lock, gather the modules' descriptor intervals
@@ -2345,7 +2417,7 @@ static int __init dynamic_debug_init(void)
 	 */
 	rcu_read_lock();
 	{
-		MA_STATE(mas, &dd_site_map, 0, ULONG_MAX);
+		MA_STATE(mas, &dd_builtin_site_map, 0, ULONG_MAX);
 		void *val_ptr;
 		mas_for_each(&mas, val_ptr, ULONG_MAX) {
 			if ((mas.index & DD_KEY_ALIGN_MASK) == DD_KEY_MOD_ALIGN) {
