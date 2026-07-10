@@ -962,29 +962,30 @@ static int remaining(int wrote)
 
 static int __dynamic_emit_lookup(const struct _ddebug *desc, char *buf, int start)
 {
-	char *prefix, *new_prefix;
+	char *prefix;
 	int pos = start;
 	unsigned long key;
-	unsigned long flags;
 
 	if (!(desc->flags & _DPRINTK_FLAGS_INCL_LOOKUP))
 		return pos;
 
 	key = ddebug_prefix_key(desc);
 
-	/* guard against other pr_debugs and prefix drops */
 	rcu_read_lock();
 	prefix = mtree_load(&pr_prefixes, key);
 	rcu_read_unlock();
 
-	if (prefix) {
+	if (likely(prefix)) {
 		pos += snprintf(buf + pos, remaining(pos), "%s", prefix);
 		v4pr_info("using cached prefix: %s\n", prefix);
 		return pos;
 	}
+
 	/*
-	 * Cache miss. Generate the prefix string into the on-stack buffer,
-	 * then allocate a string to store it in the cache.
+	 * Cache miss (should only happen under extreme memory
+	 * pressure where eager allocation failed, or during early
+	 * boot if we didn't pre-fill).  Just resolve and format on
+	 * the stack, but DO NOT allocate or write to the cache.
 	 */
 	if (desc->flags & _DPRINTK_FLAGS_INCL_MODNAME)
 		pos += snprintf(buf + pos, remaining(pos), "%s:",
@@ -1001,25 +1002,6 @@ static int __dynamic_emit_lookup(const struct _ddebug *desc, char *buf, int star
 	if (remaining(pos)) {
 		buf[pos++] = ' ';
 		buf[pos] = '\0';
-	}
-	new_prefix = kstrdup(buf + start, GFP_ATOMIC);
-	if (!new_prefix)
-		/* alloc failed, just use prefix, re-try later */
-		return pos;
-
-	/* Re-check for race while we were allocating */
-	spin_lock_irqsave(&pr_prefixes_lock, flags);
-	prefix = mtree_load(&pr_prefixes, key);
-	if (prefix) {
-		/* Another thread won. Use theirs, free ours. */
-		spin_unlock_irqrestore(&pr_prefixes_lock, flags);
-		kfree(new_prefix);
-	} else {
-		/* We are first. Store our new prefix. */
-		mtree_store_range(&pr_prefixes, key, key,
-				  (void *)new_prefix, GFP_ATOMIC);
-		spin_unlock_irqrestore(&pr_prefixes_lock, flags);
-		v3pr_info("filled prefix cache: %s\n", new_prefix);
 	}
 	return pos;
 }
