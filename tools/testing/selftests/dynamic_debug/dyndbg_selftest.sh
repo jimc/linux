@@ -190,7 +190,7 @@ function ifrmmod {
 # ==============================================================================
 
 function verify_modprobe_param_logging {
-    # $1 - parameter name (e.g. do_classes)
+    # $1 - parameter name (e.g. do_prints)
     # $2 - parameter value (e.g. 1)
     local param="$1"
     local val="$2"
@@ -247,7 +247,7 @@ function FT_grammar_ok {
 
     # use 4 keywords (max 9 words inc flags)
     ddcmd "module foo file bar.c func buz class D2_CORE +_"	# 4 keywords
-    #ddcmd "module foo file bar.c func buz class D2 line 100 +_" # 5 keywords
+    ddcmd "module foo file bar.c func buz class D2 line 100 +_" # 5 keywords
 
     # 3. Dedicated lineno range grammar assertions (side-effect-free proofs)
     ddcmd "line 42 +_"		# test exact line syntax
@@ -476,9 +476,9 @@ function FT_test_classes {
     verify_control_slice '\[test_dynamic_debug\]'
 
     # 2. Verify state transition and live-printing end-to-end via ddcmd_load!
-    ddcmd_load "class,D2_CORE,+pmf@class,D2_KMS,+pls@class,D2_ATOMIC,+pml" \
+    ddcmd_load "class,D2_CORE,+pmf;class,D2_KMS,+pls;class,D2_ATOMIC,+pml" \
         '\[test_dynamic_debug\]' \
-        "/sys/module/test_dynamic_debug/parameters/do_classes" "1"
+        "/sys/module/test_dynamic_debug/parameters/do_prints" "1"
 
     ifrmmod test_dynamic_debug
 }
@@ -494,27 +494,26 @@ function FT_classmap_inheritance {
 	"dyndbg=+p;class D2_CORE +pf;class D2_KMS +pt;class D2_ATOMIC +pm"
     verify_control_slice '\[test_dynamic_debug\]'
 
+    set_param 5 /sys/module/test_dynamic_debug/parameters/p_level_num
+    verify_control_slice '\[test_dynamic_debug\]'
+
+    my_modprobe test_dynamic_debug_submod
+    verify_control_slice 'test_dynamic_debug_submod'
+
     # fresh start, to clear all above flags (test-fn limits)
     ifrmmod test_dynamic_debug_submod
     ifrmmod test_dynamic_debug
 
-    # act on submod, which loads supermod
+    # load submod, which loads supermod
     my_modprobe test_dynamic_debug_submod \
 	"dyndbg=+p;class D2_CORE +pfs;class D2_KMS +pts;class D2_ATOMIC +pmf"
+    verify_control_slice 'test_dynamic_debug'
 
+    # runtime changes to both
     set_param 0x57 /sys/module/test_dynamic_debug/parameters/p_disjoint_bits
     set_param 4 /sys/module/test_dynamic_debug/parameters/p_level_num
     verify_control_slice 'test_dynamic_debug'
 
-    set_param 3 /sys/module/test_dynamic_debug/parameters/p_disjoint_bits
-    set_param 0 /sys/module/test_dynamic_debug/parameters/p_level_num
-    verify_control_slice 'test_dynamic_debug'
-
-    set_param 0x16 /sys/module/test_dynamic_debug/parameters/p_disjoint_bits
-    set_param 0 /sys/module/test_dynamic_debug/parameters/p_level_num
-    verify_control_slice 'test_dynamic_debug'
-
-    # recap DRM_USE_DYNAMIC_DEBUG regression
     ifrmmod test_dynamic_debug_submod
     ifrmmod test_dynamic_debug
 
@@ -545,45 +544,14 @@ function FT_classmap_inheritance {
     else
         v_echo "${GREEN}: Proven: parameter load-time (modprobe) " \
             "and runtime (sysfs write) are equivalent!${NC}"
-    fi
-
-    # --- Live Content Fingerprinting Phase ---
+    fi    # --- Live Content Fingerprinting Phase ---
     log_start
-    echo 1 > /sys/module/test_dynamic_debug/parameters/do_classes
-    echo 1 > /sys/module/test_dynamic_debug_submod/parameters/do_classes
+    echo 1 > /sys/module/test_dynamic_debug/parameters/do_prints
+    echo 1 > /sys/module/test_dynamic_debug_submod/parameters/do_prints
     log_stop
 
     ifrmmod test_dynamic_debug_submod
     ifrmmod test_dynamic_debug
-}
-
-function FT_modprobe_w_param {
-    v_echo "${GREEN}# TEST_MODPROBES ${NC}"
-    local verbose
-
-    ifrmmod test_dynamic_debug_submod
-    ifrmmod test_dynamic_debug
-
-    for verbose in 1 2; do # 3 4 0; do
-	echo $verbose > /sys/module/dynamic_debug/parameters/verbose
-
-	# Verify each parameter load sequence with 100% DRY modularity
-	verify_modprobe_param_logging "do_prints" "1"
-
-	#verify_modprobe_param_logging "do_classes" "1"
-	#verify_modprobe_param_logging "do_bulk" "1"
-
-	# Sequence composite bitmasks to verify disjoint bit transitions
-	for mask in "0x05" "0x12" "0x1f" "0x00"; do
-            verify_modprobe_param_logging "p_disjoint_bits" "$mask"
-	done
-
-	# Sequence levels to verify both growing and shrinking verbose transitions
-	for lvl in "3" "5" "4" "0"; do
-            verify_modprobe_param_logging "p_level_num" "$lvl"
-	done
-    done
-    ddcmd =_
 }
 
 # Built-in Feature Tests (Can run on any CONFIG_DYNAMIC_DEBUG kernel, modular or monolithic)
@@ -597,9 +565,7 @@ builtin_tests=(
 
 # Modular Feature Tests (Require CONFIG_MODULES=y and test_dynamic_debug*.ko available)
 modular_tests=(
-    #FT_test_classes
-    #FT_classmap_inheritance
-    #FT_modprobe_w_param
+    FT_classmap_inheritance
 )
 
 # ==============================================================================
@@ -669,6 +635,14 @@ function GOLDEN_RECORDS {
 #K= bede904b02278e5648bb7a8243be8d98 FT_path_module_queries.2
 #K= 4b902c159d7f08f91377bf0a353e0051 FT_path_module_queries.3
 #K= bede904b02278e5648bb7a8243be8d98 FT_path_module_queries.4
+#K= c3511fd3669af58188acf121c05914ca FT_classmap_inheritance.1
+#K= c3511fd3669af58188acf121c05914ca FT_classmap_inheritance.2
+#K= 29731f5b3707d4fb7e93888f95d6da02 FT_classmap_inheritance.3
+#K= 62501908ed46fb83205bebd80f850d56 FT_classmap_inheritance.4
+#K= 1d2ac19332c416e913d9fff8661db4b9 FT_classmap_inheritance.5
+#K= 8dd8f7c4b3b7777d5279b6635ec83f7b FT_classmap_inheritance.6
+#K= a8dfa89c4daf89f13a015e87a36077c1 FT_classmap_inheritance.7
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_classmap_inheritance.8
 EOF
         # Read the K-recs and skip those for tests that can't run
         while read -r line; do
