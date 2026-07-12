@@ -467,7 +467,8 @@ function FT_comma_terminators {
     fi
     ddcmd "module params =_"
 
-    ddcmd "module,params,=_ @ module,params,+mf" 'kernel/params.c'
+    ddcmd "module,params,=_" 'kernel/params.c'
+    ddcmd "module,params,+mf" 'kernel/params.c'
     # ignore empty tokens
     ddcmd ",module ,, ,  params, -p" 'kernel/params.c'
     ddcmd " , module ,,, ,  params, -m" 'kernel/params.c'
@@ -601,9 +602,9 @@ builtin_tests=(
     FT_grammar_ok
     FT_grammar_errs
     FT_basic_queries
-    #FT_path_module_queries
-    #FT_hyphen_underscore
-    #FT_comma_terminators
+    FT_path_module_queries
+    FT_hyphen_underscore
+    FT_comma_terminators
 )
 
 # Modular Feature Tests (Require CONFIG_MODULES=y and test_dynamic_debug*.ko available)
