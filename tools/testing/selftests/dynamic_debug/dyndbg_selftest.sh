@@ -515,6 +515,11 @@ function FT_classmap_inheritance {
     my_modprobe test_dynamic_debug_submod
     verify_control_slice 'test_dynamic_debug_submod'
 
+    # Verify 3 class changes
+    ddcmd "class,D2_CORE,+pmf @ class,D2_KMS,+plt @ class,D2_ATOMIC,+pml" \
+	'test_dynamic_debug' "# add some prefixes"
+
+    # now work the classmap-params
     # fresh start, to clear all above flags (test-fn limits)
     ifrmmod test_dynamic_debug_submod
     ifrmmod test_dynamic_debug
@@ -610,7 +615,7 @@ builtin_tests=(
 
 # Modular Feature Tests (Require CONFIG_MODULES=y and test_dynamic_debug*.ko available)
 modular_tests=(
-    #FT_test_classes
+    FT_test_classes
     FT_classmap_inheritance
     FT_modprobe_w_param
 )
