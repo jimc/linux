@@ -462,6 +462,23 @@ function FT_hyphen_underscore {
     ddcmd =_
 }
 
+# test parsing on spaces, commas. testing against builtin [kernel/params]
+function FT_comma_terminators {
+    v_echo "${GREEN}# COMMA_TERMINATOR_TESTS ${NC}"
+    if [ $LACK_DD_BUILTIN -eq 1 ]; then
+	echo "SKIP - test requires params, which is a builtin module"
+	return
+    fi
+    ddcmd "module params =_"
+
+    ddcmd "module,params,=_" 'kernel/params.c'
+    ddcmd "module,params,+mf" 'kernel/params.c'
+    # ignore empty tokens
+    ddcmd ",module ,, ,  params, -p" 'kernel/params.c'
+    ddcmd " , module ,,, ,  params, -m" 'kernel/params.c'
+
+    ddcmd =_
+}
 # testing classmap-based query enablers and class configurations
 function FT_test_classes {
     v_echo "${GREEN}# TEST_CLASSES - classmap-based query enablers and class configs ${NC}"
@@ -573,6 +590,7 @@ builtin_tests=(
     FT_basic_queries
     FT_path_module_queries
     FT_hyphen_underscore
+    FT_comma_terminators
 )
 
 # Modular Feature Tests (Require CONFIG_MODULES=y and test_dynamic_debug*.ko available)
@@ -649,6 +667,10 @@ function GOLDEN_RECORDS {
 #K= bede904b02278e5648bb7a8243be8d98 FT_path_module_queries.2
 #K= 4b902c159d7f08f91377bf0a353e0051 FT_path_module_queries.3
 #K= bede904b02278e5648bb7a8243be8d98 FT_path_module_queries.4
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_comma_terminators.1
+#K= 99985cce918eb5108ecb3658249f6bc7 FT_comma_terminators.2
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_comma_terminators.3
+#K= 85f93d30f4006c99a806639970b92f20 FT_comma_terminators.4
 #K= d4923595eea382923aee64aed15c7c35 FT_test_classes.1
 #K= a15ec4843acd721fbdfddc0b512c8032 FT_test_classes.2
 #K= 40a294034c886787960f4c751b196da9 FT_test_classes.3
