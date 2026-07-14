@@ -457,7 +457,8 @@ function FT_hyphen_underscore {
     ddcmd =_
 }
 
-# test parsing on spaces, commas. testing agains builtin [kernel/params]
+# test parsing on spaces, commas. testing against builtin [kernel/params]
+# disabled pending feature patch
 function FT_comma_terminators {
     v_echo "${GREEN}# COMMA_TERMINATOR_TESTS ${NC}"
     if [ $LACK_DD_BUILTIN -eq 1 ]; then
@@ -466,15 +467,9 @@ function FT_comma_terminators {
     fi
     ddcmd "module params =_"
 
-    # 1. Verify transition after commas-as-spaces query and splitting on @
-    # Use non-printing decorator flags (+mf) to avoid print-enabling (+p) and
-    # prevent syslog pollution
-    #ddcmd "module,params,=_ @ module,params,+mf" 'kernel/params.c'
-
-    # 2. Verify transition after ignored-commas query
+    ddcmd "module,params,=_ @ module,params,+mf" 'kernel/params.c'
+    # ignore empty tokens
     ddcmd ",module ,, ,  params, -p" 'kernel/params.c'
-
-    # 3. Verify transition after quoted-commas query
     ddcmd " , module ,,, ,  params, -m" 'kernel/params.c'
 
     ddcmd =_
