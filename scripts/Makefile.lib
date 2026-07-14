@@ -23,6 +23,15 @@ modname_flags  = -DKBUILD_MODNAME=$(call name-fix,$(modname)) \
 		 -D__KBUILD_MODNAME=$(call name-fix-token,$(modname))
 modfile_flags  = -DKBUILD_MODFILE=$(call stringify,$(modfile))
 
+# Dynamic debug subsystem modname with clean heuristic and Makefile override support
+dd_modname_override = $(firstword $(DD_MODNAME_$(target-stem).o) $(DD_MODNAME))
+dd_obj := $(patsubst drivers/%,%,$(obj))
+dd_modname_default = $(if $(filter $(notdir $(dd_obj)),$(__modname)),$(dd_obj),$(addprefix $(dd_obj)/,$(__modname)))
+dd_modname = $(if $(dd_modname_override),$(dd_modname_override),$(dd_modname_default))
+dd_modname_flags = -DKBUILD_DD_MODNAME=$(call stringify,$(dd_modname))
+
+modfile_flags += $(dd_modname_flags)
+
 _c_flags       = $(filter-out $(CFLAGS_REMOVE_$(target-stem).o), \
                      $(filter-out $(ccflags-remove-y), \
                          $(KBUILD_CPPFLAGS) $(KBUILD_CFLAGS) $(ccflags-y)) \
