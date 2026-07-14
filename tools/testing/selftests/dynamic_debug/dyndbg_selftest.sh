@@ -462,7 +462,6 @@ function FT_hyphen_underscore {
     ddcmd =_
 }
 
-
 # testing classmap-based query enablers and class configurations
 function FT_test_classes {
     v_echo "${GREEN}# TEST_CLASSES - classmap-based query enablers and class configs ${NC}"
@@ -592,7 +591,7 @@ builtin_tests=(
     FT_grammar_ok
     FT_grammar_errs
     FT_basic_queries
-    #FT_path_module_queries
+    FT_path_module_queries
     FT_hyphen_underscore
 )
 
@@ -666,6 +665,10 @@ function GOLDEN_RECORDS {
 #K= de950a3e60669fdd58d0a8c2867a056d FT_basic_queries.5
 #K= 2ff49f0c4d18ec99bcb1c30840fe8afc FT_basic_queries.6
 #K= 9a1b13c32a15363dcf93913308edeea5 FT_basic_queries.7
+#K= 4b902c159d7f08f91377bf0a353e0051 FT_path_module_queries.1
+#K= bede904b02278e5648bb7a8243be8d98 FT_path_module_queries.2
+#K= 4b902c159d7f08f91377bf0a353e0051 FT_path_module_queries.3
+#K= bede904b02278e5648bb7a8243be8d98 FT_path_module_queries.4
 EOF
         # Read the K-recs and skip those for tests that can't run
         while read -r line; do
