@@ -41,6 +41,8 @@
 #include <linux/netdevice.h>
 
 #include <rdma/ib_verbs.h>
+#include <linux/zlib.h>
+#include <linux/vmalloc.h>
 
 extern struct _ddebug __start___dyndbg_descs[];
 extern struct _ddebug __stop___dyndbg_descs[];
@@ -1786,6 +1788,124 @@ static int __init dynamic_debug_init_control(void)
 		proc_create("control", 0644, procfs_dir, &proc_fops);
 
 	return 0;
+}
+
+static int __maybe_unused ddebug_compress_sites(const char *name, const struct _ddebug_site *sites, unsigned int count,
+				 void **out_buf, unsigned long *out_len)
+{
+	struct z_stream_s zstream;
+	unsigned long src_len = count * sizeof(struct _ddebug_site);
+	unsigned long max_dst_len = src_len + (src_len >> 12) + (src_len >> 14) + 11 + 6;
+	void *workspace;
+	void *dst;
+	int ret;
+
+	if (!count) {
+		*out_buf = NULL;
+		*out_len = 0;
+		return 0;
+	}
+
+	workspace = vmalloc(zlib_deflate_workspacesize(MAX_WBITS, DEF_MEM_LEVEL));
+	if (!workspace)
+		return -ENOMEM;
+
+	dst = vmalloc(max_dst_len);
+	if (!dst) {
+		vfree(workspace);
+		return -ENOMEM;
+	}
+
+	memset(&zstream, 0, sizeof(zstream));
+	zstream.workspace = workspace;
+	zstream.next_in = (unsigned char *)sites;
+	zstream.avail_in = src_len;
+	zstream.next_out = dst;
+	zstream.avail_out = max_dst_len;
+
+	ret = zlib_deflateInit(&zstream, Z_DEFAULT_COMPRESSION);
+	if (ret != Z_OK)
+		goto err;
+
+	ret = zlib_deflate(&zstream, Z_FINISH);
+	if (ret != Z_STREAM_END)
+		goto err_end;
+
+	*out_len = zstream.total_out;
+	*out_buf = vmalloc(*out_len);
+	if (!*out_buf) {
+		ret = -ENOMEM;
+		goto err_end;
+	}
+	memcpy(*out_buf, dst, *out_len);
+
+	vpr_info("compressed %s sites: %u records, %lu bytes -> %lu bytes (%lu%% savings)\n",
+		 name, count, src_len, *out_len,
+		 src_len ? 100 - (*out_len * 100 / src_len) : 0);
+
+	zlib_deflateEnd(&zstream);
+	vfree(dst);
+	vfree(workspace);
+	return 0;
+
+err_end:
+	zlib_deflateEnd(&zstream);
+err:
+	vfree(dst);
+	vfree(workspace);
+	return -EINVAL;
+}
+
+static int __maybe_unused ddebug_decompress_sites(void *src, unsigned long src_len,
+				   struct _ddebug_site **out_sites, unsigned int count)
+{
+	struct z_stream_s zstream;
+	unsigned long dst_len = count * sizeof(struct _ddebug_site);
+	void *workspace;
+	struct _ddebug_site *dst;
+	int ret;
+
+	if (!count || !src) {
+		*out_sites = NULL;
+		return 0;
+	}
+
+	workspace = vmalloc(zlib_inflate_workspacesize());
+	if (!workspace)
+		return -ENOMEM;
+
+	dst = vmalloc(dst_len);
+	if (!dst) {
+		vfree(workspace);
+		return -ENOMEM;
+	}
+
+	memset(&zstream, 0, sizeof(zstream));
+	zstream.workspace = workspace;
+	zstream.next_in = src;
+	zstream.avail_in = src_len;
+	zstream.next_out = (unsigned char *)dst;
+	zstream.avail_out = dst_len;
+
+	ret = zlib_inflateInit(&zstream);
+	if (ret != Z_OK)
+		goto err;
+
+	ret = zlib_inflate(&zstream, Z_FINISH);
+	if (ret != Z_STREAM_END)
+		goto err_end;
+
+	zlib_inflateEnd(&zstream);
+	vfree(workspace);
+	*out_sites = dst;
+	return 0;
+
+err_end:
+	zlib_inflateEnd(&zstream);
+err:
+	vfree(dst);
+	vfree(workspace);
+	return -EINVAL;
 }
 
 static int __init dynamic_debug_init(void)
