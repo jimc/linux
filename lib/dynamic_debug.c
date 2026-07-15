@@ -99,7 +99,13 @@ struct flag_settings {
 	unsigned int mask;
 };
 
+struct _dd_prefix_key_range {
+	unsigned long start;
+	unsigned long end;
+};
+
 static DEFINE_PER_CPU(unsigned long, ddebug_call_count);
+
 void ddebug_increment_call_count(void)
 {
 	this_cpu_inc(ddebug_call_count);
@@ -117,6 +123,20 @@ module_param(verbose, int, 0644);
 MODULE_PARM_DESC(verbose, " dynamic_debug/control processing "
 		 "( 0 = off (default), 1 = module add/rm, 2 = >control summary, 3 = parsing, 4 = per-site changes)");
 
+/* cache of composed prefixes for enabled and invoked pr_debugs */
+static DEFINE_MTREE(pr_prefixes);
+static unsigned int pr_prefixes_count;
+
+static unsigned long ddebug_prefix_key(const struct _ddebug *desc);
+
+//static void ddebug_drop_cached_prefix(const struct _ddebug *dp);
+//static void ddebug_prefix_range(const struct _ddebug *desc, struct _dd_prefix_key_range *range);
+
+static void ddebug_add_cached_prefix(struct _ddebug *dp);
+static void ddebug_drop_all_cached_prefixes(const struct _ddebug_info *di);
+static void ddebug_prefix_range(const struct _ddebug *desc, struct _dd_prefix_key_range *range);
+
+#define prefix_flags(flags)  (flags & _DPRINTK_FLAGS_INCL_LOOKUP)
 /* Return the path relative to source root */
 static inline const char *trim_prefix(const char *path)
 {
@@ -625,6 +645,7 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 			newflags = (dp->flags & modifiers->mask) | modifiers->flags;
 			if (newflags == dp->flags)
 				continue;
+
 #ifdef CONFIG_JUMP_LABEL
 			if (dp->flags & _DPRINTK_FLAGS_ENABLED) {
 				if (!(newflags & _DPRINTK_FLAGS_ENABLED))
@@ -639,6 +660,8 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 				  ddebug_describe_flags(dp->flags, &fbuf),
 				  ddebug_describe_flags(newflags, &nbuf));
 			dp->flags = newflags;
+			if (prefix_flags(newflags))
+				ddebug_add_cached_prefix(dp);
 		}
 	}
 	mutex_unlock(&ddebug_lock);
@@ -1169,32 +1192,72 @@ static int remaining(int wrote)
 	return 0;
 }
 
-static int __dynamic_emit_lookup(const struct _ddebug *desc, char *buf, int pos)
+static int ddebug_format_prefix(const struct _ddebug *dp, char *buf, int start)
 {
-	{
-		const char *mod = NULL, *file = NULL, *func = NULL;
+	int pos = start;
+	const char *mod = NULL, *file = NULL, *func = NULL;
+	struct maple_tree *site_map = ddebug_select_tree(dp);
 
-		ddebug_resolve_site(ddebug_select_tree(desc), desc,
-				    (desc->flags & _DPRINTK_FLAGS_INCL_MODNAME) ? &mod : NULL,
-				    (desc->flags & _DPRINTK_FLAGS_INCL_SOURCENAME) ? &file : NULL,
-				    (desc->flags & _DPRINTK_FLAGS_INCL_FUNCNAME) ? &func : NULL);
-
-		if (mod)
-			pos += snprintf(buf + pos, remaining(pos), "%s:", mod);
-		if (func)
-			pos += snprintf(buf + pos, remaining(pos), "%s:", func);
-		if (file)
-			pos += snprintf(buf + pos, remaining(pos), "%s:", trim_prefix(file));
+	if (!mtree_empty(site_map)) {
+		ddebug_resolve_site(site_map, dp,
+				    (dp->flags & _DPRINTK_FLAGS_INCL_MODNAME) ? &mod : NULL,
+				    (dp->flags & _DPRINTK_FLAGS_INCL_SOURCENAME) ? &file : NULL,
+				    (dp->flags & _DPRINTK_FLAGS_INCL_FUNCNAME) ? &func : NULL);
+	} else {
+		if (dp->flags & _DPRINTK_FLAGS_INCL_MODNAME)
+			mod = "unknown";
+		if (dp->flags & _DPRINTK_FLAGS_INCL_SOURCENAME)
+			file = "unknown";
+		if (dp->flags & _DPRINTK_FLAGS_INCL_FUNCNAME)
+			func = "unknown";
 	}
-	if (desc->flags & _DPRINTK_FLAGS_INCL_LINENO)
+
+	if (mod)
+		pos += snprintf(buf + pos, remaining(pos), "%s:", mod);
+	if (func)
+		pos += snprintf(buf + pos, remaining(pos), "%s:", func);
+	if (file)
+		pos += snprintf(buf + pos, remaining(pos), "%s:", trim_prefix(file));
+
+	if (dp->flags & _DPRINTK_FLAGS_INCL_LINENO)
 		pos += snprintf(buf + pos, remaining(pos), "%d:",
-				desc->lineno);
+				dp->lineno);
 
-	/* we have a non-empty prefix, add trailing space */
-	if (remaining(pos))
+	if (remaining(pos)) {
 		buf[pos++] = ' ';
-
+		buf[pos] = '\0';
+	}
 	return pos;
+}
+
+static int __dynamic_emit_lookup(const struct _ddebug *desc, char *buf, int start)
+{
+	char *prefix;
+	int pos = start;
+	unsigned long key;
+
+	if (!(desc->flags & _DPRINTK_FLAGS_INCL_LOOKUP))
+		return pos;
+
+	key = ddebug_prefix_key(desc);
+
+	rcu_read_lock();
+	prefix = (char *) mtree_load(&pr_prefixes, key);
+	rcu_read_unlock();
+
+	if (likely(prefix)) {
+		pos += snprintf(buf + pos, remaining(pos), "%s", prefix);
+		v4pr_info("using cached prefix: %s\n", prefix);
+		return pos;
+	}
+
+	/*
+	 * Cache miss (should only happen under extreme memory
+	 * pressure where eager allocation failed, or during early
+	 * boot if we didn't pre-fill).  Just resolve and format on
+	 * the stack, but DO NOT allocate or write to the cache.
+	 */
+	return ddebug_format_prefix(desc, buf, pos);
 }
 
 static char *__dynamic_emit_prefix(const struct _ddebug *desc, char *buf)
@@ -1220,7 +1283,7 @@ static char *__dynamic_emit_prefix(const struct _ddebug *desc, char *buf)
 
 static inline char *dynamic_emit_prefix(struct _ddebug *desc, char *buf)
 {
-	if (desc->flags & _DPRINTK_FLAGS_INCL_ANY)
+	if (unlikely(desc->flags & _DPRINTK_FLAGS_INCL_ANY))
 		return __dynamic_emit_prefix(desc, buf);
 	return buf;
 }
@@ -1556,7 +1619,9 @@ static int ddebug_proc_show(struct seq_file *m, void *p)
 		return 0;
 	}
 	if (p == EPILOGUE_TOKEN) {
-		seq_printf(m, "#: total call-counts: %lu\n", get_ddebug_call_count());
+		seq_printf(m, "#: cached_prefixes=%u\n", pr_prefixes_count);
+		seq_printf(m, "#: total call-counts: %lu\n",
+			   get_ddebug_call_count());
 		return 0;
 	}
 
@@ -2015,6 +2080,8 @@ static int ddebug_remove_module(const char *mod_name)
 	mutex_lock(&ddebug_lock);
 	list_for_each_entry_safe(dt, nextdt, &ddebug_tables, link) {
 		if (dt->info.mod_name == mod_name) {
+			ddebug_drop_all_cached_prefixes(&dt->info);
+
 			ddebug_module_sites_clear(dt);
 			ddebug_table_free(dt);
 			ret = 0;
@@ -2067,6 +2134,187 @@ static void ddebug_remove_all_tables(void)
 	mutex_unlock(&ddebug_lock);
 }
 
+/*
+ * dynamic prefix cache keys and descriptor ranges.
+ *
+ * ddebug_prefix_key() constructs the maple tree key by combining
+ * prefix flags with the descriptor address, creating separate
+ * key-spaces for different flag combinations.
+ *
+ * ddebug_prefix_range() determines the address range of descriptors
+ * that can share a dynamic prefix based on these flags.
+ */
+#define DDEBUG_PREFIX_KEY_FLAGS_SHIFT (BITS_PER_LONG - 4)
+
+static inline unsigned long ddebug_pack_key(unsigned long addr, uint8_t flags)
+{
+	/*
+	 * Prefix flags are at bits 1-4. Pack them into bits 0-3 then shift
+	 * to the top of the key to partition the key-space by flag-set.
+	 * Shift the address down 4 bits; since descs are 16-byte aligned,
+	 * they remain unique.
+	 */
+	return ((unsigned long)(flags >> 1) & 0xF) << DDEBUG_PREFIX_KEY_FLAGS_SHIFT |
+		(addr >> 4);
+}
+
+static unsigned long ddebug_prefix_key(const struct _ddebug *desc)
+{
+	return ddebug_pack_key((unsigned long)desc, prefix_flags(desc->flags));
+}
+
+static void ddebug_drop_all_cached_prefixes(const struct _ddebug_info *di)
+{
+	int i, f;
+	struct _ddebug *dp;
+
+	for_subvec(i, dp, di, descs) {
+		for (f = 0; f < 16; f++) {
+			unsigned long key = ((unsigned long)f << DDEBUG_PREFIX_KEY_FLAGS_SHIFT) |
+					    ((unsigned long)dp >> 4);
+			char *prefix = mtree_erase(&pr_prefixes, key);
+			if (prefix) {
+				pr_prefixes_count--;
+				v3pr_info("drop cached prefix: %s\n", prefix);
+				kfree(prefix);
+			}
+		}
+	}
+}
+
+static void ddebug_add_cached_prefix(struct _ddebug *dp)
+{
+	unsigned long key = ddebug_prefix_key(dp);
+	char *prefix;
+	char buf[PREFIX_SIZE] = "";
+	struct _dd_prefix_key_range range;
+
+	prefix = mtree_load(&pr_prefixes, key);
+	if (prefix)
+		return;
+
+	ddebug_format_prefix(dp, buf, 0);
+
+	prefix = kstrdup(buf, GFP_KERNEL);
+	if (!prefix)
+		return;
+
+	ddebug_prefix_range(dp, &range);
+
+	if (mtree_store_range(&pr_prefixes, range.start, range.end, prefix, GFP_KERNEL)) {
+		kfree(prefix);
+	} else {
+		pr_prefixes_count++;
+		v3pr_info("eagerly filled prefix cache: %s [%lx-%lx]\n", prefix, range.start, range.end);
+	}
+}
+
+static void ddebug_resolve_range(struct maple_tree *mt, unsigned long addr,
+				 unsigned long *start, unsigned long *end,
+				 unsigned long tag_to_find)
+{
+	struct ma_state mas;
+	void *val;
+
+	*start = addr;
+	*end = addr;
+
+	rcu_read_lock();
+	mas_init(&mas, mt, addr);
+
+	/* 1. If we are looking for a function range, it's stored directly at the descriptor addresses */
+	if (tag_to_find == DD_TAG_FUNC) {
+		val = mas_walk(&mas);
+		if (val && (mas.index & DD_KEY_ALIGN_MASK) == DD_KEY_FUNC_ALIGN) {
+			*start = mas.index;
+			*end = mas.last;
+		}
+		rcu_read_unlock();
+		return;
+	}
+
+	/* 2. For File or Module, we need to find the start marker (to the left) */
+	/* Start by scanning backward to find the marker */
+	while ((val = mas_prev(&mas, 0))) {
+		unsigned long rem = mas.index & DD_KEY_ALIGN_MASK;
+		if ((tag_to_find == DD_TAG_FILE && rem == DD_KEY_FILE_ALIGN) ||
+		    (tag_to_find == DD_TAG_MOD && rem == DD_KEY_MOD_ALIGN)) {
+			/* Found our start marker! */
+			/* For file, marker is at start - 1. For module, marker is at start - 2. */
+			*start = mas.index + (rem == DD_KEY_FILE_ALIGN ? DD_KEY_FILE_OFFSET : DD_KEY_MOD_OFFSET);
+			break;
+		}
+	}
+
+	/* 3. Now find the end of this range by scanning forward to find the next marker of the same tag,
+	 * or a higher-level tag (e.g. a module marker also bounds a file).
+	 */
+	mas_init(&mas, mt, addr);
+	while ((val = mas_next(&mas, ULONG_MAX))) {
+		unsigned long rem = mas.index & DD_KEY_ALIGN_MASK;
+		if ((tag_to_find == DD_TAG_FILE && (rem == DD_KEY_FILE_ALIGN || rem == DD_KEY_MOD_ALIGN)) ||
+		    (tag_to_find == DD_TAG_MOD && rem == DD_KEY_MOD_ALIGN)) {
+			/* Found the next marker! The current range ends just before it. */
+			/* For file, marker is at next_start - 1, so range ends at next_start - 2.
+			 * For module, marker is at next_start - 2, so range ends at next_start - 3.
+			 */
+			*end = mas.index - (rem == DD_KEY_FILE_ALIGN ? DD_KEY_FILE_OFFSET : DD_KEY_MOD_OFFSET);
+			rcu_read_unlock();
+			return;
+		}
+	}
+
+	/* No next marker found, so the range goes to the end of the tree */
+	*end = ULONG_MAX;
+	rcu_read_unlock();
+}
+
+static void ddebug_prefix_range(const struct _ddebug *desc,
+				struct _dd_prefix_key_range *range)
+{
+	unsigned long addr = (unsigned long)desc;
+	unsigned long start = addr;
+	unsigned long end = addr;
+	uint8_t flags = prefix_flags(desc->flags);
+	struct maple_tree *site_map = ddebug_select_tree(desc);
+
+	if (flags & _DPRINTK_FLAGS_INCL_LINENO) {
+		/*
+		 * except for amdgpu, which has macros with 2+ pr_debugs,
+		 * all prefixes with line-numbers are unique.
+		 */
+		range->start = range->end = ddebug_prefix_key(desc);
+		return;
+	}
+
+	/* 1. Module Level (Always the base for sharing) */
+	{
+		unsigned long mod_start, mod_end;
+		ddebug_resolve_range(site_map, addr, &mod_start, &mod_end, DD_TAG_MOD);
+		start = mod_start;
+		end = mod_end;
+	}
+
+	/* 2. File Level (Narrow further if +s is set) */
+	if (flags & _DPRINTK_FLAGS_INCL_SOURCENAME) {
+		unsigned long file_start, file_end;
+		ddebug_resolve_range(site_map, addr, &file_start, &file_end, DD_TAG_FILE);
+		start = max(start, file_start);
+		end = min(end, file_end);
+	}
+
+	/* 3. Function Level (Narrow if +f is set) */
+	if (flags & _DPRINTK_FLAGS_INCL_FUNCNAME) {
+		unsigned long func_start, func_end;
+		ddebug_resolve_range(site_map, addr, &func_start, &func_end, DD_TAG_FUNC);
+		start = max(start, func_start);
+		end = min(end, func_end);
+	}
+
+	/* Convert descriptor addresses to top-shifted flag-partitioned keys */
+	range->start = ddebug_pack_key(start, flags);
+	range->end = ddebug_pack_key(end, flags);
+}
 static __initdata int ddebug_init_success;
 
 static unsigned long ddebug_shrinker_count(struct shrinker *shrinker,
@@ -2079,6 +2327,8 @@ static unsigned long ddebug_shrinker_count(struct shrinker *shrinker,
 		count += 1000;
 	if (!mtree_empty(&dd_modules_site_map))
 		count += 500;
+	if (!mtree_empty(&pr_prefixes))
+		count += pr_prefixes_count;
 	mutex_unlock(&ddebug_lock);
 
 	return count ? count : SHRINK_EMPTY;
@@ -2098,6 +2348,19 @@ static unsigned long ddebug_shrinker_scan(struct shrinker *shrinker,
 
 	if (freed < sc->nr_to_scan && !mtree_empty(&dd_builtin_site_map)) {
 		__mt_destroy(&dd_builtin_site_map);
+		freed += 1000;
+	}
+
+	if (freed < sc->nr_to_scan && !mtree_empty(&pr_prefixes)) {
+		MA_STATE(mas, &pr_prefixes, 0, ULONG_MAX);
+		void *val;
+		mas_lock(&mas);
+		mas_for_each(&mas, val, ULONG_MAX) {
+			kfree(val);
+		}
+		__mt_destroy(&pr_prefixes);
+		pr_prefixes_count = 0;
+		mas_unlock(&mas);
 		freed += 1000;
 	}
 
