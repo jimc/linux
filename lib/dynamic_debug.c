@@ -2093,6 +2093,9 @@ static unsigned long ddebug_shrinker_scan(struct shrinker *shrinker,
 
 	mutex_unlock(&ddebug_lock);
 
+	if (freed)
+		pr_info("shrinker: destroyed site maps (freed score: %lu)\n", freed);
+
 	return freed ? freed : SHRINK_STOP;
 }
 
