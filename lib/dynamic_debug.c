@@ -57,10 +57,21 @@ extern struct ddebug_class_user __stop___dyndbg_class_users[];
 struct ddebug_table {
 	struct list_head link;
 	struct _ddebug_info info;
+	void *compressed_sites;
+	unsigned long compressed_len;
 };
 
 static DEFINE_MTREE(dd_builtin_site_map);
 static DEFINE_MTREE(dd_modules_site_map);
+
+static void *dd_builtin_compressed_sites;
+static unsigned long dd_builtin_compressed_len;
+
+static int ddebug_compress_sites(const char *name, const struct _ddebug_site *sites, unsigned int count,
+				 void **out_buf, unsigned long *out_len);
+static int ddebug_decompress_sites(void *src, unsigned long src_len,
+				   struct _ddebug_site **out_sites, unsigned int count);
+static int ddebug_reconstruct_site_map(struct maple_tree *mt, bool is_builtin);
 
 static inline struct maple_tree *ddebug_select_tree(const struct _ddebug *dp)
 {
@@ -440,6 +451,57 @@ static void ddebug_condense_sites(struct _ddebug_info *di, struct maple_tree *mt
 	mods  = ddebug_grow_tree(di, mt, "mod",  ddebug_get_modname,  DD_TAG_MOD);
 
 	ddebug_log_compression_stats(di->descs.len, mods, files, funcs);
+	di->sites.len = 0;
+}
+
+static int ddebug_reconstruct_site_map(struct maple_tree *mt, bool is_builtin)
+{
+	struct _ddebug_info di;
+	struct _ddebug_site *decompressed_sites = NULL;
+	struct ddebug_table *dt;
+	int ret;
+
+	if (!mtree_empty(mt))
+		return 0;
+
+	if (is_builtin) {
+		if (!dd_builtin_compressed_sites)
+			return -ENODATA;
+
+		di.descs.start = __start___dyndbg_descs;
+		di.descs.len = __stop___dyndbg_descs - __start___dyndbg_descs;
+		di.sites.len = di.descs.len;
+
+		ret = ddebug_decompress_sites(dd_builtin_compressed_sites,
+					      dd_builtin_compressed_len,
+					      &decompressed_sites, di.sites.len);
+		if (ret)
+			return ret;
+
+		di.sites.start = decompressed_sites;
+		ddebug_condense_sites(&di, mt);
+		vfree(decompressed_sites);
+	} else {
+		list_for_each_entry(dt, &ddebug_tables, link) {
+			if (!dt->compressed_sites)
+				continue;
+
+			di.descs.start = dt->info.descs.start;
+			di.descs.len = dt->info.descs.len;
+			di.sites.len = di.descs.len;
+
+			ret = ddebug_decompress_sites(dt->compressed_sites,
+						      dt->compressed_len,
+						      &decompressed_sites, di.sites.len);
+			if (ret)
+				return ret;
+
+			di.sites.start = decompressed_sites;
+			ddebug_condense_sites(&di, mt);
+			vfree(decompressed_sites);
+		}
+	}
+	return 0;
 }
 
 static bool ddebug_match_desc(const struct ddebug_query *query,
@@ -532,6 +594,8 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 
 	/* search for matching ddebugs */
 	mutex_lock(&ddebug_lock);
+	ddebug_reconstruct_site_map(&dd_builtin_site_map, true);
+	ddebug_reconstruct_site_map(&dd_modules_site_map, false);
 	list_for_each_entry(dt, &ddebug_tables, link) {
 		struct _ddebug_info *di = &dt->info;
 		struct ddebug_class_map *mods_map;
@@ -1529,6 +1593,17 @@ static const struct seq_operations ddebug_proc_seqops = {
 
 static int ddebug_proc_open(struct inode *inode, struct file *file)
 {
+	int ret;
+
+	mutex_lock(&ddebug_lock);
+	ret = ddebug_reconstruct_site_map(&dd_builtin_site_map, true);
+	if (!ret)
+		ret = ddebug_reconstruct_site_map(&dd_modules_site_map, false);
+	mutex_unlock(&ddebug_lock);
+
+	if (ret)
+		return ret;
+
 	return seq_open_private(file, &ddebug_proc_seqops,
 				sizeof(struct ddebug_iter));
 }
@@ -1787,6 +1862,8 @@ static int ddebug_add_module(struct _ddebug_info *di)
 	dt->info = *di;
 	if (dt->info.sites.len) {
 		ddebug_condense_sites(&dt->info, &dd_modules_site_map);
+		ddebug_compress_sites(dt->info.mod_name, di->sites.start, di->sites.len,
+				      &dt->compressed_sites, &dt->compressed_len);
 	}
 	dd_set_module_subrange(i, cm, &dt->info, maps);
 	dd_set_module_subrange(i, cli, &dt->info, users);
@@ -1913,6 +1990,11 @@ static void ddebug_module_sites_clear(struct ddebug_table *dt)
 	mas_lock(&mas);
 	mas_erase(&mas);
 	mas_unlock(&mas);
+
+	if (dt->compressed_sites) {
+		vfree(dt->compressed_sites);
+		dt->compressed_sites = NULL;
+	}
 }
 
 static int ddebug_remove_module(const char *mod_name)
@@ -1977,13 +2059,58 @@ static void ddebug_remove_all_tables(void)
 
 static __initdata int ddebug_init_success;
 
+static unsigned long ddebug_shrinker_count(struct shrinker *shrinker,
+					   struct shrink_control *sc)
+{
+	unsigned long count = 0;
+
+	mutex_lock(&ddebug_lock);
+	if (!mtree_empty(&dd_builtin_site_map))
+		count += 1000;
+	if (!mtree_empty(&dd_modules_site_map))
+		count += 500;
+	mutex_unlock(&ddebug_lock);
+
+	return count ? count : SHRINK_EMPTY;
+}
+
+static unsigned long ddebug_shrinker_scan(struct shrinker *shrinker,
+					  struct shrink_control *sc)
+{
+	unsigned long freed = 0;
+
+	mutex_lock(&ddebug_lock);
+
+	if (!mtree_empty(&dd_modules_site_map)) {
+		__mt_destroy(&dd_modules_site_map);
+		freed += 500;
+	}
+
+	if (freed < sc->nr_to_scan && !mtree_empty(&dd_builtin_site_map)) {
+		__mt_destroy(&dd_builtin_site_map);
+		freed += 1000;
+	}
+
+	mutex_unlock(&ddebug_lock);
+
+	return freed ? freed : SHRINK_STOP;
+}
+
 static int __init dynamic_debug_init_control(void)
 {
 	struct proc_dir_entry *procfs_dir;
 	struct dentry *debugfs_dir;
+	struct shrinker *shrinker;
 
 	if (!ddebug_init_success)
 		return -ENODEV;
+
+	shrinker = shrinker_alloc(0, "dynamic_debug");
+	if (shrinker) {
+		shrinker->count_objects = ddebug_shrinker_count;
+		shrinker->scan_objects = ddebug_shrinker_scan;
+		shrinker_register(shrinker);
+	}
 
 	/* Create the control file in debugfs if it is enabled */
 	if (debugfs_initialized()) {
@@ -2000,7 +2127,7 @@ static int __init dynamic_debug_init_control(void)
 	return 0;
 }
 
-static int __maybe_unused ddebug_compress_sites(const char *name, const struct _ddebug_site *sites, unsigned int count,
+static int ddebug_compress_sites(const char *name, const struct _ddebug_site *sites, unsigned int count,
 				 void **out_buf, unsigned long *out_len)
 {
 	struct z_stream_s zstream;
@@ -2066,7 +2193,7 @@ err:
 	return -EINVAL;
 }
 
-static int __maybe_unused ddebug_decompress_sites(void *src, unsigned long src_len,
+static int ddebug_decompress_sites(void *src, unsigned long src_len,
 				   struct _ddebug_site **out_sites, unsigned int count)
 {
 	struct z_stream_s zstream;
@@ -2155,7 +2282,10 @@ static int __init dynamic_debug_init(void)
 	}
 
 	if (&__start___dyndbg_descs != &__stop___dyndbg_descs) {
+		unsigned int count = di.sites.len;
 		ddebug_condense_sites(&di, &dd_builtin_site_map);
+		ddebug_compress_sites("builtin", __start___dyndbg_sites, count,
+				      &dd_builtin_compressed_sites, &dd_builtin_compressed_len);
 	}
 
 	iter = iter_mod_start = __start___dyndbg_descs;
