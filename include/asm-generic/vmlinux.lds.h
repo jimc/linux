@@ -346,7 +346,6 @@
 	STRUCT_ALIGN();							\
 	*(__tracepoints)						\
 	DYNDBG_SECTIONS()						\
-	DYNDBG_RO_SECTIONS()						\
 	CODETAG_SECTIONS()						\
 	LIKELY_PROFILE()		       				\
 	BRANCH_PROFILE()						\
@@ -693,7 +692,8 @@
 	EARLYCON_TABLE()						\
 	LSM_TABLE()							\
 	EARLY_LSM_TABLE()						\
-	KUNIT_INIT_TABLE()
+		KUNIT_INIT_TABLE()						\
+	DYNDBG_RO_SECTIONS()
 
 #define INIT_TEXT							\
 	*(.init.text .init.text.*)					\
