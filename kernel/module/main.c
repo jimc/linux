@@ -2780,6 +2780,12 @@ static int find_module_sections(struct module *mod, struct load_info *info)
 	mod->dyndbg_info.sites.start = section_objs(info, ".init.__dyndbg_sites",
 						    sizeof(*mod->dyndbg_info.sites.start),
 						    &mod->dyndbg_info.sites.len);
+	mod->dyndbg_info.strings_mod.start = section_objs(info, "__dyndbg_strings_mod",
+							  sizeof(*mod->dyndbg_info.strings_mod.start),
+							  &mod->dyndbg_info.strings_mod.len);
+	mod->dyndbg_info.strings_file.start = section_objs(info, "__dyndbg_strings_file",
+							   sizeof(*mod->dyndbg_info.strings_file.start),
+							   &mod->dyndbg_info.strings_file.len);
 	mod->dyndbg_info.maps.start = section_objs(info, "__dyndbg_class_maps",
 						   sizeof(*mod->dyndbg_info.maps.start),
 						   &mod->dyndbg_info.maps.len);
