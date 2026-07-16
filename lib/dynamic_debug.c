@@ -61,8 +61,86 @@ struct ddebug_table {
 	unsigned long compressed_len;
 };
 
-static DEFINE_MTREE(dd_builtin_site_map);
-static DEFINE_MTREE(dd_modules_site_map);
+struct ddebug_arena_page {
+	struct list_head link;
+};
+
+struct ddebug_arena {
+	struct list_head pages;
+	void *free_ptr;
+	size_t remaining;
+};
+
+static struct ddebug_arena dd_builtin_arena = {
+	.pages = LIST_HEAD_INIT(dd_builtin_arena.pages),
+};
+
+static struct ddebug_arena dd_modules_arena = {
+	.pages = LIST_HEAD_INIT(dd_modules_arena.pages),
+};
+
+static struct maple_node *ddebug_arena_alloc_node(struct ddebug_arena *arena, gfp_t gfp)
+{
+	struct ddebug_arena_page *apage;
+	struct maple_node *node;
+	unsigned long flags;
+	static DEFINE_SPINLOCK(arena_lock);
+
+	spin_lock_irqsave(&arena_lock, flags);
+
+	if (arena->remaining < sizeof(struct maple_node)) {
+		spin_unlock_irqrestore(&arena_lock, flags);
+		apage = (struct ddebug_arena_page *)__get_free_page(gfp);
+		if (!apage)
+			return NULL;
+		spin_lock_irqsave(&arena_lock, flags);
+		list_add(&apage->link, &arena->pages);
+		arena->free_ptr = (void *)(apage + 1);
+		arena->remaining = PAGE_SIZE - sizeof(struct ddebug_arena_page);
+	}
+
+	node = arena->free_ptr;
+	arena->free_ptr += sizeof(struct maple_node);
+	arena->remaining -= sizeof(struct maple_node);
+
+	spin_unlock_irqrestore(&arena_lock, flags);
+
+	memset(node, 0, sizeof(*node));
+	return node;
+}
+
+struct maple_node *ddebug_arena_alloc(void *arena, gfp_t gfp)
+{
+	return ddebug_arena_alloc_node((struct ddebug_arena *)arena, gfp);
+}
+EXPORT_SYMBOL_GPL(ddebug_arena_alloc);
+
+static void ddebug_arena_free(struct ddebug_arena *arena)
+{
+	struct ddebug_arena_page *apage, *tmp;
+	unsigned long flags;
+	static DEFINE_SPINLOCK(arena_lock);
+
+	spin_lock_irqsave(&arena_lock, flags);
+	arena->free_ptr = NULL;
+	arena->remaining = 0;
+	list_for_each_entry_safe(apage, tmp, &arena->pages, link) {
+		list_del(&apage->link);
+		free_page((unsigned long)apage);
+	}
+	spin_unlock_irqrestore(&arena_lock, flags);
+}
+
+static struct arena_maple_tree dd_builtin_site_map = {
+	.mt = MTREE_INIT(dd_builtin_site_map.mt, MT_FLAGS_ARENA),
+	.arena = &dd_builtin_arena,
+};
+static struct arena_maple_tree dd_modules_site_map = {
+	.mt = MTREE_INIT(dd_modules_site_map.mt, MT_FLAGS_ARENA),
+	.arena = &dd_modules_arena,
+};
+
+struct maple_tree *current_ddebug_write_tree;
 
 static void *dd_builtin_compressed_sites;
 static unsigned long dd_builtin_compressed_len;
@@ -76,8 +154,8 @@ static int ddebug_reconstruct_site_map(struct maple_tree *mt, bool is_builtin);
 static inline struct maple_tree *ddebug_select_tree(const struct _ddebug *dp)
 {
 	if (dp >= __start___dyndbg_descs && dp < __stop___dyndbg_descs)
-		return &dd_builtin_site_map;
-	return &dd_modules_site_map;
+		return &dd_builtin_site_map.mt;
+	return &dd_modules_site_map.mt;
 }
 
 struct ddebug_query {
@@ -327,14 +405,14 @@ static void ddebug_resolve_site(struct maple_tree *mt, const struct _ddebug *dp,
 	if (func) *func = NULL;
 
 	rcu_read_lock();
-	mas_init(&mas, mt, (unsigned long)dp);
-	val = mas_walk(&mas);
+	arena_mas_init(&mas, mt, (unsigned long)dp);
+	val = arena_mas_walk(&mas);
 	if (val) {
 		if (func && (mas.index & DD_KEY_ALIGN_MASK) == DD_KEY_FUNC_ALIGN)
 			*func = (const char *)val;
 
 		if (mod || file) {
-			while ((val = mas_prev(&mas, 0))) {
+			while ((val = arena_mas_prev(&mas, 0))) {
 				unsigned long rem = mas.index & DD_KEY_ALIGN_MASK;
 
 				if (file && !*file && rem == DD_KEY_FILE_ALIGN) {
@@ -391,17 +469,20 @@ static void ddebug_store_tagged_range(struct maple_tree *mt, const struct _ddebu
 	unsigned long last = (unsigned long)(next - 1);
 	int rc;
 
+	current_ddebug_write_tree = mt;
 	if (tag == DD_TAG_FUNC) {
-		rc = mtree_store_range(mt, first, last, (void *)name, GFP_KERNEL);
+		rc = arena_mtree_store_range(mt, first, last, (void *)name, GFP_KERNEL);
 	} else if (tag == DD_TAG_FILE) {
 		unsigned long addr = first - DD_KEY_FILE_OFFSET;
-		rc = mtree_store_range(mt, addr, addr, (void *)name, GFP_KERNEL);
+		rc = arena_mtree_store_range(mt, addr, addr, (void *)name, GFP_KERNEL);
 	} else if (tag == DD_TAG_MOD) {
 		unsigned long addr = first - DD_KEY_MOD_OFFSET;
-		rc = mtree_store_range(mt, addr, addr, (void *)name, GFP_KERNEL);
+		rc = arena_mtree_store_range(mt, addr, addr, (void *)name, GFP_KERNEL);
 	} else {
+		current_ddebug_write_tree = NULL;
 		return;
 	}
+	current_ddebug_write_tree = NULL;
 
 	if (rc)
 		pr_err("%s:%s tagged range store failed: %d\n", kind, name, rc);
@@ -614,8 +695,8 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 
 	/* search for matching ddebugs */
 	mutex_lock(&ddebug_lock);
-	ddebug_reconstruct_site_map(&dd_builtin_site_map, true);
-	ddebug_reconstruct_site_map(&dd_modules_site_map, false);
+	ddebug_reconstruct_site_map(&dd_builtin_site_map.mt, true);
+	ddebug_reconstruct_site_map(&dd_modules_site_map.mt, false);
 	list_for_each_entry(dt, &ddebug_tables, link) {
 		struct _ddebug_info *di = &dt->info;
 		struct ddebug_class_map *mods_map;
@@ -1671,9 +1752,9 @@ static int ddebug_proc_open(struct inode *inode, struct file *file)
 	int ret;
 
 	mutex_lock(&ddebug_lock);
-	ret = ddebug_reconstruct_site_map(&dd_builtin_site_map, true);
+	ret = ddebug_reconstruct_site_map(&dd_builtin_site_map.mt, true);
 	if (!ret)
-		ret = ddebug_reconstruct_site_map(&dd_modules_site_map, false);
+		ret = ddebug_reconstruct_site_map(&dd_modules_site_map.mt, false);
 	mutex_unlock(&ddebug_lock);
 
 	if (ret)
@@ -1936,7 +2017,7 @@ static int ddebug_add_module(struct _ddebug_info *di)
 	 */
 	dt->info = *di;
 	if (dt->info.sites.len) {
-		ddebug_condense_sites(&dt->info, &dd_modules_site_map);
+		ddebug_condense_sites(&dt->info, &dd_modules_site_map.mt);
 		ddebug_compress_sites(dt->info.mod_name, di->sites.start, di->sites.len,
 				      &dt->compressed_sites, &dt->compressed_len);
 	}
@@ -2057,14 +2138,16 @@ static void ddebug_module_sites_clear(struct ddebug_table *dt)
 	unsigned long start = (unsigned long) dt->info.descs.start;
 	unsigned long end = (unsigned long) &dt->info.descs.start[dt->info.descs.len - 1];
 
-	MA_STATE(mas, &dd_modules_site_map, start - DD_KEY_MOD_OFFSET, end);
+	MA_STATE(mas, &dd_modules_site_map.mt, start - DD_KEY_MOD_OFFSET, end);
 
 	v2pr_info("clearing %3d debugs of removed module %s\n",
 		  dt->info.descs.len, dt->info.mod_name);
 
-	mas_lock(&mas);
-	mas_erase(&mas);
-	mas_unlock(&mas);
+	arena_mas_lock(&mas);
+	current_ddebug_write_tree = &dd_modules_site_map.mt;
+	arena_mas_erase(&mas);
+	current_ddebug_write_tree = NULL;
+	arena_mas_unlock(&mas);
 
 	if (dt->compressed_sites) {
 		vfree(dt->compressed_sites);
@@ -2220,11 +2303,11 @@ static void ddebug_resolve_range(struct maple_tree *mt, unsigned long addr,
 	*end = addr;
 
 	rcu_read_lock();
-	mas_init(&mas, mt, addr);
+	arena_mas_init(&mas, mt, addr);
 
 	/* 1. If we are looking for a function range, it's stored directly at the descriptor addresses */
 	if (tag_to_find == DD_TAG_FUNC) {
-		val = mas_walk(&mas);
+		val = arena_mas_walk(&mas);
 		if (val && (mas.index & DD_KEY_ALIGN_MASK) == DD_KEY_FUNC_ALIGN) {
 			*start = mas.index;
 			*end = mas.last;
@@ -2235,7 +2318,7 @@ static void ddebug_resolve_range(struct maple_tree *mt, unsigned long addr,
 
 	/* 2. For File or Module, we need to find the start marker (to the left) */
 	/* Start by scanning backward to find the marker */
-	while ((val = mas_prev(&mas, 0))) {
+	while ((val = arena_mas_prev(&mas, 0))) {
 		unsigned long rem = mas.index & DD_KEY_ALIGN_MASK;
 		if ((tag_to_find == DD_TAG_FILE && rem == DD_KEY_FILE_ALIGN) ||
 		    (tag_to_find == DD_TAG_MOD && rem == DD_KEY_MOD_ALIGN)) {
@@ -2249,8 +2332,8 @@ static void ddebug_resolve_range(struct maple_tree *mt, unsigned long addr,
 	/* 3. Now find the end of this range by scanning forward to find the next marker of the same tag,
 	 * or a higher-level tag (e.g. a module marker also bounds a file).
 	 */
-	mas_init(&mas, mt, addr);
-	while ((val = mas_next(&mas, ULONG_MAX))) {
+	arena_mas_init(&mas, mt, addr);
+	while ((val = arena_mas_next(&mas, ULONG_MAX))) {
 		unsigned long rem = mas.index & DD_KEY_ALIGN_MASK;
 		if ((tag_to_find == DD_TAG_FILE && (rem == DD_KEY_FILE_ALIGN || rem == DD_KEY_MOD_ALIGN)) ||
 		    (tag_to_find == DD_TAG_MOD && rem == DD_KEY_MOD_ALIGN)) {
@@ -2323,9 +2406,9 @@ static unsigned long ddebug_shrinker_count(struct shrinker *shrinker,
 	unsigned long count = 0;
 
 	mutex_lock(&ddebug_lock);
-	if (!mtree_empty(&dd_builtin_site_map))
+	if (!mtree_empty(&dd_builtin_site_map.mt))
 		count += 1000;
-	if (!mtree_empty(&dd_modules_site_map))
+	if (!mtree_empty(&dd_modules_site_map.mt))
 		count += 500;
 	if (!mtree_empty(&pr_prefixes))
 		count += pr_prefixes_count;
@@ -2341,13 +2424,19 @@ static unsigned long ddebug_shrinker_scan(struct shrinker *shrinker,
 
 	mutex_lock(&ddebug_lock);
 
-	if (!mtree_empty(&dd_modules_site_map)) {
-		__mt_destroy(&dd_modules_site_map);
+	if (!mtree_empty(&dd_modules_site_map.mt)) {
+		current_ddebug_write_tree = &dd_modules_site_map.mt;
+		arena___mt_destroy(&dd_modules_site_map.mt);
+		current_ddebug_write_tree = NULL;
+		ddebug_arena_free(&dd_modules_arena);
 		freed += 500;
 	}
 
-	if (freed < sc->nr_to_scan && !mtree_empty(&dd_builtin_site_map)) {
-		__mt_destroy(&dd_builtin_site_map);
+	if (freed < sc->nr_to_scan && !mtree_empty(&dd_builtin_site_map.mt)) {
+		current_ddebug_write_tree = &dd_builtin_site_map.mt;
+		arena___mt_destroy(&dd_builtin_site_map.mt);
+		current_ddebug_write_tree = NULL;
+		ddebug_arena_free(&dd_builtin_arena);
 		freed += 1000;
 	}
 
@@ -2559,7 +2648,7 @@ static int __init dynamic_debug_init(void)
 
 	if (&__start___dyndbg_descs != &__stop___dyndbg_descs) {
 		unsigned int count = di.sites.len;
-		ddebug_condense_sites(&di, &dd_builtin_site_map);
+		ddebug_condense_sites(&di, &dd_builtin_site_map.mt);
 		ddebug_compress_sites("builtin", __start___dyndbg_sites, count,
 				      &dd_builtin_compressed_sites, &dd_builtin_compressed_len);
 	}
