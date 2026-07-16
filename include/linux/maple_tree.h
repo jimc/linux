@@ -220,9 +220,6 @@ struct maple_copy {
 #define MT_FLAGS_ALLOC_WRAPPED	0x0800
 #define MT_FLAGS_ARENA		0x1000
 
-#ifdef CONFIG_DYNAMIC_DEBUG
-extern struct maple_node *ddebug_arena_alloc(void *arena, gfp_t gfp);
-#endif
 
 #define MAPLE_HEIGHT_MAX	31
 
@@ -940,25 +937,5 @@ void *mt_next(struct maple_tree *mt, unsigned long index, unsigned long max);
 #define mt_for_each(__tree, __entry, __index, __max) \
 	for (__entry = mt_find(__tree, &(__index), __max); \
 		__entry; __entry = mt_find_after(__tree, &(__index), __max))
-
-#ifdef CONFIG_DYNAMIC_DEBUG
-extern void arena_mas_init(struct ma_state *mas, struct maple_tree *mt, unsigned long index);
-extern void *arena_mas_walk(struct ma_state *mas);
-extern void *arena_mas_prev(struct ma_state *mas, unsigned long min);
-extern void *arena_mas_next(struct ma_state *mas, unsigned long max);
-extern void arena_mas_lock(struct ma_state *mas);
-extern void arena_mas_unlock(struct ma_state *mas);
-extern void *arena_mas_erase(struct ma_state *mas);
-extern int arena_mtree_store_range(struct maple_tree *mt, unsigned long start, unsigned long end, void *entry, gfp_t gfp);
-extern void arena___mt_destroy(struct maple_tree *mt);
-extern void arena_mtree_destroy(struct maple_tree *mt);
-extern void arena_mas_destroy(struct ma_state *mas);
-extern void *arena_mas_next_range(struct ma_state *mas, unsigned long max);
-extern void arena_mas_pause(struct ma_state *mas);
-extern void *arena_mas_find(struct ma_state *mas, unsigned long max);
-extern void *arena_mtree_load(struct maple_tree *mt, unsigned long index);
-extern int arena_mas_empty_area(struct ma_state *mas, unsigned long min, unsigned long max, unsigned long size);
-extern int arena_mas_empty_area_rev(struct ma_state *mas, unsigned long min, unsigned long max, unsigned long size);
-#endif
 
 #endif /*_LINUX_MAPLE_TREE_H */
