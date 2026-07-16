@@ -42,6 +42,7 @@
 
 #include <rdma/ib_verbs.h>
 #include <linux/maple_tree.h>
+#include <linux/arena_maple_tree.h>
 #include <linux/zlib.h>
 #include <linux/vmalloc.h>
 
@@ -87,16 +88,15 @@ static struct maple_node *ddebug_arena_alloc_node(struct ddebug_arena *arena, gf
 	static DEFINE_SPINLOCK(arena_lock);
 
 	spin_lock_irqsave(&arena_lock, flags);
-
 	if (arena->remaining < sizeof(struct maple_node)) {
 		spin_unlock_irqrestore(&arena_lock, flags);
-		apage = (struct ddebug_arena_page *)__get_free_page(gfp);
+		apage = (struct ddebug_arena_page *)__get_free_page(GFP_KERNEL);
 		if (!apage)
 			return NULL;
 		spin_lock_irqsave(&arena_lock, flags);
 		list_add(&apage->link, &arena->pages);
-		arena->free_ptr = (void *)(apage + 1);
-		arena->remaining = PAGE_SIZE - sizeof(struct ddebug_arena_page);
+		arena->free_ptr = (void *)((unsigned long)apage + 256);
+		arena->remaining = PAGE_SIZE - 256;
 	}
 
 	node = arena->free_ptr;
@@ -2627,6 +2627,7 @@ static int __init dynamic_debug_init(void)
 		.maps.len  = __stop___dyndbg_class_maps - __start___dyndbg_class_maps,
 		.users.len = __stop___dyndbg_class_users - __start___dyndbg_class_users,
 	};
+	arena_maple_tree_init();
 
 #ifdef CONFIG_MODULES
 	ret = register_module_notifier(&ddebug_module_nb);

@@ -22,6 +22,7 @@
 #include <linux/xarray.h>
 #include <linux/mm.h>
 #include <linux/maple_tree.h>
+#include <linux/arena_maple_tree.h>
 #include <linux/export.h>
 #include <asm/barrier.h>
 
@@ -131,6 +132,9 @@ static inline void kfree_specialized(void *ptr);
 
 #define kfree(ptr) kfree_specialized(ptr)
 
+#undef kfree_rcu
+#define kfree_rcu(ptr, member) do { } while (0)
+
 #include "maple_tree.c"
 
 /* Clean up macros to define our specialized functions */
@@ -198,8 +202,12 @@ static inline unsigned int kmem_cache_sheaf_size_specialized(struct slab_sheaf *
 
 static inline void kmem_cache_return_sheaf_specialized(struct kmem_cache *cache, gfp_t gfp, struct slab_sheaf *sheaf)
 {
-	if (sheaf == (struct slab_sheaf *)0x1234 || sheaf == (struct slab_sheaf *)0x5678)
-		return;
+	struct maple_tree *mt = current_ddebug_write_tree;
+	if (mt && (mt->ma_flags & MT_FLAGS_ARENA)) {
+		struct arena_maple_tree *amt = container_of(mt, struct arena_maple_tree, mt);
+		if (sheaf == (struct slab_sheaf *)amt->arena)
+			return;
+	}
 	kmem_cache_return_sheaf(cache, gfp, sheaf);
 }
 
