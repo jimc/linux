@@ -161,18 +161,17 @@ static inline bool ddebug_mode_enabled(unsigned int flags)
 
 #define _DPRINTK_FLAGS_ACTIVE  _DPRINTK_FLAGS_ENABLED
 
+/*
+ * DDEBUG_VIRTUAL_TO_PHYSICAL_CONST - Compile-time virtual-to-physical flag resolver.
+ * Only needs to handle default compile-time flags (_DPRINTK_FLAGS_PRINT and _DPRINTK_FLAGS_RATELIMIT_SOLO).
+ */
 #define DDEBUG_VIRTUAL_TO_PHYSICAL_CONST(virt_flags) ( \
-	((virt_flags) & ~(_DPRINTK_FLAGS_PRINT | _DPRINTK_FLAGS_COUNT | \
-			  _DPRINTK_FLAGS_RATELIMIT_SOLO | _DPRINTK_FLAGS_RATELIMIT_SHARED | \
-			  _DPRINTK_FLAGS_ONCE)) | \
-	(((virt_flags) & _DPRINTK_FLAGS_ONCE) ? _DPRINTK_MODE_ONCE : \
-	 ((virt_flags) & _DPRINTK_FLAGS_RATELIMIT_SOLO) ? _DPRINTK_MODE_RATELIMIT_SOLO : \
-	 ((virt_flags) & _DPRINTK_FLAGS_RATELIMIT_SHARED) ? _DPRINTK_MODE_RATELIMIT_SHARED : \
-	 (((virt_flags) & _DPRINTK_FLAGS_PRINT) && ((virt_flags) & _DPRINTK_FLAGS_COUNT)) ? _DPRINTK_MODE_PRINT_COUNT : \
+	((virt_flags) & ~(_DPRINTK_FLAGS_PRINT | _DPRINTK_FLAGS_RATELIMIT_SOLO)) | \
+	(((virt_flags) & _DPRINTK_FLAGS_RATELIMIT_SOLO) ? _DPRINTK_MODE_RATELIMIT_SOLO : \
 	 ((virt_flags) & _DPRINTK_FLAGS_PRINT) ? _DPRINTK_MODE_PRINT : \
-	 ((virt_flags) & _DPRINTK_FLAGS_COUNT) ? _DPRINTK_MODE_COUNT : \
 	 _DPRINTK_MODE_DISABLED) \
 )
+
 
 static inline unsigned int ddebug_physical_to_virtual(unsigned int phys_flags)
 {
