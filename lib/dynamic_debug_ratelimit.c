@@ -151,12 +151,13 @@ void ddebug_ratelimit_free_info(const struct _ddebug_info *di)
 
 	for (i = 0; i < di->descs.len; i++) {
 		dp = &di->descs.start[i];
-		if (dp->flags & _DPRINTK_FLAGS_RATELIMIT_SOLO) {
+		unsigned int mode = ddebug_get_mode(dp->flags);
+		if (mode == _DPRINTK_MODE_RATELIMIT_SOLO) {
 			struct ddebug_ratelimit_solo *wrapper = mtree_erase(&dd_ratelimits_solo, (unsigned long)dp);
 			if (wrapper)
 				kfree(wrapper); /* Unloading module context is safe for direct kfree */
 		}
-		if (dp->flags & _DPRINTK_FLAGS_RATELIMIT_SHARED) {
+		if (mode == _DPRINTK_MODE_RATELIMIT_SHARED) {
 			struct ddebug_ratelimit_shared *wrapper = mtree_erase(&dd_ratelimits_shared, (unsigned long)dp);
 			if (wrapper)
 				ddebug_ratelimit_shared_put(wrapper);
