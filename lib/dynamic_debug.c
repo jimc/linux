@@ -256,32 +256,8 @@ struct flagsbuf { char buf[ARRAY_SIZE(opt_array)+1]; };
 static char *ddebug_describe_flags(unsigned int flags, struct flagsbuf *fb)
 {
 	char *p = fb->buf;
-	unsigned int virt_flags = flags & ~_DPRINTK_MODE_MASK;
+	unsigned int virt_flags = ddebug_physical_to_virtual(flags);
 	int i;
-
-	switch (ddebug_get_mode(flags)) {
-	case _DPRINTK_MODE_PRINT:
-		virt_flags |= _DPRINTK_FLAGS_PRINT;
-		break;
-	case _DPRINTK_MODE_COUNT:
-		virt_flags |= _DPRINTK_FLAGS_COUNT;
-		break;
-	case _DPRINTK_MODE_PRINT_COUNT:
-		virt_flags |= _DPRINTK_FLAGS_PRINT | _DPRINTK_FLAGS_COUNT;
-		break;
-	case _DPRINTK_MODE_ONCE:
-	case _DPRINTK_MODE_ONCE_FIRED:
-		virt_flags |= _DPRINTK_FLAGS_ONCE;
-		break;
-	case _DPRINTK_MODE_RATELIMIT_SOLO:
-		virt_flags |= _DPRINTK_FLAGS_RATELIMIT_SOLO;
-		break;
-	case _DPRINTK_MODE_RATELIMIT_SHARED:
-		virt_flags |= _DPRINTK_FLAGS_RATELIMIT_SHARED;
-		break;
-	default:
-		break;
-	}
 
 	for (i = 0; i < ARRAY_SIZE(opt_array); ++i)
 		if (virt_flags & opt_array[i].flag)
@@ -697,10 +673,13 @@ static bool ddebug_match_desc(const struct ddebug_query *query,
 		return false;
 
 	/* match against the flags filter */
-	if (query->filter_set && (dp->flags & query->filter_set) != query->filter_set)
-		return false;
-	if (query->filter_clear && (dp->flags & query->filter_clear) != 0)
-		return false;
+	if (query->filter_set || query->filter_clear) {
+		unsigned int virt_flags = ddebug_physical_to_virtual(dp->flags);
+		if (query->filter_set && (virt_flags & query->filter_set) != query->filter_set)
+			return false;
+		if (query->filter_clear && (virt_flags & query->filter_clear) != 0)
+			return false;
+	}
 
 	/*
 	 * above are all satisfied, so we can make final decisions:
@@ -766,7 +745,9 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 
 			nfound++;
 
-			newflags = (dp->flags & modifiers->mask) | modifiers->flags;
+			unsigned int virt_flags = ddebug_physical_to_virtual(dp->flags);
+			unsigned int new_virt = (virt_flags & modifiers->mask) | modifiers->flags;
+			newflags = ddebug_virtual_to_physical(new_virt, dp->flags, modifiers->flags);
 			if (newflags == dp->flags)
 				continue;
 
@@ -1122,41 +1103,7 @@ static int ddebug_parse_flags(const char *str, struct flag_settings *modifiers)
 		return -EINVAL;
 	}
 
-	/* 3. Translate parsed virtual flags to 3-bit mode */
-	{
-		unsigned int virt_flags = modifiers->flags;
-		unsigned int mode = _DPRINTK_MODE_DISABLED;
 
-		if (virt_flags & _DPRINTK_FLAGS_ONCE)
-			mode = _DPRINTK_MODE_ONCE;
-		else if (virt_flags & _DPRINTK_FLAGS_RATELIMIT_SOLO)
-			mode = _DPRINTK_MODE_RATELIMIT_SOLO;
-		else if (virt_flags & _DPRINTK_FLAGS_RATELIMIT_SHARED)
-			mode = _DPRINTK_MODE_RATELIMIT_SHARED;
-		else if ((virt_flags & _DPRINTK_FLAGS_PRINT) && (virt_flags & _DPRINTK_FLAGS_COUNT))
-			mode = _DPRINTK_MODE_PRINT_COUNT;
-		else if (virt_flags & _DPRINTK_FLAGS_PRINT)
-			mode = _DPRINTK_MODE_PRINT;
-		else if (virt_flags & _DPRINTK_FLAGS_COUNT)
-			mode = _DPRINTK_MODE_COUNT;
-
-		/* Clear virtual flags from modifiers flags and mask */
-		modifiers->flags &= ~(_DPRINTK_FLAGS_PRINT | _DPRINTK_FLAGS_COUNT |
-		                      _DPRINTK_FLAGS_RATELIMIT_SOLO | _DPRINTK_FLAGS_RATELIMIT_SHARED |
-		                      _DPRINTK_FLAGS_ONCE);
-		modifiers->mask &= ~(_DPRINTK_FLAGS_PRINT | _DPRINTK_FLAGS_COUNT |
-		                     _DPRINTK_FLAGS_RATELIMIT_SOLO | _DPRINTK_FLAGS_RATELIMIT_SHARED |
-		                     _DPRINTK_FLAGS_ONCE);
-
-		/* Merge the computed 3-bit mode back */
-		modifiers->flags |= mode;
-		if (mode == _DPRINTK_MODE_DISABLED) {
-			modifiers->mask &= ~_DPRINTK_MODE_MASK;
-		} else {
-			modifiers->mask &= ~_DPRINTK_MODE_MASK;
-			modifiers->mask |= _DPRINTK_MODE_MASK;
-		}
-	}
 
 	return 0;
 }

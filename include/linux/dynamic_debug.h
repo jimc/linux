@@ -97,7 +97,7 @@ struct _ddebug {
 	 _DPRINTK_FLAGS_INCL_STACK)
 
 #if defined DEBUG
-#define _DPRINTK_FLAGS_DEFAULT _DPRINTK_MODE_PRINT
+#define _DPRINTK_FLAGS_DEFAULT _DPRINTK_FLAGS_PRINT
 #else
 #define _DPRINTK_FLAGS_DEFAULT 0
 #endif
@@ -160,6 +160,91 @@ static inline bool ddebug_mode_enabled(unsigned int flags)
 	 _DPRINTK_MODE_RATELIMIT_SOLO | _DPRINTK_MODE_RATELIMIT_SHARED)
 
 #define _DPRINTK_FLAGS_ACTIVE  _DPRINTK_FLAGS_ENABLED
+
+#define DDEBUG_VIRTUAL_TO_PHYSICAL_CONST(virt_flags) ( \
+	((virt_flags) & ~(_DPRINTK_FLAGS_PRINT | _DPRINTK_FLAGS_COUNT | \
+			  _DPRINTK_FLAGS_RATELIMIT_SOLO | _DPRINTK_FLAGS_RATELIMIT_SHARED | \
+			  _DPRINTK_FLAGS_ONCE)) | \
+	(((virt_flags) & _DPRINTK_FLAGS_ONCE) ? _DPRINTK_MODE_ONCE : \
+	 ((virt_flags) & _DPRINTK_FLAGS_RATELIMIT_SOLO) ? _DPRINTK_MODE_RATELIMIT_SOLO : \
+	 ((virt_flags) & _DPRINTK_FLAGS_RATELIMIT_SHARED) ? _DPRINTK_MODE_RATELIMIT_SHARED : \
+	 (((virt_flags) & _DPRINTK_FLAGS_PRINT) && ((virt_flags) & _DPRINTK_FLAGS_COUNT)) ? _DPRINTK_MODE_PRINT_COUNT : \
+	 ((virt_flags) & _DPRINTK_FLAGS_PRINT) ? _DPRINTK_MODE_PRINT : \
+	 ((virt_flags) & _DPRINTK_FLAGS_COUNT) ? _DPRINTK_MODE_COUNT : \
+	 _DPRINTK_MODE_DISABLED) \
+)
+
+static inline unsigned int ddebug_physical_to_virtual(unsigned int phys_flags)
+{
+	unsigned int virt_flags = phys_flags & ~_DPRINTK_MODE_MASK;
+
+	switch (ddebug_get_mode(phys_flags)) {
+	case _DPRINTK_MODE_PRINT:
+		virt_flags |= _DPRINTK_FLAGS_PRINT;
+		break;
+	case _DPRINTK_MODE_COUNT:
+		virt_flags |= _DPRINTK_FLAGS_COUNT;
+		break;
+	case _DPRINTK_MODE_PRINT_COUNT:
+		virt_flags |= _DPRINTK_FLAGS_PRINT | _DPRINTK_FLAGS_COUNT;
+		break;
+	case _DPRINTK_MODE_ONCE:
+	case _DPRINTK_MODE_ONCE_FIRED:
+		virt_flags |= _DPRINTK_FLAGS_PRINT | _DPRINTK_FLAGS_ONCE;
+		break;
+	case _DPRINTK_MODE_RATELIMIT_SOLO:
+		virt_flags |= _DPRINTK_FLAGS_PRINT | _DPRINTK_FLAGS_RATELIMIT_SOLO;
+		break;
+	case _DPRINTK_MODE_RATELIMIT_SHARED:
+		virt_flags |= _DPRINTK_FLAGS_PRINT | _DPRINTK_FLAGS_RATELIMIT_SHARED;
+		break;
+	default:
+		break;
+	}
+	return virt_flags;
+}
+
+static inline unsigned int ddebug_virtual_to_physical(unsigned int virt_flags, unsigned int orig_phys_flags, unsigned int modifiers_flags)
+{
+	unsigned int phys_flags = virt_flags & ~(_DPRINTK_FLAGS_PRINT | _DPRINTK_FLAGS_COUNT |
+						 _DPRINTK_FLAGS_RATELIMIT_SOLO | _DPRINTK_FLAGS_RATELIMIT_SHARED |
+						 _DPRINTK_FLAGS_ONCE);
+	unsigned int mode = _DPRINTK_MODE_DISABLED;
+	bool virt_print = (virt_flags & _DPRINTK_FLAGS_PRINT) ||
+			  (modifiers_flags & (_DPRINTK_FLAGS_ONCE | _DPRINTK_FLAGS_RATELIMIT_SOLO | _DPRINTK_FLAGS_RATELIMIT_SHARED));
+
+	if (virt_print) {
+		if (modifiers_flags & _DPRINTK_FLAGS_ONCE) {
+			mode = _DPRINTK_MODE_ONCE;
+		} else if (modifiers_flags & _DPRINTK_FLAGS_RATELIMIT_SOLO) {
+			mode = _DPRINTK_MODE_RATELIMIT_SOLO;
+		} else if (modifiers_flags & _DPRINTK_FLAGS_RATELIMIT_SHARED) {
+			mode = _DPRINTK_MODE_RATELIMIT_SHARED;
+		} else if (virt_flags & _DPRINTK_FLAGS_ONCE) {
+			unsigned int orig_mode = ddebug_get_mode(orig_phys_flags);
+			if (orig_mode == _DPRINTK_MODE_ONCE_FIRED)
+				mode = _DPRINTK_MODE_ONCE_FIRED;
+			else
+				mode = _DPRINTK_MODE_ONCE;
+		} else if (virt_flags & _DPRINTK_FLAGS_RATELIMIT_SOLO) {
+			mode = _DPRINTK_MODE_RATELIMIT_SOLO;
+		} else if (virt_flags & _DPRINTK_FLAGS_RATELIMIT_SHARED) {
+			mode = _DPRINTK_MODE_RATELIMIT_SHARED;
+		} else if (virt_flags & _DPRINTK_FLAGS_COUNT) {
+			mode = _DPRINTK_MODE_PRINT_COUNT;
+		} else {
+			mode = _DPRINTK_MODE_PRINT;
+		}
+	} else {
+		if (virt_flags & _DPRINTK_FLAGS_COUNT)
+			mode = _DPRINTK_MODE_COUNT;
+		else
+			mode = _DPRINTK_MODE_DISABLED;
+	}
+
+	phys_flags |= mode;
+	return phys_flags;
+}
 
 enum ddebug_class_map_type {
 	DD_CLASS_TYPE_DISJOINT_BITS,
@@ -476,7 +561,7 @@ void __dynamic_ibdev_dbg(struct _ddebug *descriptor,
 	__section("__dyndbg_descs") name = {			\
 		.format = (fmt),				\
 		.lineno = (__LINE__ > DDEBUG_LINE_MAX ? DDEBUG_LINE_MAX : __LINE__), \
-		.flags = (init_flags),				\
+		.flags = DDEBUG_VIRTUAL_TO_PHYSICAL_CONST(init_flags),				\
 		.class_id = cls,				\
 		_DPRINTK_KEY_INIT				\
 	};							\
