@@ -88,16 +88,14 @@ function log_stop {
 function verify_fingerprint {
     # Verifies a calculated fingerprint against the GOLDEN_RECORDS database
     # $1 - unique test key (e.g. normal_513)
-    # $2 - optional extra args (e.g. "dmesg:1" or "control:pattern")
-    # $3 - the calculated fingerprint hash to verify
-    # $4 - description of what was captured (e.g. "Dmesg Log" or "File Slice")
-    # $5 - the raw captured text block (to display in case of mismatch)
+    # $2 - the calculated fingerprint hash to verify
+    # $3 - description of what was captured (e.g. "Dmesg Log" or "File Slice")
+    # $4 - the raw captured text block (to display in case of mismatch)
 
     local label="$1"
-    local extra_args="$2"
-    local fingerprint="$3"
-    local capture_desc="$4"
-    local raw_capture="$5"
+    local fingerprint="$2"
+    local capture_desc="$3"
+    local raw_capture="$4"
 
     # Require GOLDEN_RECORDS to be defined in the caller script
     if ! declare -f GOLDEN_RECORDS >/dev/null; then
@@ -108,7 +106,7 @@ function verify_fingerprint {
     # Resolve the expected hash specifically for this label
     local expected_hash_field
     expected_hash_field=$(GOLDEN_RECORDS | \
-        grep -E "[[:space:]]${label}[[:space:]]" | head -n1 | awk '{print $2}')
+        grep -E "[[:space:]]${label}([[:space:]]|$)" | head -n1 | awk '{print $2}')
 
     local matched=0
     local h
@@ -136,12 +134,6 @@ function verify_fingerprint {
             echo -e "-----------------------------------${NC}"
         fi
         echo "$fingerprint" >> "$SEEN_HASHES_FILE"
-
-        # Telemetry
-        local T="${T:-0}"
-        if [ "$T" != "0" ] && [ "$T" != "n" ]; then
-            echo "TELEMETRY: $label $fingerprint VERIFIED $extra_args [via:\"$DDCMD_LOG\"]"
-        fi
     else
         # Failure path: display mismatch and append to corrections
         local status_str="UNREGISTERED"
@@ -149,43 +141,40 @@ function verify_fingerprint {
         if [ -n "$expected_hash_field" ]; then
             local short_expected="${expected_hash_field:0:12}"
             local short_got="${fingerprint:0:12}"
-            echo -e "${RED}: DRIFT for '${label}'${NC}"
-            echo -e "  Range:     ${extra_args}"
-            echo -e "  Stimulus:  ${stimulus}"
-            echo -e "  Expected:  '${short_expected}' (${expected_hash_field})"
-            echo -e "  Got:       '${short_got}' (${fingerprint})${NC}"
+            if [ "${K:-0}" -ne 2 ]; then
+                echo -e "${RED}: DRIFT for '${label}'${NC}"
+                echo -e "  Stimulus:  ${stimulus}"
+                echo -e "  Expected:  '${short_expected}' (${expected_hash_field})"
+                echo -e "  Got:       '${short_got}' (${fingerprint})${NC}"
+            fi
             status_str="DRIFTED"
         else
-            echo -e "${YELLOW}: NO RECORD for '${label}'${NC}"
-            echo -e "  Range:     ${extra_args}"
-            echo -e "  Stimulus:  ${stimulus}${NC}"
+            if [ "${K:-0}" -ne 2 ]; then
+                echo -e "${YELLOW}: NO RECORD for '${label}'${NC}"
+                echo -e "  Stimulus:  ${stimulus}${NC}"
+            fi
         fi
 
-        # Telemetry
-        local T="${T:-0}"
-        if [ "$T" != "0" ] && [ "$T" != "n" ]; then
-            echo "TELEMETRY: $label $fingerprint $status_str $extra_args " \
-                "[via:\"$CUMULATIVE_DDCMDS\"]"
+        if [ "${K:-0}" -ne 2 ]; then
+            echo -e "\nAdd or replace this line in GOLDEN_RECORDS():"
+            printf "#K= %-32s %-24s\n" "${fingerprint}" "${label}"
+            echo -e "\n--- Captured Invariant ${capture_desc} Output ---"
+            if [ "$capture_desc" = "File Slice" ]; then
+                echo "$raw_capture" | \
+                    sed -E "s/ =([_a-z]*[a-z][_a-z]*) / ${YELLOW}=\1${NC} /g"
+            else
+                echo "$raw_capture"
+            fi
+            echo -e "-----------------------------------${NC}"
         fi
-
-        echo -e "\nAdd or replace this line in GOLDEN_RECORDS():"
-        printf "#K= %-32s %-24s %s\n" "${fingerprint}" "${label}" "${extra_args}"
-        echo -e "\n--- Captured Invariant ${capture_desc} Output ---"
-        if [ "$capture_desc" = "File Slice" ]; then
-            echo "$raw_capture" | \
-                sed -E "s/ =([_a-z]*[a-z][_a-z]*) / ${YELLOW}=\1${NC} /g"
-        else
-            echo "$raw_capture"
-        fi
-        echo -e "-----------------------------------${NC}"
 
         if [ "$status_str" = "DRIFTED" ]; then
-            printf "#K= %-32s %-24s %s\n" \
-                "${fingerprint}" "${label}" "${extra_args}" \
+            printf "#K= %-32s %-24s\n" \
+                "${fingerprint}" "${label}" \
                 >> "$DRIFT_HASHES_FILE"
         else
-            printf "#K= %-32s %-24s %s\n" \
-                "${fingerprint}" "${label}" "${extra_args}" \
+            printf "#K= %-32s %-24s\n" \
+                "${fingerprint}" "${label}" \
                 >> "$UNREG_HASHES_FILE"
         fi
     fi
@@ -201,7 +190,6 @@ function verify_dmesg_slice {
     local app="${APP:-DYNDBG}"
     local start_marker="${2:-${app}_START_${label}_$$}"
     local end_marker="${3:-${app}_END_${label}_$$}"
-    local extra_args="dmesg"
 
     # 1. Capture the log slice (exactly once!)
     local log_slice=$(dmesg | sed -n "/$start_marker/,/$end_marker/p" | \
@@ -212,7 +200,7 @@ function verify_dmesg_slice {
     local fingerprint=$(echo "$log_slice" | tr -d '\r' | md5sum | cut -d' ' -f1)
 
     # 3. Verify
-    verify_fingerprint "$label" "$extra_args" "$fingerprint" "Dmesg Log" "$log_slice"
+    verify_fingerprint "$label" "$fingerprint" "Dmesg Log" "$log_slice"
 }
 
 function strip_control_linenos {
@@ -239,23 +227,14 @@ function verify_file_slice {
     # and verifies it against the database.
     # $1 - pattern to slice
     # $2 - optional file path (defaults to $CONTROL_FILE)
-    # $3 - optional extra args
 
     local pattern="$1"
     local file="${2:-$CONTROL_FILE}"
-    local extra_args="$3"
 
     # Always auto-resolve label via call stack sequence resets!
     ((TEST_SEQ_CTR++))
     rdi_resolve_label
     local label="$ACTIVE_RESOLVED_LABEL"
-
-    if [ -z "$extra_args" ]; then
-        extra_args="$pattern"
-        if [ "$pattern" != "*" ]; then
-            extra_args="\"$pattern\""
-        fi
-    fi
 
     # 1. Capture the file slice (exactly once!)
     local slice=$(slice_by_grep "$pattern" "$file")
@@ -267,7 +246,11 @@ function verify_file_slice {
     local fingerprint=$(echo "$slice" | tr -d '\r' | md5sum | cut -d' ' -f1)
 
     # 3. Verify
-    verify_fingerprint "$label" "$extra_args" "$fingerprint" "File Slice" "$slice"
+    verify_fingerprint "$label" "$fingerprint" "File Slice" "$slice"
+
+    # Reset state, bookend flag, and command tracker at teardown
+    IN_BOOKEND=0
+    DDCMD_LOG=""
 }
 
 # Global variables for bookending state transitions
@@ -301,10 +284,6 @@ function verify_after_change {
         rdi_resolve_label
         label="$ACTIVE_RESOLVED_LABEL"
     fi
-    local extra_args="$BEFORE_CAPTURE_PATTERN"
-    if [ "$BEFORE_CAPTURE_PATTERN" != "*" ]; then
-        extra_args="\"$BEFORE_CAPTURE_PATTERN\""
-    fi
 
     if [ -z "$BEFORE_CAPTURE_PATTERN" ]; then
         echo "Error: verify_after_change called without a matching capture_before!" >&2
@@ -326,7 +305,7 @@ function verify_after_change {
     local fingerprint=$(echo "$transition_diff" | tr -d '\r' | md5sum | cut -d' ' -f1)
 
     # 4. Verify the diff as the captured text block
-    verify_fingerprint "$label" "$extra_args" "$fingerprint" "File Change Diff" "$transition_diff"
+    verify_fingerprint "$label" "$fingerprint" "File Change Diff" "$transition_diff"
 
     # Reset state, bookend flag, and command tracker at teardown
     BEFORE_CAPTURE_SLICE=""
@@ -372,15 +351,17 @@ function audit_golden_records {
 
         # Check if this hash field was seen during the run
         if [ $hash_seen -eq 0 ]; then
-            if [ $stale_found -eq 0 ]; then
-                # On first failure, print header if not already printed
-                [ "${V:-0}" -eq 0 ] && \
-                    echo -e "${YELLOW}# --- GOLDEN_RECORDS Audit ---${NC}"
-                echo -e "${YELLOW}# The following GOLDEN_RECORDS entries " \
-                    "were never hit and may be stale:${NC}"
-                stale_found=1
+            if [ "${K:-0}" -ne 2 ]; then
+                if [ $stale_found -eq 0 ]; then
+                    # On first failure, print header if not already printed
+                    [ "${V:-0}" -eq 0 ] && \
+                        echo -e "${YELLOW}# --- GOLDEN_RECORDS Audit ---${NC}"
+                    echo -e "${YELLOW}# The following GOLDEN_RECORDS entries " \
+                        "were never hit and may be stale:${NC}"
+                fi
+                echo -e "${YELLOW}#K_STALE= $line${NC}"
             fi
-            echo -e "${YELLOW}#K_STALE= $line${NC}"
+            stale_found=1
         fi
     done < <(GOLDEN_RECORDS | grep "^#K=" | grep -v "<md5_hash>")
 

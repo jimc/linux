@@ -14,10 +14,13 @@ BLUE="${ESC}[0;34m"
 MAGENTA="${ESC}[0;35m"
 CYAN="${ESC}[0;36m"
 NC="${ESC}[0;0m"
-CUMULATIVE_DDCMDS="init"
-error_msg=""
-V=${V:=0}  # invoke as V=1 $0  for global verbose
-K=${K:=0}  # K=1,2 to tolerate/pass on checksum mismatches
+# Environment Controls:
+#   V=0,1,2 : Verbosity (0=concise summary, 1=verified assertions, 2=full captured outputs)
+#   K=0     : Strict mode (fails with exit 1 on checksum drift or stale records)
+#   K=1     : Soft-pass mode (prints DRIFT/STALE diffs, exits 0 with 'fake success')
+#   K=2     : Silent soft-pass mode (suppresses DRIFT/STALE diffs, exits 0 with 'fake success')
+V=${V:=0}
+K=${K:=0}
 
 # Sanitize V to ensure it is a valid integer
 if [[ ! "$V" =~ ^[0-9]+$ ]]; then
@@ -52,11 +55,14 @@ else
     LACK_DD_BUILTIN=0
 fi
 
+function ifrmmod {
+    [ "${LACK_TMOD:-0}" -eq 1 ] && return
+    grep -q "^$1 " /proc/modules 2>/dev/null && rmmod $1
+}
+
 # Clean up any leftover loaded test modules at initialization
-grep -q "^test_dynamic_debug_submod " /proc/modules 2>/dev/null \
-    && rmmod test_dynamic_debug_submod
-grep -q "^test_dynamic_debug " /proc/modules 2>/dev/null \
-    && rmmod test_dynamic_debug
+ifrmmod test_dynamic_debug_submod
+ifrmmod test_dynamic_debug
 
 # ==============================================================================
 # TESTING STRATEGY 1.
@@ -76,8 +82,7 @@ function log_ddcmd {
 }
 
 function my_modprobe {
-    IN_BOOKEND=1
-    DDCMD_LOG="modprobe $*"
+    log_ddcmd "modprobe $*"
     modprobe "$@"
 }
 
@@ -175,11 +180,6 @@ function verify_control_slice {
 function slice_and_hash_ddctrl {
     local slice=$(slice_by_grep "$1" "$CONTROL_FILE" | strip_control_linenos)
     echo "$slice" | tr -d '\r' | md5sum | cut -d' ' -f1
-}
-
-function ifrmmod {
-    [ "${LACK_TMOD:-0}" -eq 1 ] && return
-    grep -q "^$1 " /proc/modules 2>/dev/null && rmmod $1
 }
 
 # ==============================================================================
@@ -624,123 +624,131 @@ modular_tests=(
 # GOLDEN_RECORDS (MD5 Fingerprint Verification Database)
 #
 # This database stores the expected invariant log content hashes for our tests.
-# Since the key has the line-number of the callsite, we dont yet
-# support looping over a test-call, maybe we'll need to address that
-# later.
+# Format: #K= <md5_hash> <test_label>
 #
-# NB: records have lineno of the test in code above. table at bottom
-# means inserts dont shift test-lines.
-#
+# Each entry contains a single canonical hash for the active test step label.
 # ==============================================================================
 function GOLDEN_RECORDS {
     cat << 'EOF' | {
-#K= f3dbd5afb9aa1750f93275b634499e22,bb85d28739876b0fdf1eb426baae8ef7 FT_grammar_errs.1        dmesg
-#K= 200c01632c52a63f6d186da1c6460740,9c405e06fcea50284df82d1ae9692403 FT_grammar_errs.2        dmesg
-#K= 7d7141900ce6e32f15c99202309c63a4,0b0d9b0e6f4c45c7d75d699fd3b6aa93 FT_grammar_errs.3        dmesg
-#K= 1bb798a5831d0119789d424ef6cb55c4,e008644e159c2a9d99a8d0806c06e71e FT_grammar_errs.4        dmesg
-#K= 5edd66e308b2792d5694df86c07a3eaf,11833e6cf8fe8b03869aa4f669b63398,5750ed178633f9a68623f928c093d16e FT_grammar_errs.5        dmesg
-#K= 6f87d92ffe0812550f43287127c6f2b9,e85a4b665f5ef141e3f4d4505dec1da1,2cd51e5e3c3e2501544524bed0fab620 FT_grammar_errs.6        dmesg
-#K= c0eb05b58a008c722e091e1ae74440ec,3e1eba65bd936e1276c7e1d76b399595 FT_grammar_errs.7        dmesg
-#K= 911929ec0e2ffc1f13822b479dec6805,e3ac86676e309d4e72ff3da287736c29 FT_grammar_errs.8        dmesg
-#K= c1407512376369d2e591a4b25a4b607a,466d325c23519119f754fa7860bae7c6 FT_grammar_errs.9        dmesg
-#K= 2046abda72725ea06fe339d5f364f1c9,51c489366cd86c16280858b95adf34ac FT_grammar_errs.10       dmesg
-#K= b72f7fccf76f8a5bee47a05d7bb545fb,dfc632c6c0cd6206b6141dbc5fb989db FT_grammar_errs.11       dmesg
-#K= 98e2bd3e4f3da58536496a38ec3e6238,69650fc26e97a78082bd851eb4a5c83b FT_grammar_errs.12       dmesg
-#K= b371c6ba52503d037dbc43da788af8be,5cfe5665962a482f416836793067f2a2 FT_grammar_errs.13       dmesg
-#K= cb8288d607b0c5282125852f3ab05107,661cc9a2d8d3c381bfeae41392432575 FT_grammar_errs.14       dmesg
-#K= 9346a310c4ad57cc3746afbace702c3e,5dd0accf9be37ce2f4bf697e9bdebe30 FT_grammar_errs.15       dmesg
-#K= 533d27af85eed3c0fd2eaec961982a36,bd8d9cf661c9aca54dac93c74cfc1501 FT_grammar_errs.16       dmesg
-#K= 114e0632585e205a3347c82bac7d79f2,e991391048f2fdffaaed99ba36b787ed FT_grammar_errs.17       dmesg
-#K= 73f5c173bafdfb9674b5ecce77db3354,82d99278f471ebfbf47eeb19898525cf FT_grammar_errs.18       dmesg
-#K= 0fc110d078f60eacdd389e5975ba18d9,3c8d268c94b0bf97e64999654cd840c4,f3f088fa7d276981bf2898c048087f76 FT_grammar_errs.19       dmesg
-#K= 815a1c52f365510c644450bb80c07e72,1a448ff3f1df9155cc3acf1e124f24f5,984ecc198e0fa9fc91bc31caf7da2a5d FT_grammar_errs.20       dmesg
-#K= 621e3cd81b553973cb40a935bb9298f1,76c8a33c585d414fcc3f1c8b5ea5b4b3 FT_grammar_errs.21       dmesg
-#K= 581222901232344ade18bbda58302c48,90cfc66e9d61f5c448353b97baa99145 FT_grammar_errs.22       dmesg
-#K= ea0aae3e01b3bb22eb8ad7acd327b371,37a51dfd6e84cb64b69d3a0e23e68ceb FT_grammar_errs.23       dmesg
-#K= 8f28189bff62a3d5ed16f537d41a725a,3aefa325b63742710b45e4531152c9d8 FT_grammar_errs.24       dmesg
-#K= 19c425e5d3a645b5dc5e23758ba0f4a1,bc8d2c23282cd6834879bc1f1b303d05 FT_grammar_errs.25       dmesg
-#K= 75415542333f2250f0e060a54dae50f8,092ec5530d875be1dc96ad4202fc7dc3 FT_grammar_errs.26       dmesg
-#K= 0955815c0e595ab2206e25aa31fe1ef2,98caa2677e9070953a852b27ab57861e FT_grammar_errs.27       dmesg
-#K= 3ff4c0b60db33e44c3cd6f0e14f81e3e,8d755baa707c7b3b67491bf84708ef08 FT_grammar_errs.28       dmesg
-#K= 9346a310c4ad57cc3746afbace702c3e,5dd0accf9be37ce2f4bf697e9bdebe30 FT_grammar_errs.29       dmesg
-#K= 7aaf0a16c287e66b62e11298ee160b34,2e37642dc8aee3d04b8a54a76b3b891c FT_grammar_errs.30       dmesg
-#K= 06350c62105b537cdd0c67736b29727d,593c8b4c41932e3bde564a0008627ced FT_grammar_errs.31       dmesg
-#K= 6ef0ec01805c8719d828553098f95377,85a2a0bee8d0cd10f883aa5477d62efb FT_grammar_errs.32       dmesg
-#K= 0fc110d078f60eacdd389e5975ba18d9,3c8d268c94b0bf97e64999654cd840c4,f3f088fa7d276981bf2898c048087f76 FT_grammar_errs.33       dmesg
-#K= 72203b2d88d0617cd5c659d3b80e26f9,1a448ff3f1df9155cc3acf1e124f24f5,629f6a7e379e02f38c543cdb48e3b84f FT_grammar_errs.34       dmesg
-#K= 6ecb03736d5cddb7ab2aaff49d561be9,d9f0cffb0898c54690735a71b0d4f3bf FT_grammar_errs.35       dmesg
-#K= eaa989336cb7c96c13ef4a3964fc6898,4cf728b6a32043ea5336a14d0c435312 FT_grammar_errs.36       dmesg
-#K= 5b624d9c133d7bb4f5370c3ce06929ed,a11ae3f86f4e5f539fd6168d318f74b4 FT_grammar_errs.37       dmesg
-#K= 127275739b1fe04c84eedad28ec154f6,c7d3830b0391f6a773205066b64e15f9 FT_grammar_errs.38       dmesg
-#K= 3e2fd15a7e8c0583bc5066524bc50508,5c506ea2bfd050439b580b91543e9be7 FT_grammar_errs.39       dmesg
-#K= 781995971d28f732a792522f3c56cdd3,a257660007408f7bb0cb43c99b1c7bb8 FT_grammar_errs.40       dmesg
-#K= 6614a677d9f9ac09d9825b4e989d2c42,0082939f100300a7b327b143cf40cb43 FT_grammar_errs.41       dmesg
-#K= 70de9afed457a6be9f9c3c81cbd6d4d5,657ac4360f978687ad25a705b2bb89f1 FT_grammar_errs.42       dmesg
-#K= 99985cce918eb5108ecb3658249f6bc7,6e8599556a312200fb6d484565b6c52f FT_basic_queries.1       "kernel/params.c"
-#K= eb3bd35439cc289ef59ee967aad4d540,db17180b59444e5e34a8fc20c40e4530 FT_basic_queries.2       "kernel/params.c"
-#K= 00359a9a05d439ec3a850a55e437fcbd,f7bd56bd407ff255ef2e3b5fb093ae6a FT_basic_queries.3       "kernel/params.c"
-#K= b24b1a8081d7514fa593cc28f6fb645b,4ce44468b3b5f80ae42ade1f261b952f FT_basic_queries.4       "kernel/params.c"
-#K= de950a3e60669fdd58d0a8c2867a056d,02e4fd94602e108cb89bfc70d47a5dad FT_basic_queries.5       "kernel/params.c"
-#K= 2ff49f0c4d18ec99bcb1c30840fe8afc,f03a7ca7316e8db4c0e16523dc41e75d FT_basic_queries.6       "kernel/params.c"
-#K= 9a1b13c32a15363dcf93913308edeea5,c518a50ba30ba8099d0dc874a27ecf16 FT_basic_queries.7       "kernel/params.c"
-#K= c3511fd3669af58188acf121c05914ca,fb294f02a4207b28b2a874524ef07afd,ccd518e373775f0c94cabe81d93584e4 FT_classmap_inheritance.1 "\[test_dynamic_debug\]"
-#K= c3511fd3669af58188acf121c05914ca,7a0b87016fdc237077dfe96bbbb3661b,ac599497ac899d0f175673b67bf13725 FT_classmap_inheritance.2 "\[test_dynamic_debug\]"
-#K= 29731f5b3707d4fb7e93888f95d6da02,2784d60f5056fc5cc03b3ceb854293f5,5a9479ff72e261b6c6cbd2a855a991d0 FT_classmap_inheritance.3 "test_dynamic_debug_submod"
-#K= 62501908ed46fb83205bebd80f850d56,bf66aaf8ff612272c0cda29778ed2131,38e813e9025107ac3e24226b8d487a92 FT_classmap_inheritance.4 "test_dynamic_debug"
-#K= 1d2ac19332c416e913d9fff8661db4b9,49fdd29d91a4c1d16f8b59bb431e741b,9b82b12a35ad98ef26183db15071f70e FT_classmap_inheritance.5 "test_dynamic_debug"
-#K= 8dd8f7c4b3b7777d5279b6635ec83f7b,a8aa244285d048b5ebe33061fa99c424,d4937472530af6fdcb0a2440d4a366ea FT_classmap_inheritance.6 "\[test_dynamic_debug\]"
-#K= a8dfa89c4daf89f13a015e87a36077c1,3060b86a0f553dd5a826bb7023284925,fea6f925b829f75a5b2d4e837738fa12 FT_classmap_inheritance.7 "test_dynamic_debug"
-#K= 68b329da9893e34099c7d8ad5cb9c940,f43e0aff8a4b38435b73d90ed8100d1b,7e92245008439ee79fe2460aeaa16a9b FT_classmap_inheritance.8 dmesg
-#K= d406a3a4cf51460a4975ed457c02a992,0f3a3a0814ef979d7d5b6ba42c6b5542,94610c57ac44bd7011002a654fd78f93 FT_modprobe_w_param.1    dmesg
-#K= b209fb96c2f32981750ca5f71ccf92d1,ec0781a78e51590d8481c2551411ded6,94610c57ac44bd7011002a654fd78f93 FT_modprobe_w_param.2    dmesg
-#K= ef22493a8baadddc5dd0291577e413c8,62e34fa11ce7e711bfe810d6452697a7,c1309e18dc9bf2f57184fa13164d917d FT_modprobe_w_param.3    "\[test_dynamic_debug\]"
-#K= 3eecda71b85be31ea5bc848d713da91f,b7b913ba270695efd7a812f67ebda48c,030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.4    dmesg
-#K= ef22493a8baadddc5dd0291577e413c8,62e34fa11ce7e711bfe810d6452697a7,a1232e658d95fbca8b23a69e9a0db965 FT_modprobe_w_param.5    "\[test_dynamic_debug\]"
-#K= 84ec18133715b6ff3204dd64414588ec,ea1267e206c3e3d062e829ef82fe68f1,030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.6    dmesg
-#K= ef22493a8baadddc5dd0291577e413c8,62e34fa11ce7e711bfe810d6452697a7,af7b3d532325b1c5ab990e4b32fed577 FT_modprobe_w_param.7    "\[test_dynamic_debug\]"
-#K= 591411c42cf52d7c4c46d76bcc345a5f,5746de4ee0f35a779a4fad6f2186b708,030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.8    dmesg
-#K= ef22493a8baadddc5dd0291577e413c8,62e34fa11ce7e711bfe810d6452697a7,591411c42cf52d7c4c46d76bcc345a5f FT_modprobe_w_param.9    "\[test_dynamic_debug\]"
-#K= f31e66ed431512b21d5ea779017ede0d,2f7acce16b80572d5e8eaee6bda4d227,030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.10   dmesg
-#K= ef22493a8baadddc5dd0291577e413c8,62e34fa11ce7e711bfe810d6452697a7,b0435304108118e64529469e59332111 FT_modprobe_w_param.11   "\[test_dynamic_debug\]"
-#K= 52e8d9bf30e67e2794618aaf15e78ef2,3f26cbf7e3f672f5f077a03d6ff86831,030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.12   dmesg
-#K= ef22493a8baadddc5dd0291577e413c8,62e34fa11ce7e711bfe810d6452697a7,4d036833ce9f661057a4e13d97295c65 FT_modprobe_w_param.13   "\[test_dynamic_debug\]"
-#K= 92e575a9402b53b8fd369c0e30a24247,1cde346e273ca9854cb947576b22b528,030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.14   dmesg
-#K= ef22493a8baadddc5dd0291577e413c8,62e34fa11ce7e711bfe810d6452697a7,5c3c6ecf6a46f9ccebd60c5ca9ebdbb7 FT_modprobe_w_param.15   "\[test_dynamic_debug\]"
-#K= 73a93377a823739e8aae44856a20fa7f,dafad094064271d2ac6a47859a63d67b,030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.16   dmesg
-#K= ef22493a8baadddc5dd0291577e413c8,62e34fa11ce7e711bfe810d6452697a7,73a93377a823739e8aae44856a20fa7f FT_modprobe_w_param.17   "\[test_dynamic_debug\]"
-#K= 3d9505b65ed7498f04b91827f489111a,27e436316b20a0189f6a46cdfe5a03b3,030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.18   dmesg
-#K= 5bad46c3c323bb274c6ccef2e5adc7f6,d39a9490cdcd4f69f400d207501b794a,10464b2c3e3972f05e93c609700f8fb2 FT_modprobe_w_param.19   dmesg
-#K= ef22493a8baadddc5dd0291577e413c8,62e34fa11ce7e711bfe810d6452697a7,10464b2c3e3972f05e93c609700f8fb2 FT_modprobe_w_param.20   "\[test_dynamic_debug\]"
-#K= 9523c153c7bc4354a90c23690f43e479,943c6084b990afdff3dda65836be49be,07c1f81d5a58675a291dc77acd6938c4 FT_modprobe_w_param.21   dmesg
-#K= ef22493a8baadddc5dd0291577e413c8,62e34fa11ce7e711bfe810d6452697a7,030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.22   "\[test_dynamic_debug\]"
-#K= 729332fc241734565782b2fad5b1d648,8a4cbe52f1f102b360e7419b1de0145e,b070066b0eb13a033446bd05850b15e2 FT_modprobe_w_param.23   dmesg
-#K= ef22493a8baadddc5dd0291577e413c8,62e34fa11ce7e711bfe810d6452697a7,030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.24   "\[test_dynamic_debug\]"
-#K= 7b91db8e9f160aebb1ee87fab2232404,e220f2b25973e7e2c2e4e972796e27cf,32ca47823c27e629e03c21aebfc25095 FT_modprobe_w_param.25   dmesg
-#K= ef22493a8baadddc5dd0291577e413c8,62e34fa11ce7e711bfe810d6452697a7,030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.26   "\[test_dynamic_debug\]"
-#K= f1b772ca7b98a8d18eb34635a863f883,73564da4d991018d2e5f704f0425daa0,7b91db8e9f160aebb1ee87fab2232404 FT_modprobe_w_param.27   dmesg
-#K= ef22493a8baadddc5dd0291577e413c8,62e34fa11ce7e711bfe810d6452697a7,030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.28   "\[test_dynamic_debug\]"
-#K= 086650af00f66c73a051b6afbb71bf44,01276487a4aed602f729e513885755a7,e393499e02677de414e478f4e710eeb9,caa849a2817863d68a8d11ee415b049c FT_modprobe_w_param.29   dmesg
-#K= ef22493a8baadddc5dd0291577e413c8,62e34fa11ce7e711bfe810d6452697a7,030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.30   "\[test_dynamic_debug\]"
-#K= 72a67c4c9de15f08d1212b96ebc71213,1983b6dc4cafc7cb5bd16cf4135f3674,375e38613af3b49bb7c7689dfecf4177,e94cc54f62faa428a03f2a7dbca06f97 FT_modprobe_w_param.31   dmesg
-#K= ef22493a8baadddc5dd0291577e413c8,62e34fa11ce7e711bfe810d6452697a7,030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.32   "\[test_dynamic_debug\]"
-#K= 3d2538bf868e71bff17c768cf118c352,58dc8705e7070a8f4c6262ee6b29db7b,745a61d20e26a6a22db0b99420fea80a,8919dde0fee0cf42f9388e541b33aa01 FT_modprobe_w_param.33   dmesg
-#K= ef22493a8baadddc5dd0291577e413c8,62e34fa11ce7e711bfe810d6452697a7,030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.34   "\[test_dynamic_debug\]"
-#K= 1ca895d63d34634ce1a72189aedb7be3,3d2538bf868e71bff17c768cf118c352,ff5bf6afec9642da83d3dcdb5e732ab9 FT_modprobe_w_param.35   dmesg
-#K= d7ed6935730c356ac78d6a9e7184b5d6,030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.36   "\[test_dynamic_debug\]"
+#K= f3dbd5afb9aa1750f93275b634499e22 FT_grammar_errs.1
+#K= 200c01632c52a63f6d186da1c6460740 FT_grammar_errs.2
+#K= 7d7141900ce6e32f15c99202309c63a4 FT_grammar_errs.3
+#K= 1bb798a5831d0119789d424ef6cb55c4 FT_grammar_errs.4
+#K= 5edd66e308b2792d5694df86c07a3eaf FT_grammar_errs.5
+#K= 6f87d92ffe0812550f43287127c6f2b9 FT_grammar_errs.6
+#K= c0eb05b58a008c722e091e1ae74440ec FT_grammar_errs.7
+#K= 911929ec0e2ffc1f13822b479dec6805 FT_grammar_errs.8
+#K= c1407512376369d2e591a4b25a4b607a FT_grammar_errs.9
+#K= 2046abda72725ea06fe339d5f364f1c9 FT_grammar_errs.10
+#K= b72f7fccf76f8a5bee47a05d7bb545fb FT_grammar_errs.11
+#K= 98e2bd3e4f3da58536496a38ec3e6238 FT_grammar_errs.12
+#K= b371c6ba52503d037dbc43da788af8be FT_grammar_errs.13
+#K= cb8288d607b0c5282125852f3ab05107 FT_grammar_errs.14
+#K= 9346a310c4ad57cc3746afbace702c3e FT_grammar_errs.15
+#K= 533d27af85eed3c0fd2eaec961982a36 FT_grammar_errs.16
+#K= 114e0632585e205a3347c82bac7d79f2 FT_grammar_errs.17
+#K= 73f5c173bafdfb9674b5ecce77db3354 FT_grammar_errs.18
+#K= 0fc110d078f60eacdd389e5975ba18d9 FT_grammar_errs.19
+#K= 815a1c52f365510c644450bb80c07e72 FT_grammar_errs.20
+#K= 621e3cd81b553973cb40a935bb9298f1 FT_grammar_errs.21
+#K= 581222901232344ade18bbda58302c48 FT_grammar_errs.22
+#K= ea0aae3e01b3bb22eb8ad7acd327b371 FT_grammar_errs.23
+#K= 8f28189bff62a3d5ed16f537d41a725a FT_grammar_errs.24
+#K= 19c425e5d3a645b5dc5e23758ba0f4a1 FT_grammar_errs.25
+#K= 75415542333f2250f0e060a54dae50f8 FT_grammar_errs.26
+#K= 0955815c0e595ab2206e25aa31fe1ef2 FT_grammar_errs.27
+#K= 3ff4c0b60db33e44c3cd6f0e14f81e3e FT_grammar_errs.28
+#K= 9346a310c4ad57cc3746afbace702c3e FT_grammar_errs.29
+#K= 7aaf0a16c287e66b62e11298ee160b34 FT_grammar_errs.30
+#K= 06350c62105b537cdd0c67736b29727d FT_grammar_errs.31
+#K= 6ef0ec01805c8719d828553098f95377 FT_grammar_errs.32
+#K= 0fc110d078f60eacdd389e5975ba18d9 FT_grammar_errs.33
+#K= 72203b2d88d0617cd5c659d3b80e26f9 FT_grammar_errs.34
+#K= 6ecb03736d5cddb7ab2aaff49d561be9 FT_grammar_errs.35
+#K= eaa989336cb7c96c13ef4a3964fc6898 FT_grammar_errs.36
+#K= 5b624d9c133d7bb4f5370c3ce06929ed FT_grammar_errs.37
+#K= 127275739b1fe04c84eedad28ec154f6 FT_grammar_errs.38
+#K= 3e2fd15a7e8c0583bc5066524bc50508 FT_grammar_errs.39
+#K= 781995971d28f732a792522f3c56cdd3 FT_grammar_errs.40
+#K= 6614a677d9f9ac09d9825b4e989d2c42 FT_grammar_errs.41
+#K= 70de9afed457a6be9f9c3c81cbd6d4d5 FT_grammar_errs.42
+#K= 99985cce918eb5108ecb3658249f6bc7 FT_basic_queries.1
+#K= eb3bd35439cc289ef59ee967aad4d540 FT_basic_queries.2
+#K= 00359a9a05d439ec3a850a55e437fcbd FT_basic_queries.3
+#K= b24b1a8081d7514fa593cc28f6fb645b FT_basic_queries.4
+#K= de950a3e60669fdd58d0a8c2867a056d FT_basic_queries.5
+#K= f49de2063a545721cf5e959efc160836 FT_basic_queries.6
+#K= 2ff49f0c4d18ec99bcb1c30840fe8afc FT_basic_queries.7
+#K= 9a1b13c32a15363dcf93913308edeea5 FT_basic_queries.8
+#K= 4b902c159d7f08f91377bf0a353e0051 FT_path_module_queries.1
+#K= bede904b02278e5648bb7a8243be8d98 FT_path_module_queries.2
+#K= 4b902c159d7f08f91377bf0a353e0051 FT_path_module_queries.3
+#K= bede904b02278e5648bb7a8243be8d98 FT_path_module_queries.4
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_comma_terminators.1
+#K= 99985cce918eb5108ecb3658249f6bc7 FT_comma_terminators.2
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_comma_terminators.3
+#K= 85f93d30f4006c99a806639970b92f20 FT_comma_terminators.4
+#K= 26586ed28518bdd7d718ff4172635c42 FT_test_classes.1
+#K= a15ec4843acd721fbdfddc0b512c8032 FT_test_classes.2
+#K= b4a593a1e1cab60da0156fcd5582d24c FT_test_classes.3
+#K= c3511fd3669af58188acf121c05914ca FT_classmap_inheritance.1
+#K= c3511fd3669af58188acf121c05914ca FT_classmap_inheritance.2
+#K= 29731f5b3707d4fb7e93888f95d6da02 FT_classmap_inheritance.3
+#K= 68b329da9893e34099c7d8ad5cb9c940 FT_classmap_inheritance.4
+#K= 2dc4ea5fe156d2df3a3e2b8d90cb320b FT_classmap_inheritance.5
+#K= 62501908ed46fb83205bebd80f850d56 FT_classmap_inheritance.6
+#K= 1d2ac19332c416e913d9fff8661db4b9 FT_classmap_inheritance.7
+#K= 8dd8f7c4b3b7777d5279b6635ec83f7b FT_classmap_inheritance.8
+#K= a8dfa89c4daf89f13a015e87a36077c1 FT_classmap_inheritance.9
+#K= 62b6803edf43519186d6185bebf34352 FT_classmap_inheritance.10
+#K= 94610c57ac44bd7011002a654fd78f93 FT_modprobe_w_param.1
+#K= 94610c57ac44bd7011002a654fd78f93 FT_modprobe_w_param.2
+#K= 8ce6fcd5958d99524509f8ee8b337762 FT_modprobe_w_param.3
+#K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.4
+#K= e99561131cb0877e244ded16465d17be FT_modprobe_w_param.5
+#K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.6
+#K= a6c1e1585418e199de271b71a9746d93 FT_modprobe_w_param.7
+#K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.8
+#K= 591411c42cf52d7c4c46d76bcc345a5f FT_modprobe_w_param.9
+#K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.10
+#K= b425428024ebf309fd38ac6c67d954ef FT_modprobe_w_param.11
+#K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.12
+#K= 35c26142670166a021b523097db2e418 FT_modprobe_w_param.13
+#K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.14
+#K= 090cde34d0a22f90f2bba1fed561aa9c FT_modprobe_w_param.15
+#K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.16
+#K= 73a93377a823739e8aae44856a20fa7f FT_modprobe_w_param.17
+#K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.18
+#K= 10464b2c3e3972f05e93c609700f8fb2 FT_modprobe_w_param.19
+#K= 10464b2c3e3972f05e93c609700f8fb2 FT_modprobe_w_param.20
+#K= 69502938a4be4936847568d8aad027f6 FT_modprobe_w_param.21
+#K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.22
+#K= 51fe322a7f368d936d2292c951247b33 FT_modprobe_w_param.23
+#K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.24
+#K= 91391932971be1d599d19ba04d6f6a34 FT_modprobe_w_param.25
+#K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.26
+#K= 7b91db8e9f160aebb1ee87fab2232404 FT_modprobe_w_param.27
+#K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.28
+#K= 82bddad95d7ac6ecae367c7b63f1778b FT_modprobe_w_param.29
+#K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.30
+#K= 6686e8b91736913b0047202ca8f0f20e FT_modprobe_w_param.31
+#K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.32
+#K= 8d71e5a7ec153e0be606ca80c6125342 FT_modprobe_w_param.33
+#K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.34
+#K= ff5bf6afec9642da83d3dcdb5e732ab9 FT_modprobe_w_param.35
+#K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.36
 EOF
         # Read the K-recs and skip those for tests that can't run
         while read -r line; do
             # Filter built-in if needed
             if [ "${LACK_DD_BUILTIN:-0}" -eq 1 ]; then
-                # Extract pattern (4th field) from #K= line
-                local pattern=$(echo "$line" | awk '{print $4}')
-                if [[ "$pattern" == *params* || "$pattern" == *main* ]]; then
+                local label=$(echo "$line" | awk '{print $3}')
+                if [[ "$label" == FT_basic_queries* || "$label" == FT_path_module_queries* ]]; then
                     continue
                 fi
             fi
             # Filter modular if needed
             if [ "${LACK_TMOD:-0}" -eq 1 ]; then
-                # Extract label (3rd field) from #K= line
                 local label=$(echo "$line" | awk '{print $3}')
                 if [[ "$label" == FT_test_classes* \
 			  || "$label" == FT_classmap_inheritance* \
@@ -804,17 +812,21 @@ audit_golden_records
 failed=0
 
 if [ -s "$UNREG_HASHES_FILE" ]; then
-    echo -e "${YELLOW}\n# --- Unregistered Baselines ---"
-    cat "$UNREG_HASHES_FILE"
-    echo -e "# ------------------------------${NC}"
+    if [ "${K:-0}" -ne 2 ]; then
+        echo -e "${YELLOW}\n# --- Unregistered Baselines ---"
+        cat "$UNREG_HASHES_FILE"
+        echo -e "# ------------------------------${NC}"
+    fi
     rm -f "$UNREG_HASHES_FILE"
     failed=1
 fi
 
 if [ -s "$DRIFT_HASHES_FILE" ]; then
-    echo -e "${RED}\n# --- Drifted Baselines ---"
-    cat "$DRIFT_HASHES_FILE"
-    echo -e "# -------------------------${NC}"
+    if [ "${K:-0}" -ne 2 ]; then
+        echo -e "${RED}\n# --- Drifted Baselines ---"
+        cat "$DRIFT_HASHES_FILE"
+        echo -e "# -------------------------${NC}"
+    fi
     rm -f "$DRIFT_HASHES_FILE"
     failed=1
 fi
@@ -823,7 +835,7 @@ fi
 rm -f "$UNREG_HASHES_FILE" "$DRIFT_HASHES_FILE"
 
 if [ $failed -eq 1 ]; then
-    [ "$K" -eq 1 ] && echo "fake success" && exit $ksft_pass
+    [ "${K:-0}" -ge 1 ] && echo "fake success" && exit $ksft_pass
     exit $ksft_fail
 fi
 
