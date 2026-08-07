@@ -27,6 +27,8 @@
 #include <drm/drm_modeset_helper.h>
 #include <drm/drm_print.h>
 
+DRM_CLASSMAP_USE(drm_debug_classes);
+
 #include <video/mipi_display.h>
 
 struct panel_mipi_dbi_format {

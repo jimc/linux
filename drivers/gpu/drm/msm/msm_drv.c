@@ -15,6 +15,9 @@
 #include <drm/drm_file.h>
 #include <drm/drm_ioctl.h>
 #include <drm/drm_of.h>
+#include <drm/drm_print.h>
+
+DRM_CLASSMAP_USE(drm_debug_classes);
 
 #include "msm_drv.h"
 #include "msm_debugfs.h"
