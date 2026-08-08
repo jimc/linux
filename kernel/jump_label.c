@@ -566,9 +566,11 @@ static void __jump_label_update(struct static_key *key,
 void static_key_apply_queued(void)
 {
 #ifdef HAVE_JUMP_LABEL_BATCH
+	cpus_read_lock();
 	jump_label_lock();
 	arch_jump_label_transform_apply();
 	jump_label_unlock();
+	cpus_read_unlock();
 #endif
 }
 

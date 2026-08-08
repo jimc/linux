@@ -750,6 +750,8 @@ static int ddebug_apply_class_bitmap(const struct ddebug_class_param *dcp,
 	const struct ddebug_class_map *map = dcp->map;
 	int matches = 0;
 	int bi, pos = 0;
+	bool alloc = true;
+	char sbuf[1024];
 	char *buf;
 
 	if (*new_bits == old_bits)
@@ -758,9 +760,11 @@ static int ddebug_apply_class_bitmap(const struct ddebug_class_param *dcp,
 	v2pr_info("apply bitmap: 0x%x to: 0x%x for %s\n", *new_bits,
 		  old_bits, query_modname ?: "'*'");
 
-	buf = kmalloc(4096, GFP_KERNEL);
-	if (!buf)
-		return -ENOMEM;
+	buf = kmalloc(1024, GFP_KERNEL);
+	if (!buf) {
+		buf = sbuf;
+		alloc = false;
+	}
 
 	for (bi = 0; bi < map->length && bi < 32; bi++) {
 		bool new_b = !!(*new_bits & BIT(bi));
@@ -769,7 +773,7 @@ static int ddebug_apply_class_bitmap(const struct ddebug_class_param *dcp,
 		if (new_b == old_b)
 			continue;
 
-		pos += scnprintf(buf + pos, 4096 - pos, "class %s %c%s%c",
+		pos += scnprintf(buf + pos, (alloc ? 1024 : sizeof(sbuf)) - pos, "class %s %c%s%c",
 				 map->class_names[bi],
 				 new_b ? '+' : '-', dcp->flags, ';');
 	}
@@ -779,7 +783,8 @@ static int ddebug_apply_class_bitmap(const struct ddebug_class_param *dcp,
 		matches = ddebug_exec_queries(buf, query_modname);
 	}
 
-	kfree(buf);
+	if (alloc)
+		kfree(buf);
 
 	v2pr_info("applied bitmap: 0x%x to: 0x%x for %s\n", *new_bits,
 		  old_bits, query_modname ?: "'*'");
