@@ -2840,10 +2840,12 @@ static int text_poke_loc_cmp(const void *a, const void *b)
 {
 	const struct smp_text_poke_loc *tpl_a = a;
 	const struct smp_text_poke_loc *tpl_b = b;
+	void *addr_a = text_poke_addr(tpl_a);
+	void *addr_b = text_poke_addr(tpl_b);
 
-	if (tpl_a->rel_addr < tpl_b->rel_addr)
+	if (addr_a < addr_b)
 		return -1;
-	if (tpl_a->rel_addr > tpl_b->rel_addr)
+	if (addr_a > addr_b)
 		return 1;
 	return 0;
 }
@@ -3196,8 +3198,17 @@ static void __smp_text_poke_batch_add(void *addr, const void *opcode, size_t len
  */
 void __ref smp_text_poke_batch_add(void *addr, const void *opcode, size_t len, const void *emulate)
 {
+	int i;
+
 	if (text_poke_array.nr_entries == TEXT_POKE_ARRAY_MAX)
 		smp_text_poke_batch_finish();
+
+	for (i = 0; i < text_poke_array.nr_entries; i++) {
+		if (text_poke_addr(&text_poke_array.vec[i]) == addr) {
+			smp_text_poke_batch_finish();
+			break;
+		}
+	}
 
 	__smp_text_poke_batch_add(addr, opcode, len, emulate);
 }
