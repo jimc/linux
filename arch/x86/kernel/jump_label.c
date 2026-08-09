@@ -97,7 +97,7 @@ __jump_label_transform(struct jump_entry *entry,
 	 * are doing nop -> jump or jump -> nop transition, and assume
 	 * always nop being the 'currently valid' instruction
 	 */
-	if (init || system_state == SYSTEM_BOOTING) {
+	if (init || system_state < SYSTEM_RUNNING) {
 		text_poke_early((void *)jump_entry_code(entry), jlp.code, jlp.size);
 		return;
 	}
@@ -125,9 +125,9 @@ bool arch_jump_label_transform_queue(struct jump_entry *entry,
 {
 	struct jump_label_patch jlp;
 
-	if (system_state == SYSTEM_BOOTING) {
+	if (system_state < SYSTEM_RUNNING) {
 		/*
-		 * Fallback to the non-batching mode.
+		 * Fallback to the non-batching mode during early boot.
 		 */
 		arch_jump_label_transform(entry, type);
 		return true;
