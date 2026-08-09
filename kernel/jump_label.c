@@ -253,6 +253,11 @@ EXPORT_SYMBOL_GPL(static_key_disable);
 
 void static_key_enable_queued(struct static_key *key)
 {
+	if (system_state < SYSTEM_RUNNING) {
+		static_key_enable(key);
+		return;
+	}
+
 	STATIC_KEY_CHECK_USE(key);
 
 	if (atomic_read(&key->enabled) > 0) {
@@ -279,6 +284,11 @@ void static_key_enable_queued(struct static_key *key)
 
 void static_key_disable_queued(struct static_key *key)
 {
+	if (system_state < SYSTEM_RUNNING) {
+		static_key_disable(key);
+		return;
+	}
+
 	STATIC_KEY_CHECK_USE(key);
 
 	if (atomic_read(&key->enabled) != 1) {
