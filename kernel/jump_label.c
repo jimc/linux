@@ -566,6 +566,14 @@ static void __jump_label_update(struct static_key *key,
 void static_key_apply_queued(void)
 {
 #ifdef HAVE_JUMP_LABEL_BATCH
+	/*
+	 * During early boot before SMP is active (system_state < SYSTEM_RUNNING),
+	 * arch_jump_label_transform_queue() falls back to immediate text_poke_early.
+	 * Bailing out early avoids calling cpus_read_lock() before CPU hotplug init.
+	 */
+	if (system_state < SYSTEM_RUNNING)
+		return;
+
 	cpus_read_lock();
 	jump_label_lock();
 	arch_jump_label_transform_apply();
