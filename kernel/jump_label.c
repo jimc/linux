@@ -251,6 +251,36 @@ void static_key_disable(struct static_key *key)
 }
 EXPORT_SYMBOL_GPL(static_key_disable);
 
+#ifdef HAVE_JUMP_LABEL_BATCH
+#define MAX_QUEUED_KEYS 256
+static struct static_key *jump_label_queued_keys[MAX_QUEUED_KEYS];
+static int jump_label_num_queued_keys;
+
+static void jump_label_finalize_queued_keys(void)
+{
+	int i;
+	for (i = 0; i < jump_label_num_queued_keys; i++) {
+		struct static_key *k = jump_label_queued_keys[i];
+		if (!k)
+			continue;
+		if (atomic_read(&k->enabled) == -1)
+			atomic_set_release(&k->enabled, 1);
+		else if (atomic_read(&k->enabled) == -2)
+			atomic_set_release(&k->enabled, 0);
+	}
+	jump_label_num_queued_keys = 0;
+}
+
+static void jump_label_record_queued_key(struct static_key *key)
+{
+	if (jump_label_num_queued_keys >= MAX_QUEUED_KEYS) {
+		arch_jump_label_transform_apply();
+		jump_label_finalize_queued_keys();
+	}
+	jump_label_queued_keys[jump_label_num_queued_keys++] = key;
+}
+#endif
+
 void static_key_enable_queued(struct static_key *key)
 {
 	if (system_state < SYSTEM_RUNNING) {
@@ -272,12 +302,16 @@ void static_key_enable_queued(struct static_key *key)
 	scoped_guard(jump_label_lock) {
 		if (atomic_read(&key->enabled) == 0) {
 			/*
-			 * set transitional value, update,
-			 * then set stable enabled state
+			 * set transitional value (-1), update queue,
+			 * stable enabled state (1) is set after IPI apply.
 			 */
 			atomic_set(&key->enabled, -1);
 			jump_label_update_queued(key);
+#ifdef HAVE_JUMP_LABEL_BATCH
+			jump_label_record_queued_key(key);
+#else
 			atomic_set_release(&key->enabled, 1);
+#endif
 		}
 	}
 }
@@ -302,10 +336,17 @@ void static_key_disable_queued(struct static_key *key)
 
 	scoped_guard(jump_label_lock) {
 		/*
-		 * update if simply enabled. dont act if in transition.
+		 * update if simply enabled. set transitional (-2),
+		 * stable disabled state (0) is set after IPI apply.
 		 */
-		if (atomic_cmpxchg(&key->enabled, 1, 0) == 1)
+		if (atomic_cmpxchg(&key->enabled, 1, -2) == 1) {
 			jump_label_update_queued(key);
+#ifdef HAVE_JUMP_LABEL_BATCH
+			jump_label_record_queued_key(key);
+#else
+			atomic_set_release(&key->enabled, 0);
+#endif
+		}
 	}
 }
 
@@ -587,6 +628,7 @@ void static_key_apply_queued(void)
 	cpus_read_lock();
 	jump_label_lock();
 	arch_jump_label_transform_apply();
+	jump_label_finalize_queued_keys();
 	jump_label_unlock();
 	cpus_read_unlock();
 #endif
