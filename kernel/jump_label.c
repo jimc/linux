@@ -105,11 +105,15 @@ static void jump_label_update_queued(struct static_key *key);
 int static_key_count(struct static_key *key)
 {
 	/*
-	 * -1 means the first static_key_slow_inc() is in progress.
-	 *  static_key_enabled() must return true, so return 1 here.
+	 * -1 means the first static_key_slow_inc() / static_key_enable_queued()
+	 *  is in progress. static_key_enabled() must return true, so return 1 here.
+	 * -2 means static_key_disable_queued() is in progress.
+	 *  static_key_enabled() must return false, so return 0 here.
 	 */
 	int n = atomic_read(&key->enabled);
 
+	if (n == -2)
+		return 0;
 	return n >= 0 ? n : 1;
 }
 EXPORT_SYMBOL_GPL(static_key_count);
@@ -251,6 +255,36 @@ void static_key_disable(struct static_key *key)
 }
 EXPORT_SYMBOL_GPL(static_key_disable);
 
+#ifdef HAVE_JUMP_LABEL_BATCH
+#define MAX_QUEUED_KEYS 256
+static struct static_key *jump_label_queued_keys[MAX_QUEUED_KEYS];
+static int jump_label_num_queued_keys;
+
+static void jump_label_finalize_queued_keys(void)
+{
+	int i;
+	for (i = 0; i < jump_label_num_queued_keys; i++) {
+		struct static_key *k = jump_label_queued_keys[i];
+		if (!k)
+			continue;
+		if (atomic_read(&k->enabled) == -1)
+			atomic_set_release(&k->enabled, 1);
+		else if (atomic_read(&k->enabled) == -2)
+			atomic_set_release(&k->enabled, 0);
+	}
+	jump_label_num_queued_keys = 0;
+}
+
+static void jump_label_record_queued_key(struct static_key *key)
+{
+	if (jump_label_num_queued_keys >= MAX_QUEUED_KEYS) {
+		arch_jump_label_transform_apply();
+		jump_label_finalize_queued_keys();
+	}
+	jump_label_queued_keys[jump_label_num_queued_keys++] = key;
+}
+#endif
+
 void static_key_enable_queued(struct static_key *key)
 {
 	if (system_state < SYSTEM_RUNNING) {
@@ -272,12 +306,16 @@ void static_key_enable_queued(struct static_key *key)
 	scoped_guard(jump_label_lock) {
 		if (atomic_read(&key->enabled) == 0) {
 			/*
-			 * set transitional value, update,
-			 * then set stable enabled state
+			 * set transitional value (-1), update queue,
+			 * stable enabled state (1) is set after IPI apply.
 			 */
 			atomic_set(&key->enabled, -1);
 			jump_label_update_queued(key);
+#ifdef HAVE_JUMP_LABEL_BATCH
+			jump_label_record_queued_key(key);
+#else
 			atomic_set_release(&key->enabled, 1);
+#endif
 		}
 	}
 }
@@ -296,16 +334,24 @@ void static_key_disable_queued(struct static_key *key)
 		 * not simply enabled; is disabled, inc-enabled, or
 		 * in transition. don't act. warn if inc-enabled.
 		 */
-		WARN_ON_ONCE(atomic_read(&key->enabled) != 0);
+		WARN_ON_ONCE(atomic_read(&key->enabled) != 0 &&
+			     atomic_read(&key->enabled) != -2);
 		return;
 	}
 
 	scoped_guard(jump_label_lock) {
 		/*
-		 * update if simply enabled. dont act if in transition.
+		 * update if simply enabled. set transitional (-2),
+		 * stable disabled state (0) is set after IPI apply.
 		 */
-		if (atomic_cmpxchg(&key->enabled, 1, 0) == 1)
+		if (atomic_cmpxchg(&key->enabled, 1, -2) == 1) {
 			jump_label_update_queued(key);
+#ifdef HAVE_JUMP_LABEL_BATCH
+			jump_label_record_queued_key(key);
+#else
+			atomic_set_release(&key->enabled, 0);
+#endif
+		}
 	}
 }
 
@@ -358,10 +404,10 @@ static void __static_key_slow_dec_cpuslocked(struct static_key *key)
 	guard(mutex)(&jump_label_mutex);
 	val = atomic_read(&key->enabled);
 	/*
-	 * It should be impossible to observe -1 with jump_label_mutex held,
+	 * It should be impossible to observe -1 or -2 with jump_label_mutex held,
 	 * see static_key_slow_inc_cpuslocked().
 	 */
-	if (WARN_ON_ONCE(val == -1))
+	if (WARN_ON_ONCE(val == -1 || val == -2))
 		return;
 	/*
 	 * Cannot already be 0, something went sideways.
@@ -587,6 +633,7 @@ void static_key_apply_queued(void)
 	cpus_read_lock();
 	jump_label_lock();
 	arch_jump_label_transform_apply();
+	jump_label_finalize_queued_keys();
 	jump_label_unlock();
 	cpus_read_unlock();
 #endif
