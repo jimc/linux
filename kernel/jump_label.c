@@ -1000,6 +1000,9 @@ static void jump_label_update_key(struct static_key *key, bool apply)
 	struct jump_entry *stop = __stop___jump_table;
 	bool init = system_state < SYSTEM_RUNNING;
 	struct jump_entry *entry;
+
+	if (system_state < SYSTEM_RUNNING)
+		apply = true;
 #ifdef CONFIG_MODULES
 	struct module *mod;
 
