@@ -479,7 +479,7 @@ function FT_comma_terminators {
 	echo "SKIP - test requires params, which is a builtin module"
 	return
     fi
-    ddcmd "module params =_"
+    ddcmd "module params +p"
 
     ddcmd "module,params,=_" 'kernel/params.c'
     ddcmd "module,params,+mf" 'kernel/params.c'
@@ -675,7 +675,7 @@ function GOLDEN_RECORDS {
 #K= bede904b02278e5648bb7a8243be8d98 FT_path_module_queries.2
 #K= 4b902c159d7f08f91377bf0a353e0051 FT_path_module_queries.3
 #K= bede904b02278e5648bb7a8243be8d98 FT_path_module_queries.4
-#K= 68b329da9893e34099c7d8ad5cb9c940 FT_comma_terminators.1
+#K= 3dbf634bbf0364431b3c99f6a294eb14 FT_comma_terminators.1
 #K= 99985cce918eb5108ecb3658249f6bc7 FT_comma_terminators.2
 #K= 68b329da9893e34099c7d8ad5cb9c940 FT_comma_terminators.3
 #K= 85f93d30f4006c99a806639970b92f20 FT_comma_terminators.4
