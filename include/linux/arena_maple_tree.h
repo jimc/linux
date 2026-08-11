@@ -4,7 +4,7 @@
 
 #include <linux/maple_tree.h>
 
-#ifdef CONFIG_DYNAMIC_DEBUG
+#ifdef CONFIG_DYNAMIC_DEBUG_CORE
 
 extern struct maple_node *ddebug_arena_alloc(void *arena, gfp_t gfp);
 extern void arena_maple_tree_init(void);
@@ -27,6 +27,6 @@ extern void *arena_mtree_load(struct maple_tree *mt, unsigned long index);
 extern int arena_mas_empty_area(struct ma_state *mas, unsigned long min, unsigned long max, unsigned long size);
 extern int arena_mas_empty_area_rev(struct ma_state *mas, unsigned long min, unsigned long max, unsigned long size);
 
-#endif /* CONFIG_DYNAMIC_DEBUG */
+#endif /* CONFIG_DYNAMIC_DEBUG_CORE */
 
 #endif /* _LINUX_ARENA_MAPLE_TREE_H */
