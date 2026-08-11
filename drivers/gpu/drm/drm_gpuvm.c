@@ -1112,6 +1112,7 @@ drm_gpuvm_init(struct drm_gpuvm *gpuvm, const char *name,
 
 	kref_init(&gpuvm->kref);
 
+	folio_arena_init(&gpuvm->arena, 256, 4);
 	gpuvm->name = name ? name : "unknown";
 	gpuvm->flags = flags;
 	gpuvm->ops = ops;
@@ -1156,6 +1157,7 @@ drm_gpuvm_fini(struct drm_gpuvm *gpuvm)
 		 "VM BO cleanup list should be empty.\n");
 
 	drm_gem_object_put(gpuvm->r_obj);
+	folio_arena_free(&gpuvm->arena);
 }
 
 static void
