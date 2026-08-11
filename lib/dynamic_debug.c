@@ -65,6 +65,7 @@ struct ddebug_table {
 	struct _ddebug_info info;
 	void *compressed_sites;
 	unsigned long compressed_len;
+	bool site_map_loaded;
 };
 
 struct ddebug_arena_chunk {
@@ -572,6 +573,33 @@ static void ddebug_condense_sites(struct _ddebug_info *di, struct maple_tree *mt
 	di->sites.len = 0;
 }
 
+static int ddebug_reconstruct_table_site_map(struct ddebug_table *dt, struct maple_tree *mt)
+{
+	struct _ddebug_info di;
+	struct _ddebug_site *decompressed_sites = NULL;
+	int ret;
+
+	if (dt->site_map_loaded || !dt->compressed_sites)
+		return 0;
+
+	di.descs.start = dt->info.descs.start;
+	di.descs.len = dt->info.descs.len;
+	di.sites.len = di.descs.len;
+
+	ret = ddebug_decompress_sites(dt->compressed_sites,
+				      dt->compressed_len,
+				      &decompressed_sites, di.sites.len);
+	if (ret)
+		return ret;
+
+	di.sites.start = decompressed_sites;
+	ddebug_condense_sites(&di, mt);
+	vfree(decompressed_sites);
+	dt->site_map_loaded = true;
+	dd_site_map_last_used = jiffies;
+	return 0;
+}
+
 static int ddebug_reconstruct_site_map(struct maple_tree *mt, bool is_builtin)
 {
 	struct _ddebug_info di;
@@ -579,12 +607,9 @@ static int ddebug_reconstruct_site_map(struct maple_tree *mt, bool is_builtin)
 	struct ddebug_table *dt;
 	int ret;
 
-	if (!mtree_empty(mt))
-		return 0;
-
 	if (is_builtin) {
-		if (!dd_builtin_compressed_sites)
-			return -ENODATA;
+		if (!mtree_empty(mt) || !dd_builtin_compressed_sites)
+			return 0;
 
 		di.descs.start = __start___dyndbg_descs;
 		di.descs.len = __stop___dyndbg_descs - __start___dyndbg_descs;
@@ -601,22 +626,9 @@ static int ddebug_reconstruct_site_map(struct maple_tree *mt, bool is_builtin)
 		vfree(decompressed_sites);
 	} else {
 		list_for_each_entry(dt, &ddebug_tables, link) {
-			if (!dt->compressed_sites)
-				continue;
-
-			di.descs.start = dt->info.descs.start;
-			di.descs.len = dt->info.descs.len;
-			di.sites.len = di.descs.len;
-
-			ret = ddebug_decompress_sites(dt->compressed_sites,
-						      dt->compressed_len,
-						      &decompressed_sites, di.sites.len);
+			ret = ddebug_reconstruct_table_site_map(dt, mt);
 			if (ret)
 				return ret;
-
-			di.sites.start = decompressed_sites;
-			ddebug_condense_sites(&di, mt);
-			vfree(decompressed_sites);
 		}
 	}
 	dd_site_map_last_used = jiffies;
@@ -2533,10 +2545,13 @@ static unsigned long ddebug_shrinker_scan(struct shrinker *shrinker,
 	mutex_lock(&ddebug_lock);
 
 	if (!mtree_empty(&dd_modules_site_map.mt)) {
+		struct ddebug_table *dt;
 		current_ddebug_write_tree = &dd_modules_site_map.mt;
 		arena___mt_destroy(&dd_modules_site_map.mt);
 		current_ddebug_write_tree = NULL;
 		ddebug_arena_free(&dd_modules_arena);
+		list_for_each_entry(dt, &ddebug_tables, link)
+			dt->site_map_loaded = false;
 		freed += 500;
 	}
 
