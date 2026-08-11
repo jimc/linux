@@ -479,7 +479,7 @@ function FT_comma_terminators {
 	echo "SKIP - test requires params, which is a builtin module"
 	return
     fi
-    ddcmd "module params =_"
+    ddcmd "module params +p"
 
     ddcmd "module,params,=_" 'kernel/params.c'
     ddcmd "module,params,+mf" 'kernel/params.c'
@@ -675,7 +675,7 @@ function GOLDEN_RECORDS {
 #K= bede904b02278e5648bb7a8243be8d98 FT_path_module_queries.2
 #K= 4b902c159d7f08f91377bf0a353e0051 FT_path_module_queries.3
 #K= bede904b02278e5648bb7a8243be8d98 FT_path_module_queries.4
-#K= 68b329da9893e34099c7d8ad5cb9c940 FT_comma_terminators.1
+#K= 3dbf634bbf0364431b3c99f6a294eb14 FT_comma_terminators.1
 #K= 99985cce918eb5108ecb3658249f6bc7 FT_comma_terminators.2
 #K= 68b329da9893e34099c7d8ad5cb9c940 FT_comma_terminators.3
 #K= 85f93d30f4006c99a806639970b92f20 FT_comma_terminators.4
@@ -683,50 +683,50 @@ function GOLDEN_RECORDS {
 #K= f49de2063a545721cf5e959efc160836 FT_multi_query.2
 #K= 2ff49f0c4d18ec99bcb1c30840fe8afc FT_multi_query.3
 #K= 9a1b13c32a15363dcf93913308edeea5 FT_multi_query.4
-#K= d4923595eea382923aee64aed15c7c35 FT_test_classes.1
+#K= 26586ed28518bdd7d718ff4172635c42 FT_test_classes.1
 #K= a15ec4843acd721fbdfddc0b512c8032 FT_test_classes.2
-#K= 40a294034c886787960f4c751b196da9 FT_test_classes.3
-#K= 38e813e9025107ac3e24226b8d487a92 FT_classmap_inheritance.1
-#K= 9b82b12a35ad98ef26183db15071f70e FT_classmap_inheritance.2
-#K= d4937472530af6fdcb0a2440d4a366ea FT_classmap_inheritance.3
-#K= fea6f925b829f75a5b2d4e837738fa12 FT_classmap_inheritance.4
-#K= 7e92245008439ee79fe2460aeaa16a9b FT_classmap_inheritance.5
+#K= b4a593a1e1cab60da0156fcd5582d24c FT_test_classes.3
+#K= 62501908ed46fb83205bebd80f850d56 FT_classmap_inheritance.1
+#K= 1d2ac19332c416e913d9fff8661db4b9 FT_classmap_inheritance.2
+#K= 8dd8f7c4b3b7777d5279b6635ec83f7b FT_classmap_inheritance.3
+#K= a8dfa89c4daf89f13a015e87a36077c1 FT_classmap_inheritance.4
+#K= 62b6803edf43519186d6185bebf34352 FT_classmap_inheritance.5
 #K= 94610c57ac44bd7011002a654fd78f93 FT_modprobe_w_param.1
 #K= 94610c57ac44bd7011002a654fd78f93 FT_modprobe_w_param.2
-#K= c1309e18dc9bf2f57184fa13164d917d FT_modprobe_w_param.3
-#K= 030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.4
-#K= a1232e658d95fbca8b23a69e9a0db965 FT_modprobe_w_param.5
-#K= 030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.6
-#K= af7b3d532325b1c5ab990e4b32fed577 FT_modprobe_w_param.7
-#K= 030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.8
+#K= 8ce6fcd5958d99524509f8ee8b337762 FT_modprobe_w_param.3
+#K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.4
+#K= e99561131cb0877e244ded16465d17be FT_modprobe_w_param.5
+#K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.6
+#K= a6c1e1585418e199de271b71a9746d93 FT_modprobe_w_param.7
+#K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.8
 #K= 591411c42cf52d7c4c46d76bcc345a5f FT_modprobe_w_param.9
-#K= 030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.10
-#K= b0435304108118e64529469e59332111 FT_modprobe_w_param.11
-#K= 030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.12
-#K= 4d036833ce9f661057a4e13d97295c65 FT_modprobe_w_param.13
-#K= 030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.14
-#K= 5c3c6ecf6a46f9ccebd60c5ca9ebdbb7 FT_modprobe_w_param.15
-#K= 030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.16
+#K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.10
+#K= b425428024ebf309fd38ac6c67d954ef FT_modprobe_w_param.11
+#K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.12
+#K= 35c26142670166a021b523097db2e418 FT_modprobe_w_param.13
+#K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.14
+#K= 090cde34d0a22f90f2bba1fed561aa9c FT_modprobe_w_param.15
+#K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.16
 #K= 73a93377a823739e8aae44856a20fa7f FT_modprobe_w_param.17
-#K= 030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.18
+#K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.18
 #K= 10464b2c3e3972f05e93c609700f8fb2 FT_modprobe_w_param.19
 #K= 10464b2c3e3972f05e93c609700f8fb2 FT_modprobe_w_param.20
-#K= 07c1f81d5a58675a291dc77acd6938c4 FT_modprobe_w_param.21
-#K= 030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.22
-#K= b070066b0eb13a033446bd05850b15e2 FT_modprobe_w_param.23
-#K= 030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.24
-#K= 32ca47823c27e629e03c21aebfc25095 FT_modprobe_w_param.25
-#K= 030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.26
+#K= 69502938a4be4936847568d8aad027f6 FT_modprobe_w_param.21
+#K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.22
+#K= 51fe322a7f368d936d2292c951247b33 FT_modprobe_w_param.23
+#K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.24
+#K= 91391932971be1d599d19ba04d6f6a34 FT_modprobe_w_param.25
+#K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.26
 #K= 7b91db8e9f160aebb1ee87fab2232404 FT_modprobe_w_param.27
-#K= 030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.28
-#K= caa849a2817863d68a8d11ee415b049c FT_modprobe_w_param.29
-#K= 030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.30
-#K= e94cc54f62faa428a03f2a7dbca06f97 FT_modprobe_w_param.31
-#K= 030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.32
-#K= 8919dde0fee0cf42f9388e541b33aa01 FT_modprobe_w_param.33
-#K= 030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.34
+#K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.28
+#K= 82bddad95d7ac6ecae367c7b63f1778b FT_modprobe_w_param.29
+#K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.30
+#K= 6686e8b91736913b0047202ca8f0f20e FT_modprobe_w_param.31
+#K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.32
+#K= 8d71e5a7ec153e0be606ca80c6125342 FT_modprobe_w_param.33
+#K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.34
 #K= ff5bf6afec9642da83d3dcdb5e732ab9 FT_modprobe_w_param.35
-#K= 030cda0a59aaae95750d5ec55acbcb8c FT_modprobe_w_param.36
+#K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.36
 EOF
         # Read the K-recs and skip those for tests that can't run
         while read -r line; do
