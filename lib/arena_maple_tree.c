@@ -147,12 +147,18 @@ static inline void kfree_specialized(void *ptr);
 #undef kmem_cache_free_bulk
 #undef kfree
 
+struct maple_node *arena_maple_alloc(void *arena, gfp_t gfp)
+{
+	return folio_arena_alloc((struct folio_arena *)arena, gfp);
+}
+EXPORT_SYMBOL_GPL(arena_maple_alloc);
+
 static inline void *kmem_cache_alloc_specialized(struct kmem_cache *cache, gfp_t gfp)
 {
 	struct maple_tree *mt = current_ddebug_write_tree;
 	if (mt && cache == maple_node_cache && (mt->ma_flags & MT_FLAGS_ARENA)) {
 		struct arena_maple_tree *amt = container_of(mt, struct arena_maple_tree, mt);
-		return ddebug_arena_alloc(amt->arena, gfp);
+		return arena_maple_alloc(amt->arena, gfp);
 	}
 	return kmem_cache_alloc_noprof(cache, gfp);
 }
@@ -184,7 +190,7 @@ static inline void *kmem_cache_alloc_from_sheaf_specialized(struct kmem_cache *c
 	if (mt && (mt->ma_flags & MT_FLAGS_ARENA)) {
 		struct arena_maple_tree *amt = container_of(mt, struct arena_maple_tree, mt);
 		if (sheaf == (struct slab_sheaf *)amt->arena)
-			return ddebug_arena_alloc(amt->arena, gfp);
+			return arena_maple_alloc(amt->arena, gfp);
 	}
 	return kmem_cache_alloc_from_sheaf_noprof(cache, gfp, sheaf);
 }

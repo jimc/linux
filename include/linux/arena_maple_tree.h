@@ -3,10 +3,11 @@
 #define _LINUX_ARENA_MAPLE_TREE_H
 
 #include <linux/maple_tree.h>
+#include <linux/folio_arena.h>
 
 #ifdef CONFIG_DYNAMIC_DEBUG_CORE
 
-extern struct maple_node *ddebug_arena_alloc(void *arena, gfp_t gfp);
+extern struct maple_node *arena_maple_alloc(void *arena, gfp_t gfp);
 extern void arena_maple_tree_init(void);
 
 extern void arena_mas_init(struct ma_state *mas, struct maple_tree *mt, unsigned long index);

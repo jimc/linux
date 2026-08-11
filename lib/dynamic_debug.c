@@ -44,6 +44,7 @@
 #include <rdma/ib_verbs.h>
 #include <linux/maple_tree.h>
 #include <linux/arena_maple_tree.h>
+#include <linux/folio_arena.h>
 #include <linux/zlib.h>
 #include <linux/vmalloc.h>
 
@@ -68,76 +69,10 @@ struct ddebug_table {
 	bool site_map_loaded;
 };
 
-struct ddebug_arena_chunk {
-	struct list_head link;
-};
-
-struct ddebug_arena {
-	struct list_head chunks;
-	void *free_ptr;
-	size_t remaining;
-};
-
-static struct ddebug_arena dd_builtin_arena = {
-	.chunks = LIST_HEAD_INIT(dd_builtin_arena.chunks),
-};
-
-static struct ddebug_arena dd_modules_arena = {
-	.chunks = LIST_HEAD_INIT(dd_modules_arena.chunks),
-};
-
-#define DDEBUG_ARENA_CHUNK_SIZE (64 * 1024)
-
-static struct maple_node *ddebug_arena_alloc_node(struct ddebug_arena *arena, gfp_t gfp)
-{
-	struct ddebug_arena_chunk *chunk;
-	struct maple_node *node;
-	unsigned long flags;
-	static DEFINE_SPINLOCK(arena_lock);
-
-	spin_lock_irqsave(&arena_lock, flags);
-	if (arena->remaining < sizeof(struct maple_node)) {
-		spin_unlock_irqrestore(&arena_lock, flags);
-		chunk = vmalloc(DDEBUG_ARENA_CHUNK_SIZE);
-		if (!chunk)
-			return NULL;
-		spin_lock_irqsave(&arena_lock, flags);
-		list_add(&chunk->link, &arena->chunks);
-		arena->free_ptr = (void *)chunk + sizeof(*chunk);
-		arena->remaining = DDEBUG_ARENA_CHUNK_SIZE - sizeof(*chunk);
-	}
-
-	node = arena->free_ptr;
-	arena->free_ptr += sizeof(struct maple_node);
-	arena->remaining -= sizeof(struct maple_node);
-
-	spin_unlock_irqrestore(&arena_lock, flags);
-
-	memset(node, 0, sizeof(*node));
-	return node;
-}
-
-struct maple_node *ddebug_arena_alloc(void *arena, gfp_t gfp)
-{
-	return ddebug_arena_alloc_node((struct ddebug_arena *)arena, gfp);
-}
-EXPORT_SYMBOL_GPL(ddebug_arena_alloc);
-
-static void ddebug_arena_free(struct ddebug_arena *arena)
-{
-	struct ddebug_arena_chunk *chunk, *tmp;
-	unsigned long flags;
-	static DEFINE_SPINLOCK(arena_lock);
-
-	spin_lock_irqsave(&arena_lock, flags);
-	arena->free_ptr = NULL;
-	arena->remaining = 0;
-	list_for_each_entry_safe(chunk, tmp, &arena->chunks, link) {
-		list_del(&chunk->link);
-		vfree(chunk);
-	}
-	spin_unlock_irqrestore(&arena_lock, flags);
-}
+static struct folio_arena dd_builtin_arena =
+	FOLIO_ARENA_INIT(dd_builtin_arena, sizeof(struct maple_node), 4);
+static struct folio_arena dd_modules_arena =
+	FOLIO_ARENA_INIT(dd_modules_arena, sizeof(struct maple_node), 4);
 
 static struct arena_maple_tree dd_builtin_site_map = {
 	.mt = MTREE_INIT(dd_builtin_site_map.mt, MT_FLAGS_ARENA),
@@ -2549,7 +2484,7 @@ static unsigned long ddebug_shrinker_scan(struct shrinker *shrinker,
 		current_ddebug_write_tree = &dd_modules_site_map.mt;
 		arena___mt_destroy(&dd_modules_site_map.mt);
 		current_ddebug_write_tree = NULL;
-		ddebug_arena_free(&dd_modules_arena);
+		folio_arena_free(&dd_modules_arena);
 		list_for_each_entry(dt, &ddebug_tables, link)
 			dt->site_map_loaded = false;
 		freed += 500;
@@ -2559,7 +2494,7 @@ static unsigned long ddebug_shrinker_scan(struct shrinker *shrinker,
 		current_ddebug_write_tree = &dd_builtin_site_map.mt;
 		arena___mt_destroy(&dd_builtin_site_map.mt);
 		current_ddebug_write_tree = NULL;
-		ddebug_arena_free(&dd_builtin_arena);
+		folio_arena_free(&dd_builtin_arena);
 		freed += 1000;
 	}
 
