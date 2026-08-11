@@ -479,7 +479,7 @@ function FT_comma_terminators {
 	echo "SKIP - test requires params, which is a builtin module"
 	return
     fi
-    ddcmd "module params =_"
+    ddcmd "module params +p"
 
     ddcmd "module,params,=_" 'kernel/params.c'
     ddcmd "module,params,+mf" 'kernel/params.c'
