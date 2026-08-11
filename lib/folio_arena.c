@@ -30,6 +30,8 @@ void *folio_arena_alloc(struct folio_arena *fa, gfp_t gfp)
 		spin_unlock_irqrestore(&fa->lock, flags);
 
 		folio = folio_alloc(gfp, fa->chunk_order);
+		if (!folio && fa->chunk_order > 0)
+			folio = folio_alloc(gfp, 0);
 		if (!folio)
 			return NULL;
 
