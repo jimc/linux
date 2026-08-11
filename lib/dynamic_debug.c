@@ -67,27 +67,29 @@ struct ddebug_table {
 	unsigned long compressed_len;
 };
 
-struct ddebug_arena_page {
+struct ddebug_arena_chunk {
 	struct list_head link;
 };
 
 struct ddebug_arena {
-	struct list_head pages;
+	struct list_head chunks;
 	void *free_ptr;
 	size_t remaining;
 };
 
 static struct ddebug_arena dd_builtin_arena = {
-	.pages = LIST_HEAD_INIT(dd_builtin_arena.pages),
+	.chunks = LIST_HEAD_INIT(dd_builtin_arena.chunks),
 };
 
 static struct ddebug_arena dd_modules_arena = {
-	.pages = LIST_HEAD_INIT(dd_modules_arena.pages),
+	.chunks = LIST_HEAD_INIT(dd_modules_arena.chunks),
 };
+
+#define DDEBUG_ARENA_CHUNK_SIZE (64 * 1024)
 
 static struct maple_node *ddebug_arena_alloc_node(struct ddebug_arena *arena, gfp_t gfp)
 {
-	struct ddebug_arena_page *apage;
+	struct ddebug_arena_chunk *chunk;
 	struct maple_node *node;
 	unsigned long flags;
 	static DEFINE_SPINLOCK(arena_lock);
@@ -95,13 +97,13 @@ static struct maple_node *ddebug_arena_alloc_node(struct ddebug_arena *arena, gf
 	spin_lock_irqsave(&arena_lock, flags);
 	if (arena->remaining < sizeof(struct maple_node)) {
 		spin_unlock_irqrestore(&arena_lock, flags);
-		apage = (struct ddebug_arena_page *)__get_free_page(GFP_KERNEL);
-		if (!apage)
+		chunk = vmalloc(DDEBUG_ARENA_CHUNK_SIZE);
+		if (!chunk)
 			return NULL;
 		spin_lock_irqsave(&arena_lock, flags);
-		list_add(&apage->link, &arena->pages);
-		arena->free_ptr = (void *)((unsigned long)apage + 256);
-		arena->remaining = PAGE_SIZE - 256;
+		list_add(&chunk->link, &arena->chunks);
+		arena->free_ptr = (void *)chunk + sizeof(*chunk);
+		arena->remaining = DDEBUG_ARENA_CHUNK_SIZE - sizeof(*chunk);
 	}
 
 	node = arena->free_ptr;
@@ -122,16 +124,16 @@ EXPORT_SYMBOL_GPL(ddebug_arena_alloc);
 
 static void ddebug_arena_free(struct ddebug_arena *arena)
 {
-	struct ddebug_arena_page *apage, *tmp;
+	struct ddebug_arena_chunk *chunk, *tmp;
 	unsigned long flags;
 	static DEFINE_SPINLOCK(arena_lock);
 
 	spin_lock_irqsave(&arena_lock, flags);
 	arena->free_ptr = NULL;
 	arena->remaining = 0;
-	list_for_each_entry_safe(apage, tmp, &arena->pages, link) {
-		list_del(&apage->link);
-		free_page((unsigned long)apage);
+	list_for_each_entry_safe(chunk, tmp, &arena->chunks, link) {
+		list_del(&chunk->link);
+		vfree(chunk);
 	}
 	spin_unlock_irqrestore(&arena_lock, flags);
 }
