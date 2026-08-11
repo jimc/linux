@@ -42,13 +42,20 @@ void *folio_arena_alloc(struct folio_arena *fa, gfp_t gfp)
 
 		spin_lock_irqsave(&fa->lock, flags);
 		list_add(&chunk->link, &fa->chunks);
-		fa->free_ptr = base + sizeof(*chunk);
-		fa->remaining = chunk_size - sizeof(*chunk);
+		size_t header_offset = ALIGN(sizeof(*chunk), 256);
+		fa->free_ptr = base + header_offset;
+		fa->remaining = chunk_size - header_offset;
+	}
+
+	size_t aligned_elem_size = ALIGN(fa->elem_size, 256);
+	if (fa->remaining < aligned_elem_size) {
+		spin_unlock_irqrestore(&fa->lock, flags);
+		return NULL;
 	}
 
 	elem = fa->free_ptr;
-	fa->free_ptr += fa->elem_size;
-	fa->remaining -= fa->elem_size;
+	fa->free_ptr += aligned_elem_size;
+	fa->remaining -= aligned_elem_size;
 	spin_unlock_irqrestore(&fa->lock, flags);
 
 	memset(elem, 0, fa->elem_size);
