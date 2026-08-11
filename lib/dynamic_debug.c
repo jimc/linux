@@ -147,6 +147,8 @@ static struct arena_maple_tree dd_modules_site_map = {
 	.arena = &dd_modules_arena,
 };
 
+static unsigned long dd_site_map_last_used;
+
 struct maple_tree *current_ddebug_write_tree;
 
 static void *dd_builtin_compressed_sites;
@@ -617,6 +619,7 @@ static int ddebug_reconstruct_site_map(struct maple_tree *mt, bool is_builtin)
 			vfree(decompressed_sites);
 		}
 	}
+	dd_site_map_last_used = jiffies;
 	return 0;
 }
 
@@ -2506,6 +2509,9 @@ static unsigned long ddebug_shrinker_count(struct shrinker *shrinker,
 					   struct shrink_control *sc)
 {
 	unsigned long count = 0;
+
+	if (time_before(jiffies, dd_site_map_last_used + 10 * HZ))
+		return SHRINK_EMPTY;
 
 	mutex_lock(&ddebug_lock);
 	if (!mtree_empty(&dd_builtin_site_map.mt))
