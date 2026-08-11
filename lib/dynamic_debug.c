@@ -225,7 +225,7 @@ static unsigned long ddebug_prefix_key(const struct _ddebug *desc);
 //static void ddebug_prefix_range(const struct _ddebug *desc, struct _dd_prefix_key_range *range);
 
 static void ddebug_add_cached_prefix(struct _ddebug *dp);
-static void ddebug_drop_all_cached_prefixes(const struct _ddebug_info *di);
+static __maybe_unused void ddebug_drop_all_cached_prefixes(const struct _ddebug_info *di);
 static void ddebug_prefix_range(const struct _ddebug *desc, struct _dd_prefix_key_range *range);
 
 #define prefix_flags(flags)  (flags & _DPRINTK_FLAGS_INCL_LOOKUP)
@@ -2363,7 +2363,7 @@ static unsigned long ddebug_prefix_key(const struct _ddebug *desc)
 	return ddebug_pack_key((unsigned long)desc, prefix_flags(desc->flags));
 }
 
-static void ddebug_drop_all_cached_prefixes(const struct _ddebug_info *di)
+static __maybe_unused void ddebug_drop_all_cached_prefixes(const struct _ddebug_info *di)
 {
 	int i, f;
 	struct _ddebug *dp;
