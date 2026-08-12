@@ -18,6 +18,7 @@
 #include <linux/anon_inodes.h>
 #include <linux/fdtable.h>
 #include <linux/file.h>
+#include <linux/folio_arena.h>
 #include <linux/fs.h>
 #include <linux/license.h>
 #include <linux/filter.h>
@@ -2059,6 +2060,9 @@ int generic_map_delete_batch(struct bpf_map *map,
 	return err;
 }
 
+static struct folio_arena bpf_batch_arena =
+	FOLIO_ARENA_INIT(bpf_batch_arena, 256, 4);
+
 int generic_map_update_batch(struct bpf_map *map, struct file *map_file,
 			     const union bpf_attr *attr,
 			     union bpf_attr __user *uattr)
@@ -2083,11 +2087,17 @@ int generic_map_update_batch(struct bpf_map *map, struct file *map_file,
 	if (put_user(0, &uattr->batch.count))
 		return -EFAULT;
 
-	key = kvmalloc(map->key_size, GFP_USER | __GFP_NOWARN);
+	if (map->key_size <= 256)
+		key = folio_arena_alloc(&bpf_batch_arena, GFP_USER | __GFP_NOWARN);
+	else
+		key = kvmalloc(map->key_size, GFP_USER | __GFP_NOWARN);
 	if (!key)
 		return -ENOMEM;
 
-	value = kvmalloc(value_size, GFP_USER | __GFP_NOWARN);
+	if (value_size <= 256)
+		value = folio_arena_alloc(&bpf_batch_arena, GFP_USER | __GFP_NOWARN);
+	else
+		value = kvmalloc(value_size, GFP_USER | __GFP_NOWARN);
 	if (!value) {
 		kvfree(key);
 		return -ENOMEM;
