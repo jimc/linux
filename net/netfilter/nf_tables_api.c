@@ -179,10 +179,13 @@ static struct nft_trans *nft_trans_alloc(const struct nft_ctx *ctx,
 	struct nftables_pernet *nft_net = nft_pernet(ctx->net);
 	struct nft_trans *trans;
 
-	if (size <= 256 && nft_net->trans_arena.chunk_order)
+	if (size <= 256 && nft_net->trans_arena.chunk_order) {
 		trans = folio_arena_alloc(&nft_net->trans_arena, GFP_KERNEL);
-	else
+		if (trans)
+			trans->arena = 1;
+	} else {
 		trans = kzalloc(size, GFP_KERNEL);
+	}
 
 	if (trans == NULL)
 		return NULL;
@@ -197,6 +200,19 @@ static struct nft_trans *nft_trans_alloc(const struct nft_ctx *ctx,
 	trans->report = ctx->report;
 
 	return trans;
+}
+
+/*
+ * nft_trans_free - release a transaction object.
+ *
+ * Arena-backed objects are not individually freed; they are reclaimed in
+ * bulk by folio_arena_free() at batch commit/abort boundary.  Kzalloc'd
+ * objects are released immediately via kfree().
+ */
+static inline void nft_trans_free(struct nft_trans *trans)
+{
+	if (!trans->arena)
+		kfree(trans);
 }
 
 static struct nft_trans_binding *nft_trans_get_binding(struct nft_trans *trans)
@@ -224,7 +240,7 @@ static void nft_trans_list_del(struct nft_trans *trans)
 static void nft_trans_destroy(struct nft_trans *trans)
 {
 	nft_trans_list_del(trans);
-	kfree(trans);
+	nft_trans_free(trans);
 }
 
 static void __nft_set_trans_bind(const struct nft_ctx *ctx, struct nft_set *set,
@@ -605,7 +621,7 @@ static void nft_trans_commit_list_add_elem(struct net *net, struct nft_trans *tr
 		     trans->msg_type != NFT_MSG_DELSETELEM);
 
 	if (nft_trans_try_collapse(nft_net, trans)) {
-		kfree(trans);
+		nft_trans_free(trans);
 		return;
 	}
 
@@ -3073,7 +3089,7 @@ static int nf_tables_updchain(struct nft_ctx *ctx, u8 genmask, u8 policy,
 
 err_trans:
 	free_percpu(stats);
-	kfree(trans);
+	nft_trans_free(trans);
 err_hooks:
 	if (nla[NFTA_CHAIN_HOOK]) {
 		list_for_each_entry_safe(h, next, &hook.list, list) {
@@ -7641,7 +7657,7 @@ static int nft_add_set_elem(struct nft_ctx *ctx, struct nft_set *set,
 	return set_full ? -ENFILE : 0;
 
 err_element_clash:
-	kfree(trans);
+	nft_trans_free(trans);
 err_set_size:
 	if (!(flags & NFT_SET_ELEM_CATCHALL))
 		atomic_dec(&set->nelems);
@@ -7909,7 +7925,7 @@ static int nft_del_setelem(struct nft_ctx *ctx, struct nft_set *set,
 	return 0;
 
 fail_ops:
-	kfree(trans);
+	nft_trans_free(trans);
 fail_trans:
 	kfree(elem.priv);
 fail_elem_key_end:
@@ -8292,7 +8308,7 @@ static int nf_tables_updobj(const struct nft_ctx *ctx,
 	return 0;
 
 err_free_trans:
-	kfree(trans);
+	nft_trans_free(trans);
 err_trans:
 	module_put(type->owner);
 	return err;
@@ -10258,7 +10274,7 @@ static void nft_commit_release(struct nft_trans *trans)
 	if (trans->put_net)
 		put_net(trans->net);
 
-	kfree(trans);
+	nft_trans_free(trans);
 }
 
 static void nf_tables_trans_destroy_work(struct work_struct *w)
@@ -10280,6 +10296,13 @@ static void nf_tables_trans_destroy_work(struct work_struct *w)
 		nft_trans_list_del(trans);
 		nft_commit_release(trans);
 	}
+
+	/* All nft_commit_release() calls above are done; no reader holds a
+	 * pointer into the arena folio any more.  Bulk-free and re-arm for
+	 * the next batch.
+	 */
+	folio_arena_free(&nft_net->trans_arena);
+	folio_arena_init(&nft_net->trans_arena, 256, 4);
 }
 
 void nf_tables_trans_destroy_flush_work(struct net *net)
@@ -10721,6 +10744,8 @@ static void nf_tables_commit_release(struct net *net)
 	 */
 	if (list_empty(&nft_net->commit_list)) {
 		nf_tables_module_autoload_cleanup(net);
+		folio_arena_free(&nft_net->trans_arena);
+		folio_arena_init(&nft_net->trans_arena, 256, 4);
 		mutex_unlock(&nft_net->commit_mutex);
 		return;
 	}
@@ -10735,6 +10760,18 @@ static void nf_tables_commit_release(struct net *net)
 	list_splice_tail_init(&nft_net->commit_list, &nft_net->destroy_list);
 	spin_unlock(&nf_tables_destroy_list_lock);
 
+	/*
+	 * Arena objects are referenced by destroy_list entries until
+	 * nf_tables_trans_destroy_work() calls nft_commit_release() on each.
+	 * Only free the arena after synchronize_rcu() in the work item ensures
+	 * no reader holds a pointer into the folio.  Reset it here so the
+	 * next batch gets a fresh arena; the folio pages are released by
+	 * folio_arena_free() called from nf_tables_trans_destroy_work().
+	 *
+	 * NOTE: arena-backed trans objects must remain alive until
+	 * nft_commit_release() finishes.  folio_arena_free() is therefore
+	 * called at the end of nf_tables_trans_destroy_work(), not here.
+	 */
 	nf_tables_module_autoload_cleanup(net);
 	schedule_work(&nft_net->destroy_work);
 
@@ -11249,7 +11286,7 @@ static void nf_tables_abort_release(struct nft_trans *trans)
 			nf_tables_flowtable_destroy(nft_trans_flowtable(trans));
 		break;
 	}
-	kfree(trans);
+	nft_trans_free(trans);
 }
 
 static void nft_set_abort_update(struct list_head *set_update_list)
@@ -11503,6 +11540,14 @@ static int nf_tables_abort(struct net *net, struct sk_buff *skb,
 		nf_tables_module_autoload(net);
 	else
 		nf_tables_module_autoload_cleanup(net);
+
+	/* All trans objects have been walked and released above (either freed
+	 * via nft_trans_destroy/nft_trans_free or left inert for arena bulk
+	 * reclaim).  Drop the arena folio pages now and re-arm for the next
+	 * batch.
+	 */
+	folio_arena_free(&nft_net->trans_arena);
+	folio_arena_init(&nft_net->trans_arena, 256, 4);
 
 	mutex_unlock(&nft_net->commit_mutex);
 
