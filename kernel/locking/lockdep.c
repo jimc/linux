@@ -58,8 +58,12 @@
 #include <linux/context_tracking.h>
 #include <linux/console.h>
 #include <linux/kasan.h>
+#include <linux/folio_arena.h>
 
 #include <asm/sections.h>
+
+static struct folio_arena lockdep_arena =
+	FOLIO_ARENA_INIT(lockdep_arena, sizeof(struct lock_list), 4);
 
 #include "lockdep_internals.h"
 #include "lock_events.h"
@@ -1404,6 +1408,12 @@ static struct lock_list *alloc_list_entry(void)
 				      ARRAY_SIZE(list_entries));
 
 	if (idx >= ARRAY_SIZE(list_entries)) {
+		struct lock_list *entry = folio_arena_alloc(&lockdep_arena, GFP_NOWAIT);
+		if (entry) {
+			nr_list_entries++;
+			return entry;
+		}
+
 		if (!debug_locks_off_graph_unlock())
 			return NULL;
 
