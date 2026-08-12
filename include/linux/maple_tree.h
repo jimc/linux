@@ -218,6 +218,8 @@ struct maple_copy {
 #define MT_FLAGS_LOCK_BH	0x200
 #define MT_FLAGS_LOCK_EXTERN	0x300
 #define MT_FLAGS_ALLOC_WRAPPED	0x0800
+#define MT_FLAGS_ARENA		0x1000
+
 
 #define MAPLE_HEIGHT_MAX	31
 
@@ -270,7 +272,10 @@ struct maple_tree {
 	unsigned int	ma_flags;
 	void __rcu      *ma_root;
 };
-
+struct arena_maple_tree {
+	struct maple_tree mt;
+	void *arena;
+};
 /**
  * MTREE_INIT() - Initialize a maple tree
  * @name: The maple tree name

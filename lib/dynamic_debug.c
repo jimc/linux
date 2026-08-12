@@ -31,6 +31,7 @@
 #include <linux/string_helpers.h>
 #include <linux/uaccess.h>
 #include <linux/dynamic_debug.h>
+#include "dynamic_debug_ratelimit.h"
 
 #include <linux/debugfs.h>
 #include <linux/slab.h>
@@ -41,9 +42,20 @@
 #include <linux/netdevice.h>
 
 #include <rdma/ib_verbs.h>
+#include <linux/maple_tree.h>
+#include <linux/arena_maple_tree.h>
+#include <linux/folio_arena.h>
+#include <linux/zlib.h>
+#include <linux/vmalloc.h>
 
 extern struct _ddebug __start___dyndbg_descs[];
 extern struct _ddebug __stop___dyndbg_descs[];
+extern const struct _ddebug_site __start___dyndbg_sites[];
+extern const struct _ddebug_site __stop___dyndbg_sites[];
+extern const char __start___dyndbg_strings_mod[];
+extern const char __stop___dyndbg_strings_mod[];
+extern const char __start___dyndbg_strings_file[];
+extern const char __stop___dyndbg_strings_file[];
 extern struct ddebug_class_map __start___dyndbg_class_maps[];
 extern struct ddebug_class_map __stop___dyndbg_class_maps[];
 extern struct ddebug_class_user __start___dyndbg_class_users[];
@@ -52,7 +64,44 @@ extern struct ddebug_class_user __stop___dyndbg_class_users[];
 struct ddebug_table {
 	struct list_head link;
 	struct _ddebug_info info;
+	void *compressed_sites;
+	unsigned long compressed_len;
+	bool site_map_loaded;
 };
+
+static struct folio_arena dd_builtin_arena =
+	FOLIO_ARENA_INIT(dd_builtin_arena, sizeof(struct maple_node), 4);
+static struct folio_arena dd_modules_arena =
+	FOLIO_ARENA_INIT(dd_modules_arena, sizeof(struct maple_node), 4);
+
+static struct arena_maple_tree dd_builtin_site_map = {
+	.mt = MTREE_INIT(dd_builtin_site_map.mt, MT_FLAGS_ARENA),
+	.arena = &dd_builtin_arena,
+};
+static struct arena_maple_tree dd_modules_site_map = {
+	.mt = MTREE_INIT(dd_modules_site_map.mt, MT_FLAGS_ARENA),
+	.arena = &dd_modules_arena,
+};
+
+static unsigned long dd_site_map_last_used;
+
+struct maple_tree *current_ddebug_write_tree;
+
+static void *dd_builtin_compressed_sites;
+static unsigned long dd_builtin_compressed_len;
+
+static int ddebug_compress_sites(const char *name, const struct _ddebug_site *sites, unsigned int count,
+				 void **out_buf, unsigned long *out_len);
+static int ddebug_decompress_sites(void *src, unsigned long src_len,
+				   struct _ddebug_site **out_sites, unsigned int count);
+static int ddebug_reconstruct_site_map(struct maple_tree *mt, bool is_builtin);
+
+static inline struct maple_tree *ddebug_select_tree(const struct _ddebug *dp)
+{
+	if (dp >= __start___dyndbg_descs && dp < __stop___dyndbg_descs)
+		return &dd_builtin_site_map.mt;
+	return &dd_modules_site_map.mt;
+}
 
 struct ddebug_query {
 	const char *filename;
@@ -61,6 +110,10 @@ struct ddebug_query {
 	const char *format;
 	const char *class_string;
 	unsigned int first_lineno, last_lineno;
+
+	/* Flags filter state */
+	unsigned int filter_set;
+	unsigned int filter_clear;
 };
 
 struct ddebug_iter {
@@ -73,7 +126,13 @@ struct flag_settings {
 	unsigned int mask;
 };
 
+struct _dd_prefix_key_range {
+	unsigned long start;
+	unsigned long end;
+};
+
 static DEFINE_PER_CPU(unsigned long, ddebug_call_count);
+
 void ddebug_increment_call_count(void)
 {
 	this_cpu_inc(ddebug_call_count);
@@ -91,6 +150,20 @@ module_param(verbose, int, 0644);
 MODULE_PARM_DESC(verbose, " dynamic_debug/control processing "
 		 "( 0 = off (default), 1 = module add/rm, 2 = >control summary, 3 = parsing, 4 = per-site changes)");
 
+/* cache of composed prefixes for enabled and invoked pr_debugs */
+static DEFINE_MTREE(pr_prefixes);
+static unsigned int pr_prefixes_count;
+
+static unsigned long ddebug_prefix_key(const struct _ddebug *desc);
+
+//static void ddebug_drop_cached_prefix(const struct _ddebug *dp);
+//static void ddebug_prefix_range(const struct _ddebug *desc, struct _dd_prefix_key_range *range);
+
+static void ddebug_add_cached_prefix(struct _ddebug *dp);
+static __maybe_unused void ddebug_drop_all_cached_prefixes(const struct _ddebug_info *di);
+static void ddebug_prefix_range(const struct _ddebug *desc, struct _dd_prefix_key_range *range);
+
+#define prefix_flags(flags)  (flags & _DPRINTK_FLAGS_INCL_LOOKUP)
 /* Return the path relative to source root */
 static inline const char *trim_prefix(const char *path)
 {
@@ -102,7 +175,7 @@ static inline const char *trim_prefix(const char *path)
 	return path + skip;
 }
 
-static const struct { unsigned flag:8; char opt_char; } opt_array[] = {
+static const struct { unsigned flag:12; char opt_char; } opt_array[] = {
 	{ _DPRINTK_FLAGS_PRINT, 'p' },
 	{ _DPRINTK_FLAGS_INCL_MODNAME, 'm' },
 	{ _DPRINTK_FLAGS_INCL_FUNCNAME, 'f' },
@@ -111,6 +184,9 @@ static const struct { unsigned flag:8; char opt_char; } opt_array[] = {
 	{ _DPRINTK_FLAGS_INCL_TID, 't' },
 	{ _DPRINTK_FLAGS_INCL_STACK, 'd' },
 	{ _DPRINTK_FLAGS_COUNT, 'c' },
+	{ _DPRINTK_FLAGS_RATELIMIT_SOLO, 'r' },
+	{ _DPRINTK_FLAGS_RATELIMIT_SHARED, 'R' },
+	{ _DPRINTK_FLAGS_ONCE, 'o' },
 	{ _DPRINTK_FLAGS_NONE, '_' },
 };
 
@@ -120,10 +196,11 @@ struct flagsbuf { char buf[ARRAY_SIZE(opt_array)+1]; };
 static char *ddebug_describe_flags(unsigned int flags, struct flagsbuf *fb)
 {
 	char *p = fb->buf;
+	unsigned int virt_flags = ddebug_physical_to_virtual(flags);
 	int i;
 
 	for (i = 0; i < ARRAY_SIZE(opt_array); ++i)
-		if (flags & opt_array[i].flag)
+		if (virt_flags & opt_array[i].flag)
 			*p++ = opt_array[i].opt_char;
 	if (p == fb->buf)
 		*p++ = '_';
@@ -254,39 +331,277 @@ static inline bool ddebug_class_has_param(const struct ddebug_class_map *map)
 /* re-framed as a policy choice */
 #define ddebug_class_wants_protection(map) (ddebug_class_has_param(map))
 
-/*
- * Search the tables for _ddebug's which match the given `query' and
- * apply the `flags' and `mask' to them.  Returns number of matching
- * callsites, normally the same as number of changes.  If verbose,
- * logs the changes.  Takes ddebug_lock.
- */
+#define DD_KEY_ALIGN_MASK   7UL
+
+/* Key offsets from the 8-byte aligned descriptor address */
+#define DD_KEY_FILE_OFFSET  1UL
+#define DD_KEY_MOD_OFFSET   2UL
+
+/* Expected key alignment remainders (addr & DD_KEY_ALIGN_MASK) */
+#define DD_KEY_FUNC_ALIGN   0UL
+#define DD_KEY_FILE_ALIGN   7UL
+#define DD_KEY_MOD_ALIGN    6UL
+
+/* Site tag types for growing/condensing */
+#define DD_TAG_FUNC         0UL
+#define DD_TAG_FILE         1UL
+#define DD_TAG_MOD          2UL
+
+static void ddebug_resolve_site(struct maple_tree *mt, const struct _ddebug *dp,
+				const char **mod, const char **file, const char **func)
+{
+	struct ma_state mas;
+	void *val;
+
+	if (mod)  *mod = NULL;
+	if (file) *file = NULL;
+	if (func) *func = NULL;
+
+	rcu_read_lock();
+	arena_mas_init(&mas, mt, (unsigned long)dp);
+	val = arena_mas_walk(&mas);
+	if (val) {
+		if (func && (mas.index & DD_KEY_ALIGN_MASK) == DD_KEY_FUNC_ALIGN)
+			*func = (const char *)val;
+
+		if (mod || file) {
+			while ((val = arena_mas_prev(&mas, 0))) {
+				unsigned long rem = mas.index & DD_KEY_ALIGN_MASK;
+
+				if (file && !*file && rem == DD_KEY_FILE_ALIGN) {
+					*file = (const char *)val;
+					if (!mod)
+						break;
+				} else if (mod && rem == DD_KEY_MOD_ALIGN) {
+					*mod = (const char *)val;
+					break;
+				}
+			}
+		}
+	}
+	rcu_read_unlock();
+
+	if (mod && !*mod)   *mod = "unknown";
+	if (file && !*file) *file = "unknown";
+	if (func && !*func) *func = "unknown";
+}
+
+static const char *desc_function(struct _ddebug const *dp)
+{
+	const char *func = NULL;
+	ddebug_resolve_site(ddebug_select_tree(dp), dp, NULL, NULL, &func);
+	return func;
+}
+
+static const char *desc_filename(struct _ddebug const *dp)
+{
+	const char *file = NULL;
+	ddebug_resolve_site(ddebug_select_tree(dp), dp, NULL, &file, NULL);
+	return file;
+}
+
+/* these are unusable after __init, when __dyndbg_sites is released */
+#define dref_modname(s)  ((s)->_modname)
+#define dref_filename(s) ((s)->_filename)
+#define dref_function(s) ((s)->_function)
+
+#define DYNDBG_SITE_GETTER(name)					\
+static inline const char *ddebug_get_##name(const struct _ddebug_site *s) \
+{									\
+	return dref_##name(s);						\
+}
+DYNDBG_SITE_GETTER(function)
+DYNDBG_SITE_GETTER(filename)
+DYNDBG_SITE_GETTER(modname)
+
+static void ddebug_store_tagged_range(struct maple_tree *mt, const struct _ddebug *start,
+				      const struct _ddebug *next, const char *kind,
+				      const char *name, unsigned long tag)
+{
+	unsigned long first = (unsigned long)start;
+	unsigned long last = (unsigned long)(next - 1);
+	int rc;
+
+	current_ddebug_write_tree = mt;
+	if (tag == DD_TAG_FUNC) {
+		rc = arena_mtree_store_range(mt, first, last, (void *)name, GFP_KERNEL);
+	} else if (tag == DD_TAG_FILE) {
+		unsigned long addr = first - DD_KEY_FILE_OFFSET;
+		rc = arena_mtree_store_range(mt, addr, addr, (void *)name, GFP_KERNEL);
+	} else if (tag == DD_TAG_MOD) {
+		unsigned long addr = first - DD_KEY_MOD_OFFSET;
+		rc = arena_mtree_store_range(mt, addr, addr, (void *)name, GFP_KERNEL);
+	} else {
+		current_ddebug_write_tree = NULL;
+		return;
+	}
+	current_ddebug_write_tree = NULL;
+
+	if (rc)
+		pr_err("%s:%s tagged range store failed: %d\n", kind, name, rc);
+}
+
+static int ddebug_grow_tree(struct _ddebug_info *di,
+			    struct maple_tree *mt,
+			    const char *kind,
+			    const char *(*key_fn)(const struct _ddebug_site *),
+			    unsigned long tag)
+{
+	int count = 0;
+	struct _ddebug *p = di->descs.start,
+		*end = di->descs.start + di->descs.len;
+	struct _ddebug *range_start = di->descs.start;
+	const struct _ddebug_site *site_p, *site_range_start;
+
+	if (!di->descs.len)
+		return 0;
+
+	for (; p < end; ++p) {
+		site_p = &di->sites.start[p - di->descs.start];
+		site_range_start = &di->sites.start[range_start - di->descs.start];
+
+		if (key_fn(site_range_start) != key_fn(site_p) &&
+		    !!strcmp(key_fn(site_range_start), key_fn(site_p))) {
+			ddebug_store_tagged_range(mt, range_start, p, kind,
+						  key_fn(site_range_start), tag);
+			count++;
+			range_start = p;
+		}
+	}
+	site_range_start = &di->sites.start[range_start - di->descs.start];
+	ddebug_store_tagged_range(mt, range_start, p, kind,
+				  key_fn(site_range_start), tag);
+	count++;
+
+	return count;
+}
+
+static void ddebug_log_compression_stats(int ct_sites, int mods,
+					 int files, int funcs)
+{
+	int ct_ranges = mods + files + funcs;
+	int before = ct_sites * sizeof(struct _ddebug_site);
+	int estimated_nodes = (ct_ranges + MAPLE_NODE_SLOTS - 1) / MAPLE_NODE_SLOTS;
+	int overhead = estimated_nodes * sizeof(struct maple_node);
+	int net_savings = before - overhead;
+
+	v2pr_info("condensed %d sites into %d mods, %d files, %d funcs\n",
+		  ct_sites, mods, files, funcs);
+	vpr_info("memory: site data %d KiB, tree size ~%d KiB, saved ~%d KiB\n",
+		 before >> 10, overhead >> 10, net_savings >> 10);
+}
+
+static void ddebug_condense_sites(struct _ddebug_info *di, struct maple_tree *mt)
+{
+	int funcs = 0, files = 0, mods = 0;
+
+	if (!di->sites.len)
+		return;
+	if (WARN_ON(di->descs.len != di->sites.len))
+		return;
+
+	funcs = ddebug_grow_tree(di, mt, "func", ddebug_get_function, DD_TAG_FUNC);
+	files = ddebug_grow_tree(di, mt, "file", ddebug_get_filename, DD_TAG_FILE);
+	mods  = ddebug_grow_tree(di, mt, "mod",  ddebug_get_modname,  DD_TAG_MOD);
+
+	ddebug_log_compression_stats(di->descs.len, mods, files, funcs);
+	di->sites.len = 0;
+}
+
+static int ddebug_reconstruct_table_site_map(struct ddebug_table *dt, struct maple_tree *mt)
+{
+	struct _ddebug_info di;
+	struct _ddebug_site *decompressed_sites = NULL;
+	int ret;
+
+	if (dt->site_map_loaded || !dt->compressed_sites)
+		return 0;
+
+	di.descs.start = dt->info.descs.start;
+	di.descs.len = dt->info.descs.len;
+	di.sites.len = di.descs.len;
+
+	ret = ddebug_decompress_sites(dt->compressed_sites,
+				      dt->compressed_len,
+				      &decompressed_sites, di.sites.len);
+	if (ret)
+		return ret;
+
+	di.sites.start = decompressed_sites;
+	ddebug_condense_sites(&di, mt);
+	vfree(decompressed_sites);
+	dt->site_map_loaded = true;
+	dd_site_map_last_used = jiffies;
+	return 0;
+}
+
+static int ddebug_reconstruct_site_map(struct maple_tree *mt, bool is_builtin)
+{
+	struct _ddebug_info di;
+	struct _ddebug_site *decompressed_sites = NULL;
+	struct ddebug_table *dt;
+	int ret;
+
+	if (is_builtin) {
+		if (!mtree_empty(mt) || !dd_builtin_compressed_sites)
+			return 0;
+
+		di.descs.start = __start___dyndbg_descs;
+		di.descs.len = __stop___dyndbg_descs - __start___dyndbg_descs;
+		di.sites.len = di.descs.len;
+
+		ret = ddebug_decompress_sites(dd_builtin_compressed_sites,
+					      dd_builtin_compressed_len,
+					      &decompressed_sites, di.sites.len);
+		if (ret)
+			return ret;
+
+		di.sites.start = decompressed_sites;
+		ddebug_condense_sites(&di, mt);
+		vfree(decompressed_sites);
+	} else {
+		list_for_each_entry(dt, &ddebug_tables, link) {
+			ret = ddebug_reconstruct_table_site_map(dt, mt);
+			if (ret)
+				return ret;
+		}
+	}
+	dd_site_map_last_used = jiffies;
+	return 0;
+}
+
 static bool ddebug_match_desc(const struct ddebug_query *query,
 			      struct _ddebug *dp,
 			      struct _ddebug_info *di,
 			      int selected_class)
 {
-	struct ddebug_class_map *site_map;
+	struct ddebug_class_map *class_map;
+	const char *dp_filename = NULL, *dp_function = NULL;
+
+	ddebug_resolve_site(ddebug_select_tree(dp), dp, NULL,
+			    query->filename ? &dp_filename : NULL,
+			    query->function ? &dp_function : NULL);
 
 	/* match against the source filename */
 	if (query->filename &&
-	    !match_wildcard(query->filename, dp->filename) &&
+	    !match_wildcard(query->filename, dp_filename) &&
 	    !match_wildcard(query->filename,
-			    kbasename(dp->filename)) &&
+			    kbasename(dp_filename)) &&
 	    !match_wildcard(query->filename,
-			    trim_prefix(dp->filename)))
+			    trim_prefix(dp_filename)))
 		return false;
 
 	/* match against the function */
 	if (query->function &&
-	    !match_wildcard(query->function, dp->function))
+	    !match_wildcard(query->function, dp_function))
 		return false;
 
 	/* match against the format */
 	if (query->format) {
 		if (!dp->format) {
 			pr_err_ratelimited("ddebug: NULL format string at %s:%s:%u\n",
-					   dp->filename ? dp->filename : "?",
-					   dp->function ? dp->function : "?",
+					   desc_filename(dp) ?: "?",
+					   desc_function(dp) ?: "?",
 					   dp->lineno);
 			return false;
 		}
@@ -309,6 +624,15 @@ static bool ddebug_match_desc(const struct ddebug_query *query,
 	    dp->lineno > query->last_lineno)
 		return false;
 
+	/* match against the flags filter */
+	if (query->filter_set || query->filter_clear) {
+		unsigned int virt_flags = ddebug_physical_to_virtual(dp->flags);
+		if (query->filter_set && (virt_flags & query->filter_set) != query->filter_set)
+			return false;
+		if (query->filter_clear && (virt_flags & query->filter_clear) != 0)
+			return false;
+	}
+
 	/*
 	 * above are all satisfied, so we can make final decisions:
 	 * 1- class FOO or implied class __DEFAULT__
@@ -324,14 +648,14 @@ static bool ddebug_match_desc(const struct ddebug_query *query,
 		return true;
 	}
 	/* site is class'd */
-	site_map = ddebug_find_map_by_class_id(di, dp->class_id);
-	if (!site_map) {
+	class_map = ddebug_find_map_by_class_id(di, dp->class_id);
+	if (!class_map) {
 		pr_warn_ratelimited("unknown class_id %d, check %s's CLASSMAP definitions\n",
 			  dp->class_id, di->mod_name);
 		return false;
 	}
 	/* module(-param) decides protection */
-	return !ddebug_class_wants_protection(site_map);
+	return !ddebug_class_wants_protection(class_map);
 }
 
 static int ddebug_change(const struct ddebug_query *query, struct flag_settings *modifiers)
@@ -345,6 +669,8 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 
 	/* search for matching ddebugs */
 	mutex_lock(&ddebug_lock);
+	ddebug_reconstruct_site_map(&dd_builtin_site_map.mt, true);
+	ddebug_reconstruct_site_map(&dd_modules_site_map.mt, false);
 	list_for_each_entry(dt, &ddebug_tables, link) {
 		struct _ddebug_info *di = &dt->info;
 		struct ddebug_class_map *mods_map;
@@ -371,9 +697,12 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 
 			nfound++;
 
-			newflags = (dp->flags & modifiers->mask) | modifiers->flags;
+			unsigned int virt_flags = ddebug_physical_to_virtual(dp->flags);
+			unsigned int new_virt = (virt_flags & modifiers->mask) | modifiers->flags;
+			newflags = ddebug_virtual_to_physical(new_virt, dp->flags, modifiers->flags);
 			if (newflags == dp->flags)
 				continue;
+
 #ifdef CONFIG_JUMP_LABEL
 			if (dp->flags & _DPRINTK_FLAGS_ENABLED) {
 				if (!(newflags & _DPRINTK_FLAGS_ENABLED))
@@ -383,11 +712,14 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 			}
 #endif
 			v4pr_info("changed %s:%d [%s]%s %s => %s\n",
-				  trim_prefix(dp->filename), dp->lineno,
-				  di->mod_name, dp->function,
+				  trim_prefix(desc_filename(dp)), dp->lineno,
+				  di->mod_name, desc_function(dp),
 				  ddebug_describe_flags(dp->flags, &fbuf),
 				  ddebug_describe_flags(newflags, &nbuf));
+			ddebug_ratelimit_update(dp, dp->flags, newflags);
 			dp->flags = newflags;
+			if (prefix_flags(newflags))
+				ddebug_add_cached_prefix(dp);
 		}
 	}
 	mutex_unlock(&ddebug_lock);
@@ -513,6 +845,17 @@ static int parse_linerange(struct ddebug_query *query, const char *first)
 	} else {
 		query->last_lineno = query->first_lineno;
 	}
+
+	/* Clamp values > DDEBUG_LINE_MAX to DDEBUG_LINE_MAX per design */
+	if (query->first_lineno > DDEBUG_LINE_MAX) {
+		query->first_lineno = DDEBUG_LINE_MAX;
+		v3pr_info("clamping first_lineno to %d\n", DDEBUG_LINE_MAX);
+	}
+	if (query->last_lineno > DDEBUG_LINE_MAX && query->last_lineno != UINT_MAX) {
+		query->last_lineno = DDEBUG_LINE_MAX;
+		v3pr_info("clamping last_lineno to %d\n", DDEBUG_LINE_MAX);
+	}
+
 	v3pr_info("parsed line %d-%d\n", query->first_lineno,
 		 query->last_lineno);
 	return 0;
@@ -594,6 +937,25 @@ static int ddebug_parse_query(char *words[], int nwords,
 				return -EINVAL;
 		} else if (!strcmp(keyword, "class")) {
 			rc = check_set(&query->class_string, arg, "class");
+		} else if (!strcmp(keyword, "flags")) {
+			const char *p = arg;
+			int op = 0, j;
+			while (*p) {
+				if (*p == '+' || *p == '-' || *p == '=') {
+					op = *p++;
+					continue;
+				}
+				for (j = 0; j < ARRAY_SIZE(opt_array); j++) {
+					if (*p == opt_array[j].opt_char) {
+						if (op == '+')
+							query->filter_set |= opt_array[j].flag;
+						else if (op == '-')
+							query->filter_clear |= opt_array[j].flag;
+						break;
+					}
+				}
+				p++;
+			}
 		} else {
 			pr_err("unknown keyword \"%s\"\n", keyword);
 			return -EINVAL;
@@ -620,46 +982,80 @@ static int ddebug_parse_query(char *words[], int nwords,
 static int ddebug_parse_flags(const char *str, struct flag_settings *modifiers)
 {
 	int op, i;
+	unsigned int flags;
 
-	switch (*str) {
-	case '+':
-	case '-':
-	case '=':
-		op = *str++;
-		break;
-	default:
-		pr_err("bad flag-op %c, at start of %s\n", *str, str);
+	/* Initialize to keep existing flags by default */
+	modifiers->mask = ~0U;
+	modifiers->flags = 0;
+
+	while (*str) {
+		switch (*str) {
+		case '+':
+		case '-':
+		case '=':
+			op = *str++;
+			break;
+		default:
+			pr_err("bad flag-op %c, at start of %s\n", *str, str);
+			return -EINVAL;
+		}
+
+		if (!*str) {
+			pr_err("missing flags after op %c\n", op);
+			return -EINVAL;
+		}
+
+		flags = 0;
+		for (; *str && *str != '+' && *str != '-' && *str != '='; ++str) {
+			for (i = ARRAY_SIZE(opt_array) - 1; i >= 0; i--) {
+				if (*str == opt_array[i].opt_char) {
+					flags |= opt_array[i].flag;
+					break;
+				}
+			}
+			if (i < 0) {
+				pr_err("unknown flag '%c'\n", *str);
+				return -EINVAL;
+			}
+		}
+
+		/* Sequentially compound this operation to overall mask/flags */
+		switch (op) {
+		case '=':
+			modifiers->mask = 0;
+			modifiers->flags = flags;
+			break;
+		case '+':
+			modifiers->mask |= flags;
+			modifiers->flags |= flags;
+			break;
+		case '-':
+			modifiers->mask &= ~flags;
+			modifiers->flags &= ~flags;
+			break;
+		}
+		v3pr_info("op='%c' flags=0x%x maskp=0x%x\n", op, modifiers->flags, modifiers->mask);
+	}
+	v3pr_info("parsed flags=0x%x maskp=0x%x\n", modifiers->flags, modifiers->mask);
+
+	/* 1. Count how many mutually exclusive limiting modes are requested */
+	int limit_mode = 0;
+	if (modifiers->flags & _DPRINTK_FLAGS_ONCE)             limit_mode++;
+	if (modifiers->flags & _DPRINTK_FLAGS_RATELIMIT_SOLO)   limit_mode++;
+	if (modifiers->flags & _DPRINTK_FLAGS_RATELIMIT_SHARED) limit_mode++;
+
+	if (limit_mode > 1) {
+		pr_err("dyndbg: flag combo error: once ('o'), solo-ratelimit ('r'), and shared-ratelimit ('R') are mutually exclusive\n");
 		return -EINVAL;
 	}
 
-	for (; *str ; ++str) {
-		for (i = ARRAY_SIZE(opt_array) - 1; i >= 0; i--) {
-			if (*str == opt_array[i].opt_char) {
-				modifiers->flags |= opt_array[i].flag;
-				break;
-			}
-		}
-		if (i < 0) {
-			pr_err("unknown flag '%c'\n", *str);
-			return -EINVAL;
-		}
+	/* 2. Prevent count ('c') from being combined with any limiting mode */
+	if ((modifiers->flags & _DPRINTK_FLAGS_COUNT) && limit_mode) {
+		pr_err("dyndbg: flag combo error: count ('c') cannot be combined with once ('o') or ratelimiting ('r', 'R')\n");
+		return -EINVAL;
 	}
 
-	/* calculate final flags, mask based upon op */
-	switch (op) {
-	case '=':
-		/* modifiers->flags already set */
-		modifiers->mask = 0;
-		break;
-	case '+':
-		modifiers->mask = ~0U;
-		break;
-	case '-':
-		modifiers->mask = ~modifiers->flags;
-		modifiers->flags = 0;
-		break;
-	}
-	v3pr_info("op='%c' flags=0x%x maskp=0x%x\n", op, modifiers->flags, modifiers->mask);
+
 
 	return 0;
 }
@@ -918,9 +1314,76 @@ static int remaining(int wrote)
 	return 0;
 }
 
+static int ddebug_format_prefix(const struct _ddebug *dp, char *buf, int start)
+{
+	int pos = start;
+	const char *mod = NULL, *file = NULL, *func = NULL;
+	struct maple_tree *site_map = ddebug_select_tree(dp);
+
+	if (!mtree_empty(site_map)) {
+		ddebug_resolve_site(site_map, dp,
+				    (dp->flags & _DPRINTK_FLAGS_INCL_MODNAME) ? &mod : NULL,
+				    (dp->flags & _DPRINTK_FLAGS_INCL_SOURCENAME) ? &file : NULL,
+				    (dp->flags & _DPRINTK_FLAGS_INCL_FUNCNAME) ? &func : NULL);
+	} else {
+		if (dp->flags & _DPRINTK_FLAGS_INCL_MODNAME)
+			mod = "unknown";
+		if (dp->flags & _DPRINTK_FLAGS_INCL_SOURCENAME)
+			file = "unknown";
+		if (dp->flags & _DPRINTK_FLAGS_INCL_FUNCNAME)
+			func = "unknown";
+	}
+
+	if (mod)
+		pos += snprintf(buf + pos, remaining(pos), "%s:", mod);
+	if (func)
+		pos += snprintf(buf + pos, remaining(pos), "%s:", func);
+	if (file)
+		pos += snprintf(buf + pos, remaining(pos), "%s:", trim_prefix(file));
+
+	if (dp->flags & _DPRINTK_FLAGS_INCL_LINENO)
+		pos += snprintf(buf + pos, remaining(pos), "%d:",
+				dp->lineno);
+
+	if (remaining(pos)) {
+		buf[pos++] = ' ';
+		buf[pos] = '\0';
+	}
+	return pos;
+}
+
+static int __dynamic_emit_lookup(const struct _ddebug *desc, char *buf, int start)
+{
+	char *prefix;
+	int pos = start;
+	unsigned long key;
+
+	if (!(desc->flags & _DPRINTK_FLAGS_INCL_LOOKUP))
+		return pos;
+
+	key = ddebug_prefix_key(desc);
+
+	rcu_read_lock();
+	prefix = (char *) mtree_load(&pr_prefixes, key);
+	rcu_read_unlock();
+
+	if (likely(prefix)) {
+		pos += snprintf(buf + pos, remaining(pos), "%s", prefix);
+		v4pr_info("using cached prefix: %s\n", prefix);
+		return pos;
+	}
+
+	/*
+	 * Cache miss (should only happen under extreme memory
+	 * pressure where eager allocation failed, or during early
+	 * boot if we didn't pre-fill).  Just resolve and format on
+	 * the stack, but DO NOT allocate or write to the cache.
+	 */
+	return ddebug_format_prefix(desc, buf, pos);
+}
+
 static char *__dynamic_emit_prefix(const struct _ddebug *desc, char *buf)
 {
-	int pos_after_tid;
 	int pos = 0;
 
 	if (desc->flags & _DPRINTK_FLAGS_INCL_TID) {
@@ -930,21 +1393,10 @@ static char *__dynamic_emit_prefix(const struct _ddebug *desc, char *buf)
 			pos += snprintf(buf + pos, remaining(pos), "[%d] ",
 					task_pid_vnr(current));
 	}
-	pos_after_tid = pos;
-	if (desc->flags & _DPRINTK_FLAGS_INCL_MODNAME)
-		pos += snprintf(buf + pos, remaining(pos), "%s:",
-				desc->modname);
-	if (desc->flags & _DPRINTK_FLAGS_INCL_FUNCNAME)
-		pos += snprintf(buf + pos, remaining(pos), "%s:",
-				desc->function);
-	if (desc->flags & _DPRINTK_FLAGS_INCL_SOURCENAME)
-		pos += snprintf(buf + pos, remaining(pos), "%s:",
-				trim_prefix(desc->filename));
-	if (desc->flags & _DPRINTK_FLAGS_INCL_LINENO)
-		pos += snprintf(buf + pos, remaining(pos), "%d:",
-				desc->lineno);
-	if (pos - pos_after_tid)
-		pos += snprintf(buf + pos, remaining(pos), " ");
+
+	if (unlikely(desc->flags & _DPRINTK_FLAGS_INCL_LOOKUP))
+		pos += __dynamic_emit_lookup(desc, buf, pos);
+
 	if (pos >= PREFIX_SIZE)
 		buf[PREFIX_SIZE - 1] = '\0';
 
@@ -1053,6 +1505,9 @@ void __dynamic_ibdev_dbg(struct _ddebug *descriptor,
 {
 	struct va_format vaf;
 	va_list args;
+
+	BUG_ON(!descriptor);
+	BUG_ON(!fmt);
 
 	va_start(args, fmt);
 
@@ -1289,27 +1744,35 @@ static int ddebug_proc_show(struct seq_file *m, void *p)
 		return 0;
 	}
 	if (p == EPILOGUE_TOKEN) {
-		seq_printf(m, "#: total call-counts: %lu\n", get_ddebug_call_count());
+		seq_printf(m, "#: cached_prefixes=%u\n", pr_prefixes_count);
+		seq_printf(m, "#: total call-counts: %lu\n",
+			   get_ddebug_call_count());
 		return 0;
 	}
 
-	seq_printf(m, "%s:%u [%s]%s =%s \"",
-		   trim_prefix(dp->filename), dp->lineno,
-		   iter->table->info.mod_name, dp->function,
-		   ddebug_describe_flags(dp->flags, &flags));
-	seq_escape_str(m, dp->format, ESCAPE_SPACE, "\t\r\n\"");
-	seq_putc(m, '"');
+	{
+		const char *filename = NULL, *function = NULL;
 
-	if (dp->class_id != _DPRINTK_CLASS_DFLT) {
-		class = ddebug_class_name(&iter->table->info, dp);
-		if (class)
-			seq_printf(m, " class:%s", class);
-		else
-			seq_printf(m, " class:_UNKNOWN_ _id:%d", dp->class_id);
+		ddebug_resolve_site(ddebug_select_tree(dp), dp, NULL, &filename, &function);
+
+		seq_printf(m, "%s:%u [%s]%s =%s \"",
+			   trim_prefix(filename), dp->lineno,
+			   iter->table->info.mod_name, function,
+			   ddebug_describe_flags(dp->flags, &flags));
+		seq_escape_str(m, dp->format, ESCAPE_SPACE, "\t\r\n\"");
+		seq_putc(m, '"');
+
+		if (dp->class_id != _DPRINTK_CLASS_DFLT) {
+			class = ddebug_class_name(&iter->table->info, dp);
+			if (class)
+				seq_printf(m, " class:%s", class);
+			else
+				seq_printf(m, " class:_UNKNOWN_ _id:%d", dp->class_id);
+		}
+		seq_putc(m, '\n');
+
+		return 0;
 	}
-	seq_putc(m, '\n');
-
-	return 0;
 }
 
 /*
@@ -1330,6 +1793,17 @@ static const struct seq_operations ddebug_proc_seqops = {
 
 static int ddebug_proc_open(struct inode *inode, struct file *file)
 {
+	int ret;
+
+	mutex_lock(&ddebug_lock);
+	ret = ddebug_reconstruct_site_map(&dd_builtin_site_map.mt, true);
+	if (!ret)
+		ret = ddebug_reconstruct_site_map(&dd_modules_site_map.mt, false);
+	mutex_unlock(&ddebug_lock);
+
+	if (ret)
+		return ret;
+
 	return seq_open_private(file, &ddebug_proc_seqops,
 				sizeof(struct ddebug_iter));
 }
@@ -1586,6 +2060,11 @@ static int ddebug_add_module(struct _ddebug_info *di)
 	 * the module's presence.
 	 */
 	dt->info = *di;
+	if (dt->info.sites.len) {
+		ddebug_condense_sites(&dt->info, &dd_modules_site_map.mt);
+		ddebug_compress_sites(dt->info.mod_name, di->sites.start, di->sites.len,
+				      &dt->compressed_sites, &dt->compressed_len);
+	}
 	dd_set_module_subrange(i, cm, &dt->info, maps);
 	dd_set_module_subrange(i, cli, &dt->info, users);
 
@@ -1633,6 +2112,13 @@ static int ddebug_add_module(struct _ddebug_info *di)
 
 	mutex_lock(&ddebug_lock);
 	list_add_tail(&dt->link, &ddebug_tables);
+	/* Eagerly allocate wrappers for descriptors initialized with compile-time ratelimiting and printing */
+	for (i = 0; i < dt->info.descs.len; i++) {
+		struct _ddebug *dp = &dt->info.descs.start[i];
+		if (ddebug_mode_has_ratelimit(dp->flags) && ddebug_mode_has_print(dp->flags))
+			ddebug_ratelimit_update(dp, 0, dp->flags);
+	}
+	ddebug_ratelimit_clear_query();
 	mutex_unlock(&ddebug_lock);
 	if (dt->info.users.len)
 		ddebug_apply_class_users(&dt->info);
@@ -1688,6 +2174,7 @@ int ddebug_dyndbg_module_param_cb(char *param, char *val, const char *module)
 
 static void ddebug_table_free(struct ddebug_table *dt)
 {
+	ddebug_ratelimit_free_info(&dt->info);
 	list_del_init(&dt->link);
 	kfree(dt);
 }
@@ -1698,6 +2185,28 @@ static void ddebug_table_free(struct ddebug_table *dt)
  * Called in response to a module being unloaded.  Removes
  * any ddebug_table's which point at the module.
  */
+static void ddebug_module_sites_clear(struct ddebug_table *dt)
+{
+	unsigned long start = (unsigned long) dt->info.descs.start;
+	unsigned long end = (unsigned long) &dt->info.descs.start[dt->info.descs.len - 1];
+
+	MA_STATE(mas, &dd_modules_site_map.mt, start - DD_KEY_MOD_OFFSET, end);
+
+	v2pr_info("clearing %3d debugs of removed module %s\n",
+		  dt->info.descs.len, dt->info.mod_name);
+
+	arena_mas_lock(&mas);
+	current_ddebug_write_tree = &dd_modules_site_map.mt;
+	arena_mas_erase(&mas);
+	current_ddebug_write_tree = NULL;
+	arena_mas_unlock(&mas);
+
+	if (dt->compressed_sites) {
+		vfree(dt->compressed_sites);
+		dt->compressed_sites = NULL;
+	}
+}
+
 static int ddebug_remove_module(const char *mod_name)
 {
 	struct ddebug_table *dt, *nextdt;
@@ -1706,6 +2215,9 @@ static int ddebug_remove_module(const char *mod_name)
 	mutex_lock(&ddebug_lock);
 	list_for_each_entry_safe(dt, nextdt, &ddebug_tables, link) {
 		if (dt->info.mod_name == mod_name) {
+			ddebug_drop_all_cached_prefixes(&dt->info);
+
+			ddebug_module_sites_clear(dt);
 			ddebug_table_free(dt);
 			ret = 0;
 			break;
@@ -1757,15 +2269,271 @@ static void ddebug_remove_all_tables(void)
 	mutex_unlock(&ddebug_lock);
 }
 
+/*
+ * dynamic prefix cache keys and descriptor ranges.
+ *
+ * ddebug_prefix_key() constructs the maple tree key by combining
+ * prefix flags with the descriptor address, creating separate
+ * key-spaces for different flag combinations.
+ *
+ * ddebug_prefix_range() determines the address range of descriptors
+ * that can share a dynamic prefix based on these flags.
+ */
+#define DDEBUG_PREFIX_KEY_FLAGS_SHIFT (BITS_PER_LONG - 4)
+
+static inline unsigned long ddebug_pack_key(unsigned long addr, uint8_t flags)
+{
+	/*
+	 * Prefix flags are at bits 1-4. Pack them into bits 0-3 then shift
+	 * to the top of the key to partition the key-space by flag-set.
+	 * Shift the address down 4 bits; since descs are 16-byte aligned,
+	 * they remain unique.
+	 */
+	return ((unsigned long)(flags >> 1) & 0xF) << DDEBUG_PREFIX_KEY_FLAGS_SHIFT |
+		(addr >> 4);
+}
+
+static unsigned long ddebug_prefix_key(const struct _ddebug *desc)
+{
+	return ddebug_pack_key((unsigned long)desc, prefix_flags(desc->flags));
+}
+
+static __maybe_unused void ddebug_drop_all_cached_prefixes(const struct _ddebug_info *di)
+{
+	int i, f;
+	struct _ddebug *dp;
+
+	for_subvec(i, dp, di, descs) {
+		for (f = 0; f < 16; f++) {
+			unsigned long key = ((unsigned long)f << DDEBUG_PREFIX_KEY_FLAGS_SHIFT) |
+					    ((unsigned long)dp >> 4);
+			char *prefix = mtree_erase(&pr_prefixes, key);
+			if (prefix) {
+				pr_prefixes_count--;
+				v3pr_info("drop cached prefix: %s\n", prefix);
+				kfree(prefix);
+			}
+		}
+	}
+}
+
+static void ddebug_add_cached_prefix(struct _ddebug *dp)
+{
+	unsigned long key = ddebug_prefix_key(dp);
+	char *prefix;
+	char buf[PREFIX_SIZE] = "";
+	struct _dd_prefix_key_range range;
+
+	prefix = mtree_load(&pr_prefixes, key);
+	if (prefix)
+		return;
+
+	ddebug_format_prefix(dp, buf, 0);
+
+	prefix = kstrdup(buf, GFP_KERNEL);
+	if (!prefix)
+		return;
+
+	ddebug_prefix_range(dp, &range);
+
+	if (mtree_store_range(&pr_prefixes, range.start, range.end, prefix, GFP_KERNEL)) {
+		kfree(prefix);
+	} else {
+		pr_prefixes_count++;
+		v3pr_info("eagerly filled prefix cache: %s [%lx-%lx]\n", prefix, range.start, range.end);
+	}
+}
+
+static void ddebug_resolve_range(struct maple_tree *mt, unsigned long addr,
+				 unsigned long *start, unsigned long *end,
+				 unsigned long tag_to_find)
+{
+	struct ma_state mas;
+	void *val;
+
+	*start = addr;
+	*end = addr;
+
+	rcu_read_lock();
+	arena_mas_init(&mas, mt, addr);
+
+	/* 1. If we are looking for a function range, it's stored directly at the descriptor addresses */
+	if (tag_to_find == DD_TAG_FUNC) {
+		val = arena_mas_walk(&mas);
+		if (val && (mas.index & DD_KEY_ALIGN_MASK) == DD_KEY_FUNC_ALIGN) {
+			*start = mas.index;
+			*end = mas.last;
+		}
+		rcu_read_unlock();
+		return;
+	}
+
+	/* 2. For File or Module, we need to find the start marker (to the left) */
+	/* Start by scanning backward to find the marker */
+	while ((val = arena_mas_prev(&mas, 0))) {
+		unsigned long rem = mas.index & DD_KEY_ALIGN_MASK;
+		if ((tag_to_find == DD_TAG_FILE && rem == DD_KEY_FILE_ALIGN) ||
+		    (tag_to_find == DD_TAG_MOD && rem == DD_KEY_MOD_ALIGN)) {
+			/* Found our start marker! */
+			/* For file, marker is at start - 1. For module, marker is at start - 2. */
+			*start = mas.index + (rem == DD_KEY_FILE_ALIGN ? DD_KEY_FILE_OFFSET : DD_KEY_MOD_OFFSET);
+			break;
+		}
+	}
+
+	/* 3. Now find the end of this range by scanning forward to find the next marker of the same tag,
+	 * or a higher-level tag (e.g. a module marker also bounds a file).
+	 */
+	arena_mas_init(&mas, mt, addr);
+	while ((val = arena_mas_next(&mas, ULONG_MAX))) {
+		unsigned long rem = mas.index & DD_KEY_ALIGN_MASK;
+		if ((tag_to_find == DD_TAG_FILE && (rem == DD_KEY_FILE_ALIGN || rem == DD_KEY_MOD_ALIGN)) ||
+		    (tag_to_find == DD_TAG_MOD && rem == DD_KEY_MOD_ALIGN)) {
+			/* Found the next marker! The current range ends just before it. */
+			/* For file, marker is at next_start - 1, so range ends at next_start - 2.
+			 * For module, marker is at next_start - 2, so range ends at next_start - 3.
+			 */
+			*end = mas.index - (rem == DD_KEY_FILE_ALIGN ? DD_KEY_FILE_OFFSET : DD_KEY_MOD_OFFSET);
+			rcu_read_unlock();
+			return;
+		}
+	}
+
+	/* No next marker found, so the range goes to the end of the tree */
+	*end = ULONG_MAX;
+	rcu_read_unlock();
+}
+
+static void ddebug_prefix_range(const struct _ddebug *desc,
+				struct _dd_prefix_key_range *range)
+{
+	unsigned long addr = (unsigned long)desc;
+	unsigned long start = addr;
+	unsigned long end = addr;
+	uint8_t flags = prefix_flags(desc->flags);
+	struct maple_tree *site_map = ddebug_select_tree(desc);
+
+	if (flags & _DPRINTK_FLAGS_INCL_LINENO) {
+		/*
+		 * except for amdgpu, which has macros with 2+ pr_debugs,
+		 * all prefixes with line-numbers are unique.
+		 */
+		range->start = range->end = ddebug_prefix_key(desc);
+		return;
+	}
+
+	/* 1. Module Level (Always the base for sharing) */
+	{
+		unsigned long mod_start, mod_end;
+		ddebug_resolve_range(site_map, addr, &mod_start, &mod_end, DD_TAG_MOD);
+		start = mod_start;
+		end = mod_end;
+	}
+
+	/* 2. File Level (Narrow further if +s is set) */
+	if (flags & _DPRINTK_FLAGS_INCL_SOURCENAME) {
+		unsigned long file_start, file_end;
+		ddebug_resolve_range(site_map, addr, &file_start, &file_end, DD_TAG_FILE);
+		start = max(start, file_start);
+		end = min(end, file_end);
+	}
+
+	/* 3. Function Level (Narrow if +f is set) */
+	if (flags & _DPRINTK_FLAGS_INCL_FUNCNAME) {
+		unsigned long func_start, func_end;
+		ddebug_resolve_range(site_map, addr, &func_start, &func_end, DD_TAG_FUNC);
+		start = max(start, func_start);
+		end = min(end, func_end);
+	}
+
+	/* Convert descriptor addresses to top-shifted flag-partitioned keys */
+	range->start = ddebug_pack_key(start, flags);
+	range->end = ddebug_pack_key(end, flags);
+}
 static __initdata int ddebug_init_success;
+
+static unsigned long ddebug_shrinker_count(struct shrinker *shrinker,
+					   struct shrink_control *sc)
+{
+	unsigned long count = 0;
+
+	if (time_before(jiffies, dd_site_map_last_used + 10 * HZ))
+		return SHRINK_EMPTY;
+
+	mutex_lock(&ddebug_lock);
+	if (!mtree_empty(&dd_builtin_site_map.mt))
+		count += 1000;
+	if (!mtree_empty(&dd_modules_site_map.mt))
+		count += 500;
+	if (!mtree_empty(&pr_prefixes))
+		count += pr_prefixes_count;
+	mutex_unlock(&ddebug_lock);
+
+	return count ? count : SHRINK_EMPTY;
+}
+
+static unsigned long ddebug_shrinker_scan(struct shrinker *shrinker,
+					  struct shrink_control *sc)
+{
+	unsigned long freed = 0;
+
+	mutex_lock(&ddebug_lock);
+
+	if (!mtree_empty(&dd_modules_site_map.mt)) {
+		struct ddebug_table *dt;
+		current_ddebug_write_tree = &dd_modules_site_map.mt;
+		arena___mt_destroy(&dd_modules_site_map.mt);
+		current_ddebug_write_tree = NULL;
+		folio_arena_free(&dd_modules_arena);
+		list_for_each_entry(dt, &ddebug_tables, link)
+			dt->site_map_loaded = false;
+		freed += 500;
+	}
+
+	if (freed < sc->nr_to_scan && !mtree_empty(&dd_builtin_site_map.mt)) {
+		current_ddebug_write_tree = &dd_builtin_site_map.mt;
+		arena___mt_destroy(&dd_builtin_site_map.mt);
+		current_ddebug_write_tree = NULL;
+		folio_arena_free(&dd_builtin_arena);
+		freed += 1000;
+	}
+
+	if (freed < sc->nr_to_scan && !mtree_empty(&pr_prefixes)) {
+		MA_STATE(mas, &pr_prefixes, 0, ULONG_MAX);
+		void *val;
+		mas_lock(&mas);
+		mas_for_each(&mas, val, ULONG_MAX) {
+			kfree(val);
+		}
+		__mt_destroy(&pr_prefixes);
+		pr_prefixes_count = 0;
+		mas_unlock(&mas);
+		freed += 1000;
+	}
+
+	mutex_unlock(&ddebug_lock);
+
+	if (freed)
+		pr_info("shrinker: destroyed site maps (freed score: %lu)\n", freed);
+
+	return freed ? freed : SHRINK_STOP;
+}
 
 static int __init dynamic_debug_init_control(void)
 {
 	struct proc_dir_entry *procfs_dir;
 	struct dentry *debugfs_dir;
+	struct shrinker *shrinker;
 
 	if (!ddebug_init_success)
 		return -ENODEV;
+
+	shrinker = shrinker_alloc(0, "dynamic_debug");
+	if (shrinker) {
+		shrinker->count_objects = ddebug_shrinker_count;
+		shrinker->scan_objects = ddebug_shrinker_scan;
+		shrinker_register(shrinker);
+	}
 
 	/* Create the control file in debugfs if it is enabled */
 	if (debugfs_initialized()) {
@@ -1782,6 +2550,124 @@ static int __init dynamic_debug_init_control(void)
 	return 0;
 }
 
+static int ddebug_compress_sites(const char *name, const struct _ddebug_site *sites, unsigned int count,
+				 void **out_buf, unsigned long *out_len)
+{
+	struct z_stream_s zstream;
+	unsigned long src_len = count * sizeof(struct _ddebug_site);
+	unsigned long max_dst_len = src_len + (src_len >> 12) + (src_len >> 14) + 11 + 6;
+	void *workspace;
+	void *dst;
+	int ret;
+
+	if (!count) {
+		*out_buf = NULL;
+		*out_len = 0;
+		return 0;
+	}
+
+	workspace = vmalloc(zlib_deflate_workspacesize(MAX_WBITS, DEF_MEM_LEVEL));
+	if (!workspace)
+		return -ENOMEM;
+
+	dst = vmalloc(max_dst_len);
+	if (!dst) {
+		vfree(workspace);
+		return -ENOMEM;
+	}
+
+	memset(&zstream, 0, sizeof(zstream));
+	zstream.workspace = workspace;
+	zstream.next_in = (unsigned char *)sites;
+	zstream.avail_in = src_len;
+	zstream.next_out = dst;
+	zstream.avail_out = max_dst_len;
+
+	ret = zlib_deflateInit(&zstream, Z_DEFAULT_COMPRESSION);
+	if (ret != Z_OK)
+		goto err;
+
+	ret = zlib_deflate(&zstream, Z_FINISH);
+	if (ret != Z_STREAM_END)
+		goto err_end;
+
+	*out_len = zstream.total_out;
+	*out_buf = vmalloc(*out_len);
+	if (!*out_buf) {
+		ret = -ENOMEM;
+		goto err_end;
+	}
+	memcpy(*out_buf, dst, *out_len);
+
+	vpr_info("compressed %s sites: %u records, %lu bytes -> %lu bytes (%lu%% savings)\n",
+		 name, count, src_len, *out_len,
+		 src_len ? 100 - (*out_len * 100 / src_len) : 0);
+
+	zlib_deflateEnd(&zstream);
+	vfree(dst);
+	vfree(workspace);
+	return 0;
+
+err_end:
+	zlib_deflateEnd(&zstream);
+err:
+	vfree(dst);
+	vfree(workspace);
+	return -EINVAL;
+}
+
+static int ddebug_decompress_sites(void *src, unsigned long src_len,
+				   struct _ddebug_site **out_sites, unsigned int count)
+{
+	struct z_stream_s zstream;
+	unsigned long dst_len = count * sizeof(struct _ddebug_site);
+	void *workspace;
+	struct _ddebug_site *dst;
+	int ret;
+
+	if (!count || !src) {
+		*out_sites = NULL;
+		return 0;
+	}
+
+	workspace = vmalloc(zlib_inflate_workspacesize());
+	if (!workspace)
+		return -ENOMEM;
+
+	dst = vmalloc(dst_len);
+	if (!dst) {
+		vfree(workspace);
+		return -ENOMEM;
+	}
+
+	memset(&zstream, 0, sizeof(zstream));
+	zstream.workspace = workspace;
+	zstream.next_in = src;
+	zstream.avail_in = src_len;
+	zstream.next_out = (unsigned char *)dst;
+	zstream.avail_out = dst_len;
+
+	ret = zlib_inflateInit(&zstream);
+	if (ret != Z_OK)
+		goto err;
+
+	ret = zlib_inflate(&zstream, Z_FINISH);
+	if (ret != Z_STREAM_END)
+		goto err_end;
+
+	zlib_inflateEnd(&zstream);
+	vfree(workspace);
+	*out_sites = dst;
+	return 0;
+
+err_end:
+	zlib_inflateEnd(&zstream);
+err:
+	vfree(dst);
+	vfree(workspace);
+	return -EINVAL;
+}
+
 static int __init dynamic_debug_init(void)
 {
 	struct _ddebug *iter, *iter_mod_start;
@@ -1791,12 +2677,19 @@ static int __init dynamic_debug_init(void)
 
 	struct _ddebug_info di = {
 		.descs.start = __start___dyndbg_descs,
+		.sites.start = __start___dyndbg_sites,
+		.strings_mod.start = __start___dyndbg_strings_mod,
+		.strings_file.start = __start___dyndbg_strings_file,
 		.maps.start  = __start___dyndbg_class_maps,
 		.users.start = __start___dyndbg_class_users,
 		.descs.len = __stop___dyndbg_descs - __start___dyndbg_descs,
+		.sites.len = __stop___dyndbg_sites - __start___dyndbg_sites,
+		.strings_mod.len = __stop___dyndbg_strings_mod - __start___dyndbg_strings_mod,
+		.strings_file.len = __stop___dyndbg_strings_file - __start___dyndbg_strings_file,
 		.maps.len  = __stop___dyndbg_class_maps - __start___dyndbg_class_maps,
 		.users.len = __stop___dyndbg_class_users - __start___dyndbg_class_users,
 	};
+	arena_maple_tree_init();
 
 #ifdef CONFIG_MODULES
 	ret = register_module_notifier(&ddebug_module_nb);
@@ -1816,37 +2709,47 @@ static int __init dynamic_debug_init(void)
 		return 0;
 	}
 
+	if (&__start___dyndbg_descs != &__stop___dyndbg_descs) {
+		unsigned int count = di.sites.len;
+		ddebug_condense_sites(&di, &dd_builtin_site_map.mt);
+		ddebug_compress_sites("builtin", __start___dyndbg_sites, count,
+				      &dd_builtin_compressed_sites, &dd_builtin_compressed_len);
+	}
+
 	iter = iter_mod_start = __start___dyndbg_descs;
-	modname = iter->modname;
+	modname = __start___dyndbg_sites[0]._modname;
 	i = mod_sites = mod_ct = 0;
 
 	for (; iter < __stop___dyndbg_descs; iter++, i++, mod_sites++) {
 
-		if (strcmp(modname, iter->modname)) {
+		if (strcmp(modname, __start___dyndbg_sites[i]._modname)) {
 			mod_ct++;
 			di.descs.len = mod_sites;
 			di.descs.start = iter_mod_start;
 			di.mod_name = modname;
+			di.sites.len = 0;
 			ret = ddebug_add_module(&di);
 			if (ret)
 				goto out_err;
 
 			mod_sites = 0;
-			modname = iter->modname;
+			modname = __start___dyndbg_sites[i]._modname;
 			iter_mod_start = iter;
 		}
 	}
 	di.descs.len = mod_sites;
 	di.descs.start = iter_mod_start;
 	di.mod_name = modname;
+	di.sites.len = 0;
 	ret = ddebug_add_module(&di);
 	if (ret)
 		goto out_err;
 
 	ddebug_init_success = 1;
-	vpr_info("%d prdebugs in %d modules, %d KiB in ddebug tables, %d kiB in __dyndbg_descs section\n",
+	vpr_info("%d prdebugs in %d modules, %d KiB in ddebug tables, %d+%d kiB in __dyndbg:_descs+_sites sections\n",
 		 i, mod_ct, (int)((mod_ct * sizeof(struct ddebug_table)) >> 10),
-		 (int)((i * sizeof(struct _ddebug)) >> 10));
+		 (int)((i * sizeof(struct _ddebug)) >> 10),
+		 (int)((i * sizeof(struct _ddebug_site)) >> 10));
 
 	if (di.maps.len)
 		v2pr_info("  %d builtin ddebug class-maps\n", di.maps.len);

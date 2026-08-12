@@ -176,9 +176,14 @@ static void nft_ctx_init(struct nft_ctx *ctx,
 static struct nft_trans *nft_trans_alloc(const struct nft_ctx *ctx,
 					 int msg_type, u32 size)
 {
+	struct nftables_pernet *nft_net = nft_pernet(ctx->net);
 	struct nft_trans *trans;
 
-	trans = kzalloc(size, GFP_KERNEL);
+	if (size <= 256 && nft_net->trans_arena.chunk_order)
+		trans = folio_arena_alloc(&nft_net->trans_arena, GFP_KERNEL);
+	else
+		trans = kzalloc(size, GFP_KERNEL);
+
 	if (trans == NULL)
 		return NULL;
 
@@ -12142,6 +12147,7 @@ static int __net_init nf_tables_init_net(struct net *net)
 	INIT_LIST_HEAD(&nft_net->binding_list);
 	INIT_LIST_HEAD(&nft_net->module_list);
 	INIT_LIST_HEAD(&nft_net->notify_list);
+	folio_arena_init(&nft_net->trans_arena, 256, 4);
 	mutex_init(&nft_net->commit_mutex);
 	net->nft.base_seq = 1;
 	nft_net->gc_seq = 0;

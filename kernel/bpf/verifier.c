@@ -1725,7 +1725,7 @@ static int pop_stack(struct bpf_verifier_env *env, int *prev_insn_idx,
 		*prev_insn_idx = head->prev_insn_idx;
 	elem = head->next;
 	bpf_free_verifier_state(&head->st, false);
-	kfree(head);
+	/* head memory is managed by env->state_arena */
 	env->head = elem;
 	env->stack_size--;
 	return 0;
@@ -1751,7 +1751,7 @@ static struct bpf_verifier_state *push_stack(struct bpf_verifier_env *env,
 	struct bpf_verifier_stack_elem *elem;
 	int err;
 
-	elem = kzalloc_obj(struct bpf_verifier_stack_elem, GFP_KERNEL_ACCOUNT);
+	elem = folio_arena_alloc(&env->state_arena, GFP_KERNEL_ACCOUNT);
 	if (!elem)
 		return ERR_PTR(-ENOMEM);
 
@@ -2275,7 +2275,7 @@ static struct bpf_verifier_state *push_async_cb(struct bpf_verifier_env *env,
 	struct bpf_verifier_stack_elem *elem;
 	struct bpf_func_state *frame;
 
-	elem = kzalloc_obj(struct bpf_verifier_stack_elem, GFP_KERNEL_ACCOUNT);
+	elem = folio_arena_alloc(&env->state_arena, GFP_KERNEL_ACCOUNT);
 	if (!elem)
 		return ERR_PTR(-ENOMEM);
 
@@ -19789,6 +19789,8 @@ int bpf_check(struct bpf_prog **prog, union bpf_attr *attr, bpfptr_t uattr,
 	if (!env)
 		return -ENOMEM;
 
+	folio_arena_init(&env->state_arena, sizeof(struct bpf_verifier_stack_elem), 4);
+
 	env->bt.env = env;
 
 	len = (*prog)->len;
@@ -20060,6 +20062,7 @@ err_free_env:
 	kvfree(env->succ);
 	kvfree(env->gotox_tmp_buf);
 	vfree(env->insn_aux_data);
+	folio_arena_free(&env->state_arena);
 	kvfree(env);
 	return ret;
 }

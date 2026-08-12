@@ -30,6 +30,7 @@
 #include <linux/llist.h>
 #include <linux/rbtree.h>
 #include <linux/types.h>
+#include <linux/folio_arena.h>
 
 #include <drm/drm_device.h>
 #include <drm/drm_gem.h>
@@ -279,6 +280,11 @@ struct drm_gpuvm {
 	 * the kernel
 	 */
 	struct drm_gpuva kernel_alloc_node;
+
+	/**
+	 * @arena: &folio_arena for fast $O(1)$ GPU VA allocation and teardown
+	 */
+	struct folio_arena arena;
 
 	/**
 	 * @ops: &drm_gpuvm_ops providing the split/merge steps to drivers
