@@ -1072,6 +1072,9 @@ drm_gpuvm_resv_object_alloc(struct drm_device *drm)
 }
 EXPORT_SYMBOL_GPL(drm_gpuvm_resv_object_alloc);
 
+DEFINE_FOLIO_POOL_STATIC_KEY_PARAM(gpuvm_scratchpad_key, va_scratchpad,
+				   "Toggle DRM GPUVM range folio scratchpad allocator");
+
 /**
  * drm_gpuvm_init() - initialize a &drm_gpuvm
  * @gpuvm: pointer to the &drm_gpuvm to initialize
@@ -1109,6 +1112,8 @@ drm_gpuvm_init(struct drm_gpuvm *gpuvm, const char *name,
 	spin_lock_init(&gpuvm->evict.lock);
 
 	init_llist_head(&gpuvm->bo_defer);
+	folio_scratchpad_init_key(&gpuvm->va_scratchpad, get_order(SZ_64K),
+				  &gpuvm_scratchpad_key);
 
 	kref_init(&gpuvm->kref);
 
@@ -1155,6 +1160,7 @@ drm_gpuvm_fini(struct drm_gpuvm *gpuvm)
 	drm_WARN(gpuvm->drm, !llist_empty(&gpuvm->bo_defer),
 		 "VM BO cleanup list should be empty.\n");
 
+	folio_scratchpad_free(&gpuvm->va_scratchpad);
 	drm_gem_object_put(gpuvm->r_obj);
 }
 
@@ -2858,7 +2864,8 @@ gpuva_op_alloc(struct drm_gpuvm *gpuvm)
 	if (fn && fn->op_alloc)
 		op = fn->op_alloc();
 	else
-		op = kzalloc_obj(*op);
+		op = folio_scratchpad_alloc_obj(gpuvm, va_scratchpad,
+						struct drm_gpuva_op, GFP_KERNEL);
 
 	if (unlikely(!op))
 		return NULL;
@@ -2875,7 +2882,7 @@ gpuva_op_free(struct drm_gpuvm *gpuvm,
 	if (fn && fn->op_free)
 		fn->op_free(op);
 	else
-		kfree(op);
+		folio_scratchpad_free_elem(op);
 }
 
 static int
