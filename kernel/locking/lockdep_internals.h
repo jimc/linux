@@ -124,7 +124,8 @@ enum {
 #define AVG_LOCKDEP_CHAIN_DEPTH		5
 #define MAX_LOCKDEP_CHAIN_HLOCKS (MAX_LOCKDEP_CHAINS * AVG_LOCKDEP_CHAIN_DEPTH)
 
-extern struct lock_chain lock_chains[];
+struct lock_chain *idx_to_lock_chain(unsigned int chain_idx);
+void lockdep_chain_stats(unsigned int *nr_chunks, size_t *chunk_size, size_t *tail_used);
 
 #define LOCK_USAGE_CHARS (2*XXX_LOCK_USAGE_STATES + 1)
 

@@ -133,7 +133,7 @@ static void *lc_start(struct seq_file *m, loff_t *pos)
 	if (*pos == 0)
 		return SEQ_START_TOKEN;
 
-	return lock_chains + (*pos - 1);
+	return idx_to_lock_chain(*pos - 1);
 }
 
 static void *lc_next(struct seq_file *m, void *v, loff_t *pos)
@@ -330,8 +330,20 @@ static int lockdep_stats_show(struct seq_file *m, void *v)
 			nr_list_entries);
 
 #ifdef CONFIG_PROVE_LOCKING
-	seq_printf(m, " dependency chains:             %11lu [max: %lu]\n",
-			lock_chain_count(), MAX_LOCKDEP_CHAINS);
+	{
+		unsigned int lc_chunks = 0;
+		size_t lc_chunk_sz = 0, lc_tail_used = 0;
+
+		lockdep_chain_stats(&lc_chunks, &lc_chunk_sz, &lc_tail_used);
+		if (lc_chunks) {
+			seq_printf(m, " dependency chains:             %11lu [dynamic: %u x %zu kB, tail: %zu kB/%zu kB]\n",
+				   lock_chain_count(), lc_chunks, lc_chunk_sz / 1024,
+				   lc_tail_used / 1024, lc_chunk_sz / 1024);
+		} else {
+			seq_printf(m, " dependency chains:             %11lu [bootstrap]\n",
+				   lock_chain_count());
+		}
+	}
 	{
 		unsigned int hl_chunks = 0;
 		size_t hl_chunk_sz = 0, hl_tail_used = 0;

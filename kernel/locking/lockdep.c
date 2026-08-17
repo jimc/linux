@@ -1178,7 +1178,7 @@ static bool check_lock_chain_key(struct lock_chain *chain)
 	 */
 	if (chain->chain_key != chain_key) {
 		printk(KERN_INFO "chain %lld: key %#llx <> %#llx\n",
-		       (unsigned long long)(chain - lock_chains),
+		       (unsigned long long)chain->chain_idx,
 		       (unsigned long long)chain->chain_key,
 		       (unsigned long long)chain_key);
 		return false;
@@ -3466,8 +3466,36 @@ out_bug:
 	return 0;
 }
 
-struct lock_chain lock_chains[MAX_LOCKDEP_CHAINS];
+#define LOCK_CHAINS_PER_CHUNK_SHIFT 10
+#define LOCK_CHAINS_PER_CHUNK (1UL << LOCK_CHAINS_PER_CHUNK_SHIFT)
+#define LOCK_CHAINS_CHUNK_MASK (LOCK_CHAINS_PER_CHUNK - 1)
+#define NR_LOCK_CHAIN_CHUNKS (MAX_LOCKDEP_CHAINS >> LOCK_CHAINS_PER_CHUNK_SHIFT)
+
+static struct lock_chain early_lock_chains[LOCK_CHAINS_PER_CHUNK];
+static struct lock_chain *lock_chains_chunks[NR_LOCK_CHAIN_CHUNKS] = { early_lock_chains };
+static unsigned int nr_lock_chain_chunks = 1;
 static DECLARE_BITMAP(lock_chains_in_use, MAX_LOCKDEP_CHAINS);
+static struct folio_pool lockdep_chain_pool =
+	FOLIO_POOL_INIT(lockdep_chain_pool,
+			sizeof(struct lock_chain) * LOCK_CHAINS_PER_CHUNK,
+			FOLIO_POOL_64K_ORDER);
+
+struct lock_chain *idx_to_lock_chain(unsigned int chain_idx)
+{
+	unsigned int chunk = chain_idx >> LOCK_CHAINS_PER_CHUNK_SHIFT;
+	unsigned int offset = chain_idx & LOCK_CHAINS_CHUNK_MASK;
+
+	if (unlikely(chunk >= NR_LOCK_CHAIN_CHUNKS || !lock_chains_chunks[chunk]))
+		return NULL;
+
+	return &lock_chains_chunks[chunk][offset];
+}
+
+void lockdep_chain_stats(unsigned int *nr_chunks, size_t *chunk_size, size_t *tail_used)
+{
+	folio_pool_stats(&lockdep_chain_pool, nr_chunks, chunk_size, tail_used);
+}
+
 #define CHAIN_HLOCKS_PER_CHUNK_SHIFT 15
 #define CHAIN_HLOCKS_PER_CHUNK (1UL << CHAIN_HLOCKS_PER_CHUNK_SHIFT)
 #define CHAIN_HLOCKS_CHUNK_MASK (CHAIN_HLOCKS_PER_CHUNK - 1)
@@ -3489,7 +3517,6 @@ void lockdep_hlock_stats(unsigned int *nr_chunks, size_t *chunk_size, size_t *ta
 {
 	folio_pool_stats(&lockdep_hlock_pool, nr_chunks, chunk_size, tail_used);
 }
-
 unsigned int chain_hlocks_used(void)
 {
 	return total_chain_hlocks_capacity - (nr_free_chain_hlocks + nr_lost_chain_hlocks);
@@ -3511,7 +3538,6 @@ static inline void set_chain_hlock(unsigned int offset, u16 val)
 	chain_hlocks_chunks[chunk][idx] = val;
 }
 
->>>>>>> 4fb1d2f707d2 (locking/lockdep: Migrate chain_hlocks array to 2-level dynamic folio chunks)
 unsigned long nr_zapped_lock_chains;
 unsigned int nr_free_chain_hlocks;	/* Free chain_hlocks in buckets */
 unsigned int nr_lost_chain_hlocks;	/* Lost chain_hlocks */
@@ -3920,25 +3946,42 @@ static int check_no_collision(struct task_struct *curr,
  */
 long lockdep_next_lockchain(long i)
 {
-	i = find_next_bit(lock_chains_in_use, ARRAY_SIZE(lock_chains), i + 1);
-	return i < ARRAY_SIZE(lock_chains) ? i : -2;
+	i = find_next_bit(lock_chains_in_use, MAX_LOCKDEP_CHAINS, i + 1);
+	return i < MAX_LOCKDEP_CHAINS ? i : -2;
 }
 
 unsigned long lock_chain_count(void)
 {
-	return bitmap_weight(lock_chains_in_use, ARRAY_SIZE(lock_chains));
+	return bitmap_weight(lock_chains_in_use, MAX_LOCKDEP_CHAINS);
 }
 
 /* Must be called with the graph lock held. */
 static struct lock_chain *alloc_lock_chain(void)
 {
-	int idx = find_first_zero_bit(lock_chains_in_use,
-				      ARRAY_SIZE(lock_chains));
+	int idx = find_first_zero_bit(lock_chains_in_use, MAX_LOCKDEP_CHAINS);
+	unsigned int chunk_idx;
+	struct lock_chain *chain;
 
-	if (unlikely(idx >= ARRAY_SIZE(lock_chains)))
+	if (unlikely(idx >= MAX_LOCKDEP_CHAINS))
 		return NULL;
+
+	chunk_idx = idx >> LOCK_CHAINS_PER_CHUNK_SHIFT;
+	if (chunk_idx >= nr_lock_chain_chunks) {
+		struct lock_chain *chunk;
+
+		chunk = folio_pool_alloc(&lockdep_chain_pool, GFP_ATOMIC);
+		if (!chunk)
+			return NULL;
+
+		memset(chunk, 0, sizeof(struct lock_chain) * LOCK_CHAINS_PER_CHUNK);
+		lock_chains_chunks[chunk_idx] = chunk;
+		nr_lock_chain_chunks = chunk_idx + 1;
+	}
+
 	__set_bit(idx, lock_chains_in_use);
-	return lock_chains + idx;
+	chain = idx_to_lock_chain(idx);
+	chain->chain_idx = idx;
+	return chain;
 }
 
 /*
@@ -6438,7 +6481,7 @@ free_lock_chain:
 	 * hlist_for_each_entry_rcu() loop is safe.
 	 */
 	hlist_del_rcu(&chain->entry);
-	__set_bit(chain - lock_chains, pf->lock_chains_being_freed);
+	__set_bit(chain->chain_idx, pf->lock_chains_being_freed);
 	nr_zapped_lock_chains++;
 #endif
 }
@@ -6600,8 +6643,8 @@ static void __free_zapped_classes(struct pending_free *pf)
 
 #ifdef CONFIG_PROVE_LOCKING
 	bitmap_andnot(lock_chains_in_use, lock_chains_in_use,
-		      pf->lock_chains_being_freed, ARRAY_SIZE(lock_chains));
-	bitmap_clear(pf->lock_chains_being_freed, 0, ARRAY_SIZE(lock_chains));
+		      pf->lock_chains_being_freed, MAX_LOCKDEP_CHAINS);
+	bitmap_clear(pf->lock_chains_being_freed, 0, MAX_LOCKDEP_CHAINS);
 #endif
 }
 
@@ -6909,7 +6952,7 @@ void __init lockdep_init(void)
 		sizeof(delayed_free)
 #ifdef CONFIG_PROVE_LOCKING
 		+ sizeof(lock_cq)
-		+ sizeof(lock_chains)
+		+ sizeof(early_lock_chains)
 		+ sizeof(lock_chains_in_use)
 		+ sizeof(early_chain_hlocks)
 #endif

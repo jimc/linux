@@ -77,7 +77,7 @@ struct lock_chain {
 	unsigned int			irq_context :  2,
 					depth       :  6,
 					base	    : 24;
-	/* 4 byte hole */
+	unsigned int			chain_idx;
 	struct hlist_node		entry;
 	u64				chain_key;
 };
