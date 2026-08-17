@@ -49,6 +49,7 @@ void _folio_scratchpad_init_key(struct folio_scratchpad *sp, unsigned int order,
 	sp->free_ptr = NULL;
 	sp->remaining = 0;
 	sp->chunk_order = order;
+	sp->max_order = order;
 	sp->key = key;
 	spin_lock_init(&sp->lock);
 }
@@ -110,6 +111,9 @@ noinline void *folio_scratchpad_alloc(struct folio_scratchpad *sp, size_t size,
 		header_offset = ALIGN(sizeof(*chunk), max_t(size_t, sizeof(void *), align));
 
 		spin_lock_irqsave(&sp->lock, flags);
+		if (sp->max_order && sp->chunk_order < sp->max_order)
+			sp->chunk_order++;
+
 		list_add(&chunk->link, &sp->chunks);
 		sp->free_ptr = base + header_offset;
 		sp->remaining = chunk_size - header_offset;
