@@ -233,13 +233,13 @@ struct folio_pool {
 #define FOLIO_POOL_INIT(name, _elem_size, _order) {			\
 	.base = FOLIO_SCRATCHPAD_INIT((name).base, _order),		\
 	.elem_size = (_elem_size),					\
-	.elem_align = ((_elem_size) > sizeof(void *) ? (_elem_size) : sizeof(void *)), \
+	.elem_align = sizeof(void *),					\
 }
 
 #define FOLIO_POOL_INIT_KEY(name, _elem_size, _order, _key) {		\
 	.base = FOLIO_SCRATCHPAD_INIT_KEY((name).base, _order, _key),	\
 	.elem_size = (_elem_size),					\
-	.elem_align = ((_elem_size) > sizeof(void *) ? (_elem_size) : sizeof(void *)), \
+	.elem_align = sizeof(void *),					\
 }
 
 void folio_pool_init(struct folio_pool *fp, size_t elem_size, unsigned int order);
