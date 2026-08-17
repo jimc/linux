@@ -66,6 +66,9 @@ DECLARE_STATIC_KEY_TRUE(folio_pool_enabled_key);
 	module_param_cb(param_name, &key_name##_ops, NULL, 0644);		\
 	MODULE_PARM_DESC(param_name, desc)
 
+#define FOLIO_POOL_8K_ORDER  (PAGE_SHIFT < 13 ? 13 - PAGE_SHIFT : 0)
+#define FOLIO_POOL_16K_ORDER (PAGE_SHIFT < 14 ? 14 - PAGE_SHIFT : 0)
+#define FOLIO_POOL_32K_ORDER (PAGE_SHIFT < 15 ? 15 - PAGE_SHIFT : 0)
 #define FOLIO_POOL_64K_ORDER (PAGE_SHIFT < 16 ? 16 - PAGE_SHIFT : 0)
 
 struct folio_pool_chunk {
@@ -81,6 +84,7 @@ struct folio_scratchpad {
 	void *free_ptr;
 	size_t remaining;
 	unsigned int chunk_order;
+	unsigned int max_order;
 	struct static_key *key;
 	spinlock_t lock;
 };
@@ -88,6 +92,7 @@ struct folio_scratchpad {
 #define FOLIO_SCRATCHPAD_INIT(name, _order) {				\
 	.chunks = LIST_HEAD_INIT((name).chunks),			\
 	.chunk_order = (_order),					\
+	.max_order = (_order),						\
 	.key = NULL,							\
 	.lock = __SPIN_LOCK_UNLOCKED((name).lock),			\
 }
@@ -95,6 +100,15 @@ struct folio_scratchpad {
 #define FOLIO_SCRATCHPAD_INIT_KEY(name, _order, _key) {			\
 	.chunks = LIST_HEAD_INIT((name).chunks),			\
 	.chunk_order = (_order),					\
+	.max_order = (_order),						\
+	.key = (struct static_key *)(_key),				\
+	.lock = __SPIN_LOCK_UNLOCKED((name).lock),			\
+}
+
+#define FOLIO_SCRATCHPAD_INIT_GEOM_KEY(name, _min_order, _max_order, _key) { \
+	.chunks = LIST_HEAD_INIT((name).chunks),			\
+	.chunk_order = (_min_order),					\
+	.max_order = (_max_order),					\
 	.key = (struct static_key *)(_key),				\
 	.lock = __SPIN_LOCK_UNLOCKED((name).lock),			\
 }
@@ -238,6 +252,12 @@ struct folio_pool {
 
 #define FOLIO_POOL_INIT_KEY(name, _elem_size, _order, _key) {		\
 	.base = FOLIO_SCRATCHPAD_INIT_KEY((name).base, _order, _key),	\
+	.elem_size = (_elem_size),					\
+	.elem_align = sizeof(void *),					\
+}
+
+#define FOLIO_POOL_INIT_GEOM_KEY(name, _elem_size, _min_order, _max_order, _key) { \
+	.base = FOLIO_SCRATCHPAD_INIT_GEOM_KEY((name).base, _min_order, _max_order, _key), \
 	.elem_size = (_elem_size),					\
 	.elem_align = sizeof(void *),					\
 }
