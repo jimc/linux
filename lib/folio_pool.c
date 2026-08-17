@@ -42,8 +42,8 @@ MODULE_PARM_DESC(enabled, "Toggle folio_pool/scratchpad bump allocator (0 = fall
 /*
  * 1. Variable-Sized Scratchpad (Core Engine)
  */
-void folio_scratchpad_init_key(struct folio_scratchpad *sp, unsigned int order,
-			       struct static_key *key)
+void _folio_scratchpad_init_key(struct folio_scratchpad *sp, unsigned int order,
+				struct static_key *key)
 {
 	INIT_LIST_HEAD(&sp->chunks);
 	sp->free_ptr = NULL;
@@ -52,11 +52,11 @@ void folio_scratchpad_init_key(struct folio_scratchpad *sp, unsigned int order,
 	sp->key = key;
 	spin_lock_init(&sp->lock);
 }
-EXPORT_SYMBOL_GPL(folio_scratchpad_init_key);
+EXPORT_SYMBOL_GPL(_folio_scratchpad_init_key);
 
 void folio_scratchpad_init(struct folio_scratchpad *sp, unsigned int order)
 {
-	folio_scratchpad_init_key(sp, order, NULL);
+	_folio_scratchpad_init_key(sp, order, NULL);
 }
 EXPORT_SYMBOL_GPL(folio_scratchpad_init);
 
@@ -91,11 +91,15 @@ noinline void *folio_scratchpad_alloc(struct folio_scratchpad *sp, size_t size,
 	aligned_size = size + pad;
 
 	if (sp->remaining < aligned_size) {
+		size_t needed = ALIGN(sizeof(struct folio_pool_chunk), align) + size;
+		unsigned int needed_order = get_order(needed);
+		unsigned int order = max(sp->chunk_order, needed_order);
+
 		spin_unlock_irqrestore(&sp->lock, flags);
 
-		folio = folio_alloc(gfp, sp->chunk_order);
-		if (!folio && sp->chunk_order > 0)
-			folio = folio_alloc(gfp, 0);
+		folio = folio_alloc(gfp, order);
+		if (!folio && order > needed_order)
+			folio = folio_alloc(gfp, needed_order);
 		if (!folio)
 			return NULL;
 
@@ -179,6 +183,57 @@ noinline void folio_scratchpad_free(struct folio_scratchpad *sp)
 }
 EXPORT_SYMBOL_GPL(folio_scratchpad_free);
 
+/**
+ * folio_scratchpad_discard - Discard allocation if at top of active chunk
+ * @sp: Scratchpad instance
+ * @ptr: Address of allocation to release
+ * @size: Size passed to prior allocation
+ *
+ * If @ptr is the most recent allocation in the active chunk, rewinds
+ * free_ptr in O(1) time without fragmentation. Repeated calls in strict
+ * reverse LIFO order can unwind N items within the active chunk, provided
+ * element sizes are alignment-matched so inter-element padding is zero.
+ */
+void folio_scratchpad_discard(struct folio_scratchpad *sp, void *ptr, size_t size)
+{
+	unsigned long flags;
+
+	if (!ptr || !size)
+		return;
+
+	if (unlikely(!folio_scratchpad_is_enabled(sp))) {
+		kvfree(ptr);
+		return;
+	}
+
+	spin_lock_irqsave(&sp->lock, flags);
+	if (sp->free_ptr == (char *)ptr + size) {
+		sp->free_ptr = ptr;
+		sp->remaining += size;
+	}
+	spin_unlock_irqrestore(&sp->lock, flags);
+}
+EXPORT_SYMBOL_GPL(folio_scratchpad_discard);
+
+void folio_scratchpad_trim(struct folio_scratchpad *sp, size_t unused_bytes)
+{
+	unsigned long flags;
+
+	if (!unused_bytes)
+		return;
+
+	if (unlikely(!folio_scratchpad_is_enabled(sp)))
+		return;
+
+	spin_lock_irqsave(&sp->lock, flags);
+	if (sp->free_ptr) {
+		sp->free_ptr = (char *)sp->free_ptr - unused_bytes;
+		sp->remaining += unused_bytes;
+	}
+	spin_unlock_irqrestore(&sp->lock, flags);
+}
+EXPORT_SYMBOL_GPL(folio_scratchpad_trim);
+
 /*
  * 2. Fixed-Slot Uniform Pool (Specialized Thin Wrapper on Scratchpad)
  */
@@ -191,22 +246,22 @@ void folio_pool_init_align(struct folio_pool *fp, size_t elem_size,
 }
 EXPORT_SYMBOL_GPL(folio_pool_init_align);
 
-void folio_pool_init_key(struct folio_pool *fp, size_t elem_size, unsigned int order,
-			 struct static_key *key)
+void _folio_pool_init_key(struct folio_pool *fp, size_t elem_size, unsigned int order,
+			  struct static_key *key)
 {
 	size_t align = sizeof(void *);
 
 	if (elem_size && is_power_of_2(elem_size))
 		align = max_t(size_t, sizeof(void *), elem_size);
-	folio_scratchpad_init_key(&fp->base, order, key);
+	_folio_scratchpad_init_key(&fp->base, order, key);
 	fp->elem_size = elem_size;
 	fp->elem_align = align;
 }
-EXPORT_SYMBOL_GPL(folio_pool_init_key);
+EXPORT_SYMBOL_GPL(_folio_pool_init_key);
 
 void folio_pool_init(struct folio_pool *fp, size_t elem_size, unsigned int order)
 {
-	folio_pool_init_key(fp, elem_size, order, NULL);
+	_folio_pool_init_key(fp, elem_size, order, NULL);
 }
 EXPORT_SYMBOL_GPL(folio_pool_init);
 

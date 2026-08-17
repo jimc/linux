@@ -100,14 +100,21 @@ struct folio_scratchpad {
 }
 
 void folio_scratchpad_init(struct folio_scratchpad *sp, unsigned int order);
-void folio_scratchpad_init_key(struct folio_scratchpad *sp, unsigned int order,
-			       struct static_key *key);
+void _folio_scratchpad_init_key(struct folio_scratchpad *sp, unsigned int order,
+				struct static_key *key);
+#define folio_scratchpad_init_key(sp, order, key) \
+	_folio_scratchpad_init_key((sp), (order), (struct static_key *)(key))
 void *folio_scratchpad_alloc(struct folio_scratchpad *sp, size_t size,
 			     size_t align, gfp_t gfp);
 void folio_scratchpad_reset(struct folio_scratchpad *sp);
 void folio_scratchpad_free(struct folio_scratchpad *sp);
+void folio_scratchpad_discard(struct folio_scratchpad *sp, void *ptr, size_t size);
+void folio_scratchpad_trim(struct folio_scratchpad *sp, size_t unused_bytes);
 void folio_scratchpad_stats(struct folio_scratchpad *sp, unsigned int *nr_chunks,
 			    size_t *chunk_size, size_t *tail_used);
+
+#define folio_scratchpad_discard_obj(sp, ptr) \
+	folio_scratchpad_discard((sp), (ptr), sizeof(*(ptr)))
 
 DEFINE_FREE(folio_scratchpad, struct folio_scratchpad *, if (_T) folio_scratchpad_free(_T))
 
@@ -236,8 +243,10 @@ struct folio_pool {
 }
 
 void folio_pool_init(struct folio_pool *fp, size_t elem_size, unsigned int order);
-void folio_pool_init_key(struct folio_pool *fp, size_t elem_size, unsigned int order,
-			 struct static_key *key);
+void _folio_pool_init_key(struct folio_pool *fp, size_t elem_size, unsigned int order,
+			  struct static_key *key);
+#define folio_pool_init_key(fp, elem_size, order, key) \
+	_folio_pool_init_key((fp), (elem_size), (order), (struct static_key *)(key))
 void folio_pool_init_align(struct folio_pool *fp, size_t elem_size,
 			   size_t elem_align, unsigned int order);
 
