@@ -295,8 +295,9 @@ static int lockdep_stats_show(struct seq_file *m, void *v)
 				   nr_lock_classes, lc_chunks, lc_chunk_sz / 1024,
 				   lc_tail_used / 1024, lc_chunk_sz / 1024);
 		} else {
-			seq_printf(m, " lock-classes:                  %11lu [bootstrap]\n",
-				   nr_lock_classes);
+			seq_printf(m, " lock-classes:                  %11lu [bootstrap: %lu/%lu, %zu kB]\n",
+				   nr_lock_classes, nr_lock_classes, BOOTSTRAP_LOCK_CLASSES_CAP,
+				   (BOOTSTRAP_LOCK_CLASSES_CAP * sizeof(struct lock_class)) / 1024);
 		}
 	}
 	seq_printf(m, " dynamic-keys:                  %11lu\n",
@@ -311,8 +312,9 @@ static int lockdep_stats_show(struct seq_file *m, void *v)
 				   nr_list_entries, fp_chunks, fp_chunk_sz / 1024,
 				   fp_tail_used / 1024, fp_chunk_sz / 1024);
 		} else {
-			seq_printf(m, " direct dependencies:           %11lu [bootstrap]\n",
-				   nr_list_entries);
+			seq_printf(m, " direct dependencies:           %11lu [bootstrap: %lu/%lu, %zu kB]\n",
+				   nr_list_entries, nr_list_entries, BOOTSTRAP_LOCKDEP_ENTRIES_CAP,
+				   (BOOTSTRAP_LOCKDEP_ENTRIES_CAP * sizeof(struct lock_list)) / 1024);
 		}
 	}
 	seq_printf(m, " indirect dependencies:         %11lu\n",
@@ -340,8 +342,9 @@ static int lockdep_stats_show(struct seq_file *m, void *v)
 				   lock_chain_count(), lc_chunks, lc_chunk_sz / 1024,
 				   lc_tail_used / 1024, lc_chunk_sz / 1024);
 		} else {
-			seq_printf(m, " dependency chains:             %11lu [bootstrap]\n",
-				   lock_chain_count());
+			seq_printf(m, " dependency chains:             %11lu [bootstrap: %lu/%lu, %zu kB]\n",
+				   lock_chain_count(), lock_chain_count(), BOOTSTRAP_LOCK_CHAINS_CAP,
+				   (BOOTSTRAP_LOCK_CHAINS_CAP * sizeof(struct lock_chain)) / 1024);
 		}
 	}
 	{
@@ -354,8 +357,9 @@ static int lockdep_stats_show(struct seq_file *m, void *v)
 				   chain_hlocks_used(), hl_chunks, hl_chunk_sz / 1024,
 				   hl_tail_used / 1024, hl_chunk_sz / 1024);
 		} else {
-			seq_printf(m, " dependency chain hlocks used:  %11u [bootstrap]\n",
-				   chain_hlocks_used());
+			seq_printf(m, " dependency chain hlocks used:  %11u [bootstrap: %u/%lu, %zu kB]\n",
+				   chain_hlocks_used(), chain_hlocks_used(), BOOTSTRAP_CHAIN_HLOCKS_CAP,
+				   (BOOTSTRAP_CHAIN_HLOCKS_CAP * sizeof(u16)) / 1024);
 		}
 	}
 	seq_printf(m, " dependency chain hlocks lost:  %11u\n",
@@ -380,8 +384,9 @@ static int lockdep_stats_show(struct seq_file *m, void *v)
 				   nr_stack_trace_entries, trace_chunks, trace_chunk_sz / 1024,
 				   trace_tail_used / 1024, trace_chunk_sz / 1024);
 		} else {
-			seq_printf(m, " stack-trace entries:           %11lu [bootstrap]\n",
-				   nr_stack_trace_entries);
+			seq_printf(m, " stack-trace entries:           %11lu [bootstrap: %lu/%lu, %zu kB]\n",
+				   nr_stack_trace_entries, nr_stack_trace_entries, BOOTSTRAP_STACK_TRACE_CAP,
+				   (BOOTSTRAP_STACK_TRACE_CAP * sizeof(unsigned long)) / 1024);
 		}
 	}
 #if defined(CONFIG_TRACE_IRQFLAGS) && defined(CONFIG_PROVE_LOCKING)

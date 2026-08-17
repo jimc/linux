@@ -166,6 +166,12 @@ void lockdep_class_stats(unsigned int *nr_chunks, size_t *chunk_size, size_t *ta
 void lockdep_hlock_stats(unsigned int *nr_chunks, size_t *chunk_size, size_t *tail_used);
 unsigned int chain_hlocks_used(void);
 
+#define BOOTSTRAP_LOCK_CLASSES_CAP	256UL
+#define BOOTSTRAP_LOCKDEP_ENTRIES_CAP	2048UL
+#define BOOTSTRAP_LOCK_CHAINS_CAP	1024UL
+#define BOOTSTRAP_CHAIN_HLOCKS_CAP	4096UL
+#define BOOTSTRAP_STACK_TRACE_CAP	16384UL
+
 #ifdef CONFIG_PROVE_LOCKING
 extern unsigned long lockdep_count_forward_deps(struct lock_class *);
 extern unsigned long lockdep_count_backward_deps(struct lock_class *);
