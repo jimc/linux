@@ -229,7 +229,7 @@ static inline int debug_locks_off_graph_unlock(void)
 	return ret;
 }
 
-#define BOOTSTRAP_LOCKDEP_ENTRIES 4096UL
+#define BOOTSTRAP_LOCKDEP_ENTRIES 2048UL
 
 static struct lock_list early_list_entries[BOOTSTRAP_LOCKDEP_ENTRIES] __initdata;
 static unsigned long early_list_entries_in_use[BITS_TO_LONGS(BOOTSTRAP_LOCKDEP_ENTRIES)] __initdata;
@@ -575,17 +575,82 @@ struct lock_trace {
 };
 #define LOCK_TRACE_SIZE_IN_LONGS				\
 	(sizeof(struct lock_trace) / sizeof(unsigned long))
-/*
- * Stack-trace: sequence of lock_trace structures. Protected by the graph_lock.
- */
-static unsigned long stack_trace[MAX_STACK_TRACE_ENTRIES];
+
+#define BOOTSTRAP_STACK_TRACE_ENTRIES 16384UL
+#define MAX_LOCKDEP_TRACE_DEPTH 48
+
+static unsigned long early_stack_trace[BOOTSTRAP_STACK_TRACE_ENTRIES] __initdata;
+static unsigned long *bootstrap_stack_trace __refdata = early_stack_trace;
+static unsigned long early_stack_trace_in_use __initdata;
+static unsigned long *bootstrap_stack_trace_in_use __refdata = &early_stack_trace_in_use;
+
+DEFINE_STATIC_KEY_TRUE(lockdep_trace_scratchpad_key);
+static struct folio_scratchpad lockdep_trace_scratchpad =
+	FOLIO_SCRATCHPAD_INIT_KEY(lockdep_trace_scratchpad,
+				  FOLIO_POOL_64K_ORDER,
+				  &lockdep_trace_scratchpad_key);
+
+static inline bool is_bootstrap_trace(const struct lock_trace *trace)
+{
+	return bootstrap_stack_trace &&
+	       (const unsigned long *)trace >= early_stack_trace &&
+	       (const unsigned long *)trace < early_stack_trace + BOOTSTRAP_STACK_TRACE_ENTRIES;
+}
+
+void lockdep_trace_stats(unsigned int *nr_chunks, size_t *chunk_size, size_t *tail_used)
+{
+	folio_scratchpad_stats(&lockdep_trace_scratchpad, nr_chunks, chunk_size, tail_used);
+}
+
 static struct hlist_head stack_trace_hash[STACK_TRACE_HASH_SIZE];
 
-static bool traces_identical(struct lock_trace *t1, struct lock_trace *t2)
+static struct lock_trace *lock_trace_alloc(unsigned int nr_entries)
 {
-	return t1->hash == t2->hash && t1->nr_entries == t2->nr_entries &&
-		memcmp(t1->entries, t2->entries,
-		       t1->nr_entries * sizeof(t1->entries[0])) == 0;
+	size_t size = sizeof(struct lock_trace) + nr_entries * sizeof(unsigned long);
+	struct lock_trace *trace;
+
+	if (bootstrap_stack_trace && bootstrap_stack_trace_in_use) {
+		unsigned long longs_needed = LOCK_TRACE_SIZE_IN_LONGS + nr_entries;
+
+		if (*bootstrap_stack_trace_in_use + longs_needed <= BOOTSTRAP_STACK_TRACE_ENTRIES) {
+			trace = (struct lock_trace *)(bootstrap_stack_trace + *bootstrap_stack_trace_in_use);
+			*bootstrap_stack_trace_in_use += longs_needed;
+			return trace;
+		}
+	}
+
+	trace = folio_scratchpad_alloc(&lockdep_trace_scratchpad, size,
+				       sizeof(unsigned long), GFP_ATOMIC);
+	return trace;
+}
+
+static void lock_trace_discard(struct lock_trace *trace, unsigned int nr_entries)
+{
+	size_t size = sizeof(struct lock_trace) + nr_entries * sizeof(unsigned long);
+	unsigned long longs = LOCK_TRACE_SIZE_IN_LONGS + nr_entries;
+
+	if (is_bootstrap_trace(trace)) {
+		if (bootstrap_stack_trace_in_use &&
+		    (unsigned long *)trace + longs == bootstrap_stack_trace + *bootstrap_stack_trace_in_use)
+			*bootstrap_stack_trace_in_use -= longs;
+		return;
+	}
+
+	folio_scratchpad_discard(&lockdep_trace_scratchpad, trace, size);
+}
+
+static void lock_trace_trim(struct lock_trace *trace, unsigned int unused_entries)
+{
+	if (!unused_entries)
+		return;
+
+	if (is_bootstrap_trace(trace)) {
+		if (bootstrap_stack_trace_in_use)
+			*bootstrap_stack_trace_in_use -= unused_entries;
+		return;
+	}
+
+	folio_scratchpad_trim(&lockdep_trace_scratchpad, unused_entries * sizeof(unsigned long));
 }
 
 static struct lock_trace *save_trace(void)
@@ -593,38 +658,43 @@ static struct lock_trace *save_trace(void)
 	struct lock_trace *trace, *t2;
 	struct hlist_head *hash_head;
 	u32 hash;
-	int max_entries;
 
 	BUILD_BUG_ON_NOT_POWER_OF_2(STACK_TRACE_HASH_SIZE);
-	BUILD_BUG_ON(LOCK_TRACE_SIZE_IN_LONGS >= MAX_STACK_TRACE_ENTRIES);
 
-	trace = (struct lock_trace *)(stack_trace + nr_stack_trace_entries);
-	max_entries = MAX_STACK_TRACE_ENTRIES - nr_stack_trace_entries -
-		LOCK_TRACE_SIZE_IN_LONGS;
-
-	if (max_entries <= 0) {
+	/* Speculatively allocate full depth directly in folio/bootstrap buffer */
+	trace = lock_trace_alloc(MAX_LOCKDEP_TRACE_DEPTH);
+	if (unlikely(!trace)) {
 		if (!debug_locks_off_graph_unlock())
 			return NULL;
 
 		nbcon_cpu_emergency_enter();
-		print_lockdep_off("BUG: MAX_STACK_TRACE_ENTRIES too low!");
+		print_lockdep_off("BUG: lockdep stack trace allocation failed!");
 		dump_stack();
 		nbcon_cpu_emergency_exit();
 
 		return NULL;
 	}
-	trace->nr_entries = stack_trace_save(trace->entries, max_entries, 3);
 
-	hash = jhash(trace->entries, trace->nr_entries *
-		     sizeof(trace->entries[0]), 0);
+	trace->nr_entries = stack_trace_save(trace->entries, MAX_LOCKDEP_TRACE_DEPTH, 3);
+	hash = jhash(trace->entries, trace->nr_entries * sizeof(unsigned long), 0);
 	trace->hash = hash;
 	hash_head = stack_trace_hash + (hash & (STACK_TRACE_HASH_SIZE - 1));
+
 	hlist_for_each_entry(t2, hash_head, hash_entry) {
-		if (traces_identical(trace, t2))
+		if (t2->hash == hash && t2->nr_entries == trace->nr_entries &&
+		    !memcmp(t2->entries, trace->entries, trace->nr_entries * sizeof(unsigned long))) {
+			/* Duplicate hit: rewind speculative allocation */
+			lock_trace_discard(trace, MAX_LOCKDEP_TRACE_DEPTH);
 			return t2;
+		}
 	}
-	nr_stack_trace_entries += LOCK_TRACE_SIZE_IN_LONGS + trace->nr_entries;
+
+	/* Novel trace: trim unused tail frames */
+	if (trace->nr_entries < MAX_LOCKDEP_TRACE_DEPTH)
+		lock_trace_trim(trace, MAX_LOCKDEP_TRACE_DEPTH - trace->nr_entries);
+
 	hlist_add_head(&trace->hash_entry, hash_head);
+	nr_stack_trace_entries += LOCK_TRACE_SIZE_IN_LONGS + trace->nr_entries;
 
 	return trace;
 }
@@ -6704,6 +6774,8 @@ void __init lockdep_init(void)
 {
 	bootstrap_entries = early_list_entries;
 	bootstrap_entries_in_use = early_list_entries_in_use;
+	bootstrap_stack_trace = early_stack_trace;
+	bootstrap_stack_trace_in_use = &early_stack_trace_in_use;
 
 	pr_info("Lock dependency validator: Copyright (c) 2006 Red Hat, Inc., Ingo Molnar\n");
 
@@ -6733,8 +6805,8 @@ void __init lockdep_init(void)
 		);
 
 #if defined(CONFIG_TRACE_IRQFLAGS) && defined(CONFIG_PROVE_LOCKING)
-	pr_info(" memory used for stack traces: %zu kB\n",
-	       (sizeof(stack_trace) + sizeof(stack_trace_hash)) / 1024
+	pr_info(" memory used for stack traces: dynamic (bootstrap %zu kB)\n",
+	       sizeof(early_stack_trace) / 1024
 	       );
 #endif
 
@@ -6744,9 +6816,11 @@ void __init lockdep_init(void)
 
 static int __init lockdep_boot_report(void)
 {
-	pr_info("lockdep: %lu/%lu bootstrap entries used before buddy init, folio_pool active\n",
+	pr_info("lockdep: %lu/%lu bootstrap entries, %lu/%lu bootstrap traces used before buddy init, folio_pool active\n",
 		min_t(unsigned long, nr_list_entries, BOOTSTRAP_LOCKDEP_ENTRIES),
-		BOOTSTRAP_LOCKDEP_ENTRIES);
+		BOOTSTRAP_LOCKDEP_ENTRIES,
+		early_stack_trace_in_use,
+		(unsigned long)BOOTSTRAP_STACK_TRACE_ENTRIES);
 	return 0;
 }
 core_initcall(lockdep_boot_report);
@@ -6756,17 +6830,20 @@ static int __init lockdep_compact_boot_graph(void)
 	struct lock_class *class;
 	struct lock_list *entry, *tmp, *new_entry;
 	unsigned long flags;
-	unsigned long migrated = 0;
+	unsigned long migrated = 0, migrated_traces = 0;
+	int i, k;
 
 	if (!debug_locks)
 		return 0;
 
-	/* Pre-allocate 64KB folio chunk outside graph_lock to avoid MM recursion */
+	/* Pre-allocate 64KB folio chunks outside graph_lock to avoid MM recursion */
 	new_entry = folio_pool_alloc_type(&lockdep_pool, struct lock_list, GFP_KERNEL);
 	if (!new_entry) {
 		pr_err("lockdep: failed to pre-allocate folio chunk for boot compaction\n");
 		return -ENOMEM;
 	}
+	folio_scratchpad_alloc(&lockdep_trace_scratchpad, sizeof(struct lock_trace) + 32 * sizeof(unsigned long),
+			       sizeof(unsigned long), GFP_KERNEL);
 
 	raw_local_irq_save(flags);
 	if (!graph_lock()) {
@@ -6774,8 +6851,45 @@ static int __init lockdep_compact_boot_graph(void)
 		return 0;
 	}
 
+	/* First, migrate all bootstrap stack traces and establish forwarding pointers */
+	for (i = 0; i < ARRAY_SIZE(stack_trace_hash); i++) {
+		struct hlist_node *n;
+		struct lock_trace *trace;
+
+		hlist_for_each_entry_safe(trace, n, &stack_trace_hash[i], hash_entry) {
+			if (is_bootstrap_trace(trace)) {
+				struct lock_trace *new_trace;
+				size_t sz = sizeof(*trace) + trace->nr_entries * sizeof(unsigned long);
+
+				new_trace = folio_scratchpad_alloc(&lockdep_trace_scratchpad, sz,
+								   sizeof(unsigned long), GFP_ATOMIC);
+				if (!new_trace) {
+					debug_locks_off_graph_unlock();
+					raw_local_irq_restore(flags);
+					pr_err("lockdep: trace scratchpad exhausted during boot compaction\n");
+					return -ENOMEM;
+				}
+				new_trace->hash = trace->hash;
+				new_trace->nr_entries = trace->nr_entries;
+				memcpy(new_trace->entries, trace->entries,
+				       trace->nr_entries * sizeof(unsigned long));
+				hlist_replace_rcu(&trace->hash_entry, &new_trace->hash_entry);
+				*(struct lock_trace **)trace = new_trace;
+				migrated_traces++;
+			}
+		}
+	}
+
 	list_for_each_entry(class, &all_lock_classes, lock_entry) {
+		for (k = 0; k < ARRAY_SIZE(class->usage_traces); k++) {
+			if (class->usage_traces[k] && is_bootstrap_trace(class->usage_traces[k]))
+				class->usage_traces[k] = *(struct lock_trace **)class->usage_traces[k];
+		}
+
 		list_for_each_entry_safe(entry, tmp, &class->locks_after, entry) {
+			if (entry->trace && is_bootstrap_trace(entry->trace))
+				entry->trace = *(struct lock_trace **)entry->trace;
+
 			if (is_bootstrap_entry(entry)) {
 				if (new_entry) {
 					*new_entry = *entry;
@@ -6801,6 +6915,9 @@ static int __init lockdep_compact_boot_graph(void)
 		}
 
 		list_for_each_entry_safe(entry, tmp, &class->locks_before, entry) {
+			if (entry->trace && is_bootstrap_trace(entry->trace))
+				entry->trace = *(struct lock_trace **)entry->trace;
+
 			if (is_bootstrap_entry(entry)) {
 				if (new_entry) {
 					*new_entry = *entry;
@@ -6831,11 +6948,13 @@ static int __init lockdep_compact_boot_graph(void)
 
 	bootstrap_entries = NULL;
 	bootstrap_entries_in_use = NULL;
+	bootstrap_stack_trace = NULL;
+	bootstrap_stack_trace_in_use = NULL;
 	graph_unlock();
 	raw_local_irq_restore(flags);
 
-	pr_info("lockdep: compacted %lu boot entries into folio_pool, freeing bootstrap memory\n",
-		migrated);
+	pr_info("lockdep: compacted %lu boot entries and %lu traces into folio_pool/scratchpad\n",
+		migrated, migrated_traces);
 	return 0;
 }
 late_initcall(lockdep_compact_boot_graph);

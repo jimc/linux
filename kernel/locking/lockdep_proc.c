@@ -335,8 +335,20 @@ static int lockdep_stats_show(struct seq_file *m, void *v)
 #endif
 	seq_printf(m, " in-process chains:             %11u\n",
 			nr_process_chains);
-	seq_printf(m, " stack-trace entries:           %11lu [max: %lu]\n",
-			nr_stack_trace_entries, MAX_STACK_TRACE_ENTRIES);
+	{
+		unsigned int trace_chunks = 0;
+		size_t trace_chunk_sz = 0, trace_tail_used = 0;
+
+		lockdep_trace_stats(&trace_chunks, &trace_chunk_sz, &trace_tail_used);
+		if (trace_chunks) {
+			seq_printf(m, " stack-trace entries:           %11lu [dynamic: %u x %zu kB, tail: %zu kB/%zu kB]\n",
+				   nr_stack_trace_entries, trace_chunks, trace_chunk_sz / 1024,
+				   trace_tail_used / 1024, trace_chunk_sz / 1024);
+		} else {
+			seq_printf(m, " stack-trace entries:           %11lu [bootstrap]\n",
+				   nr_stack_trace_entries);
+		}
+	}
 #if defined(CONFIG_TRACE_IRQFLAGS) && defined(CONFIG_PROVE_LOCKING)
 	seq_printf(m, " number of stack traces:        %11llu\n",
 		   lockdep_stack_trace_count());
