@@ -62,8 +62,10 @@
 
 DEFINE_STATIC_KEY_TRUE(lockdep_pool_key);
 static struct folio_pool lockdep_pool =
-	FOLIO_POOL_INIT_KEY(lockdep_pool, sizeof(struct lock_list),
-			    FOLIO_POOL_64K_ORDER, &lockdep_pool_key);
+	FOLIO_POOL_INIT_GEOM_KEY(lockdep_pool, sizeof(struct lock_list),
+				 FOLIO_POOL_16K_ORDER,
+				 FOLIO_POOL_64K_ORDER,
+				 &lockdep_pool_key);
 
 static int __init setup_lockdep_folio_pool(char *str)
 {
@@ -608,9 +610,10 @@ static unsigned long *bootstrap_stack_trace_in_use = &early_stack_trace_in_use;
 
 DEFINE_STATIC_KEY_TRUE(lockdep_trace_scratchpad_key);
 static struct folio_scratchpad lockdep_trace_scratchpad =
-	FOLIO_SCRATCHPAD_INIT_KEY(lockdep_trace_scratchpad,
-				  FOLIO_POOL_64K_ORDER,
-				  &lockdep_trace_scratchpad_key);
+	FOLIO_SCRATCHPAD_INIT_GEOM_KEY(lockdep_trace_scratchpad,
+				      FOLIO_POOL_16K_ORDER,
+				      FOLIO_POOL_64K_ORDER,
+				      &lockdep_trace_scratchpad_key);
 
 static inline bool is_bootstrap_trace(const struct lock_trace *trace)
 {
@@ -3496,12 +3499,12 @@ void lockdep_chain_stats(unsigned int *nr_chunks, size_t *chunk_size, size_t *ta
 	folio_pool_stats(&lockdep_chain_pool, nr_chunks, chunk_size, tail_used);
 }
 
-#define CHAIN_HLOCKS_PER_CHUNK_SHIFT 15
+#define CHAIN_HLOCKS_PER_CHUNK_SHIFT 12
 #define CHAIN_HLOCKS_PER_CHUNK (1UL << CHAIN_HLOCKS_PER_CHUNK_SHIFT)
 #define CHAIN_HLOCKS_CHUNK_MASK (CHAIN_HLOCKS_PER_CHUNK - 1)
 #define NR_CHAIN_HLOCKS_CHUNKS (MAX_LOCKDEP_CHAIN_HLOCKS >> CHAIN_HLOCKS_PER_CHUNK_SHIFT)
 
-#define BOOTSTRAP_CHAIN_HLOCKS 16384
+#define BOOTSTRAP_CHAIN_HLOCKS 4096
 
 static u16 early_chain_hlocks[BOOTSTRAP_CHAIN_HLOCKS];
 static u16 *chain_hlocks_chunks[NR_CHAIN_HLOCKS_CHUNKS] = { early_chain_hlocks };
@@ -3511,7 +3514,7 @@ static unsigned int total_chain_hlocks_capacity = BOOTSTRAP_CHAIN_HLOCKS;
 static struct folio_pool lockdep_hlock_pool =
 	FOLIO_POOL_INIT(lockdep_hlock_pool,
 			sizeof(u16) * CHAIN_HLOCKS_PER_CHUNK,
-			FOLIO_POOL_64K_ORDER);
+			FOLIO_POOL_8K_ORDER);
 
 void lockdep_hlock_stats(unsigned int *nr_chunks, size_t *chunk_size, size_t *tail_used)
 {
