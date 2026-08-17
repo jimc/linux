@@ -28,20 +28,20 @@
  * Since iteration of lock_classes is done without holding the lockdep lock,
  * it is not safe to iterate all_lock_classes list directly as the iteration
  * may branch off to free_lock_classes or the zapped list. Iteration is done
- * directly on the lock_classes array by checking the lock_classes_in_use
+ * directly on the lock_classes chunk array by checking the lock_classes_in_use
  * bitmap and max_lock_class_idx.
  */
 #define iterate_lock_classes(idx, class)				\
-	for (idx = 0, class = lock_classes; idx <= max_lock_class_idx;	\
-	     idx++, class++)
+	for (idx = 0; idx <= max_lock_class_idx; idx++)			\
+		if (((class) = idx_to_lock_class(idx)) != NULL)
 
 static void *l_next(struct seq_file *m, void *v, loff_t *pos)
 {
-	struct lock_class *class = v;
+	unsigned long idx = ++*pos;
 
-	++class;
-	*pos = class - lock_classes;
-	return (*pos > max_lock_class_idx) ? NULL : class;
+	if (idx > max_lock_class_idx)
+		return NULL;
+	return idx_to_lock_class(idx);
 }
 
 static void *l_start(struct seq_file *m, loff_t *pos)
@@ -50,7 +50,7 @@ static void *l_start(struct seq_file *m, loff_t *pos)
 
 	if (idx > max_lock_class_idx)
 		return NULL;
-	return lock_classes + idx;
+	return idx_to_lock_class(idx);
 }
 
 static void l_stop(struct seq_file *m, void *v)
@@ -79,9 +79,9 @@ static int l_show(struct seq_file *m, void *v)
 	struct lock_class *class = v;
 	struct lock_list *entry;
 	char usage[LOCK_USAGE_CHARS];
-	int idx = class - lock_classes;
+	int idx = class->class_idx;
 
-	if (v == lock_classes)
+	if (idx == 0)
 		seq_printf(m, "all lock classes:\n");
 
 	if (!test_bit(idx, lock_classes_in_use))
@@ -284,8 +284,21 @@ static int lockdep_stats_show(struct seq_file *m, void *v)
 #endif
 
 #endif
-	seq_printf(m, " lock-classes:                  %11lu [max: %lu]\n",
-			nr_lock_classes, MAX_LOCKDEP_KEYS);
+
+	{
+		unsigned int lc_chunks = 0;
+		size_t lc_chunk_sz = 0, lc_tail_used = 0;
+
+		lockdep_class_stats(&lc_chunks, &lc_chunk_sz, &lc_tail_used);
+		if (lc_chunks) {
+			seq_printf(m, " lock-classes:                  %11lu [dynamic: %u x %zu kB, tail: %zu kB/%zu kB]\n",
+				   nr_lock_classes, lc_chunks, lc_chunk_sz / 1024,
+				   lc_tail_used / 1024, lc_chunk_sz / 1024);
+		} else {
+			seq_printf(m, " lock-classes:                  %11lu [bootstrap]\n",
+				   nr_lock_classes);
+		}
+	}
 	seq_printf(m, " dynamic-keys:                  %11lu\n",
 			nr_dynamic_keys);
 	{
@@ -298,8 +311,8 @@ static int lockdep_stats_show(struct seq_file *m, void *v)
 				   nr_list_entries, fp_chunks, fp_chunk_sz / 1024,
 				   fp_tail_used / 1024, fp_chunk_sz / 1024);
 		} else {
-			seq_printf(m, " direct dependencies:           %11lu [max: %lu]\n",
-				   nr_list_entries, MAX_LOCKDEP_ENTRIES);
+			seq_printf(m, " direct dependencies:           %11lu [bootstrap]\n",
+				   nr_list_entries);
 		}
 	}
 	seq_printf(m, " indirect dependencies:         %11lu\n",

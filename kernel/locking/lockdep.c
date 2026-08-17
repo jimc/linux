@@ -231,10 +231,10 @@ static inline int debug_locks_off_graph_unlock(void)
 
 #define BOOTSTRAP_LOCKDEP_ENTRIES 2048UL
 
-static struct lock_list early_list_entries[BOOTSTRAP_LOCKDEP_ENTRIES] __initdata;
-static unsigned long early_list_entries_in_use[BITS_TO_LONGS(BOOTSTRAP_LOCKDEP_ENTRIES)] __initdata;
-static struct lock_list *bootstrap_entries __read_mostly = early_list_entries;
-static unsigned long *bootstrap_entries_in_use __read_mostly = early_list_entries_in_use;
+static struct lock_list early_list_entries[BOOTSTRAP_LOCKDEP_ENTRIES];
+static unsigned long early_list_entries_in_use[BITS_TO_LONGS(BOOTSTRAP_LOCKDEP_ENTRIES)];
+static struct lock_list *bootstrap_entries = early_list_entries;
+static unsigned long *bootstrap_entries_in_use = early_list_entries_in_use;
 unsigned long nr_list_entries;
 
 /*
@@ -250,29 +250,51 @@ unsigned long nr_lock_classes;
 unsigned long nr_zapped_classes;
 unsigned long nr_dynamic_keys;
 unsigned long max_lock_class_idx;
-struct lock_class lock_classes[MAX_LOCKDEP_KEYS];
+
+#define LOCK_CLASSES_PER_CHUNK_SHIFT 8
+#define LOCK_CLASSES_PER_CHUNK (1UL << LOCK_CLASSES_PER_CHUNK_SHIFT)
+#define LOCK_CLASSES_CHUNK_MASK (LOCK_CLASSES_PER_CHUNK - 1)
+#define NR_LOCK_CLASS_CHUNKS (MAX_LOCKDEP_KEYS >> LOCK_CLASSES_PER_CHUNK_SHIFT)
+
+static struct lock_class early_lock_classes[LOCK_CLASSES_PER_CHUNK];
+static struct lock_class *lock_classes_chunks[NR_LOCK_CLASS_CHUNKS] = { early_lock_classes };
+static unsigned int nr_lock_class_chunks = 1;
+
+static struct folio_pool lockdep_class_pool =
+	FOLIO_POOL_INIT(lockdep_class_pool,
+			sizeof(struct lock_class) * LOCK_CLASSES_PER_CHUNK,
+			FOLIO_POOL_64K_ORDER);
+
+struct lock_class *idx_to_lock_class(unsigned int class_idx)
+{
+	unsigned int chunk = class_idx >> LOCK_CLASSES_PER_CHUNK_SHIFT;
+	unsigned int offset = class_idx & LOCK_CLASSES_CHUNK_MASK;
+
+	if (unlikely(chunk >= NR_LOCK_CLASS_CHUNKS || !lock_classes_chunks[chunk]))
+		return NULL;
+
+	return &lock_classes_chunks[chunk][offset];
+}
+
+void lockdep_class_stats(unsigned int *nr_chunks, size_t *chunk_size, size_t *tail_used)
+{
+	folio_pool_stats(&lockdep_class_pool, nr_chunks, chunk_size, tail_used);
+}
+
 DECLARE_BITMAP(lock_classes_in_use, MAX_LOCKDEP_KEYS);
 
 static inline struct lock_class *hlock_class(struct held_lock *hlock)
 {
 	unsigned int class_idx = hlock->class_idx;
 
-	/* Don't re-read hlock->class_idx, can't use READ_ONCE() on bitfield */
 	barrier();
 
 	if (!test_bit(class_idx, lock_classes_in_use)) {
-		/*
-		 * Someone passed in garbage, we give up.
-		 */
 		DEBUG_LOCKS_WARN_ON(1);
 		return NULL;
 	}
 
-	/*
-	 * At this point, if the passed hlock->class_idx is still garbage,
-	 * we just have to live with it
-	 */
-	return lock_classes + class_idx;
+	return idx_to_lock_class(class_idx);
 }
 
 #ifdef CONFIG_LOCK_STAT
@@ -333,7 +355,7 @@ void lock_stats(struct lock_class *class, struct lock_class_stats *stats)
 	memset(stats, 0, sizeof(struct lock_class_stats));
 	for_each_possible_cpu(cpu) {
 		struct lock_class_stats *pcs =
-			&per_cpu(cpu_lock_stats, cpu)[class - lock_classes];
+			&per_cpu(cpu_lock_stats, cpu)[class->class_idx];
 
 		for (i = 0; i < ARRAY_SIZE(stats->contention_point); i++)
 			stats->contention_point[i] += pcs->contention_point[i];
@@ -358,7 +380,7 @@ void clear_lock_stats(struct lock_class *class)
 
 	for_each_possible_cpu(cpu) {
 		struct lock_class_stats *cpu_stats =
-			&per_cpu(cpu_lock_stats, cpu)[class - lock_classes];
+			&per_cpu(cpu_lock_stats, cpu)[class->class_idx];
 
 		memset(cpu_stats, 0, sizeof(struct lock_class_stats));
 	}
@@ -368,7 +390,7 @@ void clear_lock_stats(struct lock_class *class)
 
 static struct lock_class_stats *get_lock_stats(struct lock_class *class)
 {
-	return &this_cpu_ptr(cpu_lock_stats)[class - lock_classes];
+	return &this_cpu_ptr(cpu_lock_stats)[class->class_idx];
 }
 
 static void lock_release_holdtime(struct held_lock *hlock)
@@ -579,10 +601,10 @@ struct lock_trace {
 #define BOOTSTRAP_STACK_TRACE_ENTRIES 16384UL
 #define MAX_LOCKDEP_TRACE_DEPTH 48
 
-static unsigned long early_stack_trace[BOOTSTRAP_STACK_TRACE_ENTRIES] __initdata;
-static unsigned long *bootstrap_stack_trace __refdata = early_stack_trace;
-static unsigned long early_stack_trace_in_use __initdata;
-static unsigned long *bootstrap_stack_trace_in_use __refdata = &early_stack_trace_in_use;
+static unsigned long early_stack_trace[BOOTSTRAP_STACK_TRACE_ENTRIES];
+static unsigned long *bootstrap_stack_trace = early_stack_trace;
+static unsigned long early_stack_trace_in_use;
+static unsigned long *bootstrap_stack_trace_in_use = &early_stack_trace_in_use;
 
 DEFINE_STATIC_KEY_TRUE(lockdep_trace_scratchpad_key);
 static struct folio_scratchpad lockdep_trace_scratchpad =
@@ -592,8 +614,7 @@ static struct folio_scratchpad lockdep_trace_scratchpad =
 
 static inline bool is_bootstrap_trace(const struct lock_trace *trace)
 {
-	return bootstrap_stack_trace &&
-	       (const unsigned long *)trace >= early_stack_trace &&
+	return (const unsigned long *)trace >= early_stack_trace &&
 	       (const unsigned long *)trace < early_stack_trace + BOOTSTRAP_STACK_TRACE_ENTRIES;
 }
 
@@ -1110,10 +1131,8 @@ static bool in_list(struct list_head *e, struct list_head *h)
 static bool in_any_class_list(struct list_head *e)
 {
 	struct lock_class *class;
-	int i;
 
-	for (i = 0; i < ARRAY_SIZE(lock_classes); i++) {
-		class = &lock_classes[i];
+	list_for_each_entry(class, &all_lock_classes, lock_entry) {
 		if (in_list(e, &class->locks_after) ||
 		    in_list(e, &class->locks_before))
 			return true;
@@ -1188,21 +1207,8 @@ static bool __check_data_structures(void)
 	struct lock_list *e;
 	int i;
 
-	/* Check whether all classes occur in a lock list. */
-	for (i = 0; i < ARRAY_SIZE(lock_classes); i++) {
-		class = &lock_classes[i];
-		if (!in_list(&class->lock_entry, &all_lock_classes) &&
-		    !in_list(&class->lock_entry, &free_lock_classes) &&
-		    !in_any_zapped_class_list(class)) {
-			printk(KERN_INFO "class %px/%s is not in any class list\n",
-			       class, class->name ? : "(?)");
-			return false;
-		}
-	}
-
 	/* Check whether all classes have valid lock lists. */
-	for (i = 0; i < ARRAY_SIZE(lock_classes); i++) {
-		class = &lock_classes[i];
+	list_for_each_entry(class, &all_lock_classes, lock_entry) {
 		if (!class_lock_list_valid(class, &class->locks_before))
 			return false;
 		if (!class_lock_list_valid(class, &class->locks_after))
@@ -1303,11 +1309,14 @@ static void init_data_structures_once(void)
 	INIT_LIST_HEAD(&delayed_free.pf[0].zapped);
 	INIT_LIST_HEAD(&delayed_free.pf[1].zapped);
 
-	for (i = 0; i < ARRAY_SIZE(lock_classes); i++) {
-		list_add_tail(&lock_classes[i].lock_entry, &free_lock_classes);
-		INIT_LIST_HEAD(&lock_classes[i].locks_after);
-		INIT_LIST_HEAD(&lock_classes[i].locks_before);
+	for (i = 0; i < LOCK_CLASSES_PER_CHUNK; i++) {
+		struct lock_class *class = &early_lock_classes[i];
+		class->class_idx = i;
+		list_add_tail(&class->lock_entry, &free_lock_classes);
+		INIT_LIST_HEAD(&class->locks_after);
+		INIT_LIST_HEAD(&class->locks_before);
 	}
+
 	init_chain_block_buckets();
 }
 
@@ -1388,7 +1397,7 @@ register_lock_class(struct lockdep_map *lock, unsigned int subclass, int force)
 	struct lockdep_subclass_key *key;
 	struct hlist_head *hash_head;
 	struct lock_class *class;
-	int idx;
+	int idx, i;
 
 	DEBUG_LOCKS_WARN_ON(!irqs_disabled());
 
@@ -1424,6 +1433,28 @@ register_lock_class(struct lockdep_map *lock, unsigned int subclass, int force)
 	class = list_first_entry_or_null(&free_lock_classes, typeof(*class),
 					 lock_entry);
 	if (!class) {
+		if (nr_lock_class_chunks < NR_LOCK_CLASS_CHUNKS) {
+			struct lock_class *chunk;
+			unsigned int chunk_idx = nr_lock_class_chunks;
+
+			chunk = folio_pool_alloc(&lockdep_class_pool, GFP_ATOMIC);
+			if (chunk) {
+				memset(chunk, 0, sizeof(struct lock_class) * LOCK_CLASSES_PER_CHUNK);
+				lock_classes_chunks[chunk_idx] = chunk;
+				nr_lock_class_chunks++;
+				for (i = 0; i < LOCK_CLASSES_PER_CHUNK; i++) {
+					struct lock_class *c = &chunk[i];
+					c->class_idx = (chunk_idx << LOCK_CLASSES_PER_CHUNK_SHIFT) + i;
+					INIT_LIST_HEAD(&c->locks_after);
+					INIT_LIST_HEAD(&c->locks_before);
+					list_add_tail(&c->lock_entry, &free_lock_classes);
+				}
+				class = list_first_entry_or_null(&free_lock_classes, typeof(*class),
+								 lock_entry);
+			}
+		}
+	}
+	if (!class) {
 		if (!debug_locks_off_graph_unlock()) {
 			return NULL;
 		}
@@ -1435,7 +1466,7 @@ register_lock_class(struct lockdep_map *lock, unsigned int subclass, int force)
 		return NULL;
 	}
 	nr_lock_classes++;
-	__set_bit(class - lock_classes, lock_classes_in_use);
+	__set_bit(class->class_idx, lock_classes_in_use);
 	debug_atomic_inc(nr_unused_locks);
 	class->key = key;
 	class->name = lock->name;
@@ -1456,7 +1487,7 @@ register_lock_class(struct lockdep_map *lock, unsigned int subclass, int force)
 	 * of classes.
 	 */
 	list_move_tail(&class->lock_entry, &all_lock_classes);
-	idx = class - lock_classes;
+	idx = class->class_idx;
 	if (idx > max_lock_class_idx)
 		max_lock_class_idx = idx;
 
@@ -3672,7 +3703,7 @@ struct lock_class *lock_chain_get_class(struct lock_chain *chain, int i)
 	u16 chain_hlock = chain_hlocks[chain->base + i];
 	unsigned int class_idx = chain_hlock_class_idx(chain_hlock);
 
-	return lock_classes + class_idx;
+	return idx_to_lock_class(class_idx);
 }
 
 /*
@@ -3740,7 +3771,7 @@ static void print_chain_keys_chain(struct lock_chain *chain)
 		hlock_id = chain_hlocks[chain->base + i];
 		chain_key = print_chain_key_iteration(hlock_id, chain_key);
 
-		print_lock_name(NULL, lock_classes + chain_hlock_class_idx(hlock_id));
+		print_lock_name(NULL, idx_to_lock_class(chain_hlock_class_idx(hlock_id)));
 		printk("\n");
 	}
 }
@@ -3872,7 +3903,7 @@ static inline int add_chain_cache(struct task_struct *curr,
 
 	BUILD_BUG_ON((1UL << 24) <= ARRAY_SIZE(chain_hlocks));
 	BUILD_BUG_ON((1UL << 6)  <= ARRAY_SIZE(curr->held_locks));
-	BUILD_BUG_ON((1UL << 8*sizeof(chain_hlocks[0])) <= ARRAY_SIZE(lock_classes));
+	BUILD_BUG_ON((1UL << 8*sizeof(chain_hlocks[0])) <= MAX_LOCKDEP_KEYS);
 
 	j = alloc_chain_hlocks(chain->depth);
 	if (j < 0) {
@@ -5249,7 +5280,7 @@ static int __lock_acquire(struct lockdep_map *lock, unsigned int subclass,
 	if (DEBUG_LOCKS_WARN_ON(depth >= MAX_LOCK_DEPTH))
 		return 0;
 
-	class_idx = class - lock_classes;
+	class_idx = class->class_idx;
 
 	if (depth && !sync) {
 		/* we're holding locks and the new held lock is not a sync */
@@ -5440,7 +5471,7 @@ static noinstr int match_held_lock(const struct held_lock *hlock,
 		if (DEBUG_LOCKS_WARN_ON(!hlock->nest_lock))
 			return 0;
 
-		if (hlock->class_idx == class - lock_classes)
+		if (hlock->class_idx == class->class_idx)
 			return 1;
 	}
 
@@ -5548,7 +5579,7 @@ __lock_set_class(struct lockdep_map *lock, const char *name,
 			      lock->wait_type_outer,
 			      lock->lock_type);
 	class = register_lock_class(lock, subclass, 0);
-	hlock->class_idx = class - lock_classes;
+	hlock->class_idx = class->class_idx;
 
 	curr->lockdep_depth = i;
 	curr->curr_chain_key = hlock->prev_chain_key;
@@ -5898,7 +5929,7 @@ static void verify_lock_unused(struct lockdep_map *lock, struct held_lock *hlock
 	if (!(class->usage_mask & mask))
 		return;
 
-	hlock->class_idx = class - lock_classes;
+	hlock->class_idx = class->class_idx;
 
 	print_usage_bug(current, hlock, LOCK_USED, LOCK_USAGE_STATES);
 #endif
@@ -6306,7 +6337,7 @@ static void remove_class_from_lock_chain(struct pending_free *pf,
 	int i;
 
 	for (i = chain->base; i < chain->base + chain->depth; i++) {
-		if (chain_hlock_class_idx(chain_hlocks[i]) != class - lock_classes)
+		if (chain_hlock_class_idx(chain_hlocks[i]) != class->class_idx)
 			continue;
 		/*
 		 * Each lock class occurs at most once in a lock chain so once
@@ -6411,8 +6442,8 @@ static void zap_class(struct pending_free *pf, struct lock_class *class)
 		if (class->usage_mask == 0)
 			debug_atomic_dec(nr_unused_locks);
 		nr_lock_classes--;
-		__clear_bit(class - lock_classes, lock_classes_in_use);
-		if (class - lock_classes == max_lock_class_idx)
+		__clear_bit(class->class_idx, lock_classes_in_use);
+		if (class->class_idx == max_lock_class_idx)
 			max_lock_class_idx--;
 	} else {
 		WARN_ONCE(true, "%s() failed for class %s\n", __func__,
@@ -6777,6 +6808,8 @@ void __init lockdep_init(void)
 	bootstrap_stack_trace = early_stack_trace;
 	bootstrap_stack_trace_in_use = &early_stack_trace_in_use;
 
+	init_data_structures_once();
+
 	pr_info("Lock dependency validator: Copyright (c) 2006 Red Hat, Inc., Ingo Molnar\n");
 
 	pr_info("... MAX_LOCKDEP_SUBCLASSES:  %lu\n", MAX_LOCKDEP_SUBCLASSES);
@@ -6787,8 +6820,8 @@ void __init lockdep_init(void)
 	pr_info("... MAX_LOCKDEP_CHAINS:      %lu\n", MAX_LOCKDEP_CHAINS);
 	pr_info("... CHAINHASH_SIZE:          %lu\n", CHAINHASH_SIZE);
 
-	pr_info(" memory used by lock dependency info: %zu kB\n",
-	       (sizeof(lock_classes) +
+	pr_info(" memory used by lock dependency info: dynamic (bootstrap %zu kB)\n",
+	       (sizeof(early_lock_classes) +
 		sizeof(lock_classes_in_use) +
 		sizeof(classhash_table) +
 		sizeof(early_list_entries) +
@@ -6825,139 +6858,7 @@ static int __init lockdep_boot_report(void)
 }
 core_initcall(lockdep_boot_report);
 
-static int __init lockdep_compact_boot_graph(void)
-{
-	struct lock_class *class;
-	struct lock_list *entry, *tmp, *new_entry;
-	unsigned long flags;
-	unsigned long migrated = 0, migrated_traces = 0;
-	int i, k;
 
-	if (!debug_locks)
-		return 0;
-
-	/* Pre-allocate 64KB folio chunks outside graph_lock to avoid MM recursion */
-	new_entry = folio_pool_alloc_type(&lockdep_pool, struct lock_list, GFP_KERNEL);
-	if (!new_entry) {
-		pr_err("lockdep: failed to pre-allocate folio chunk for boot compaction\n");
-		return -ENOMEM;
-	}
-	folio_scratchpad_alloc(&lockdep_trace_scratchpad, sizeof(struct lock_trace) + 32 * sizeof(unsigned long),
-			       sizeof(unsigned long), GFP_KERNEL);
-
-	raw_local_irq_save(flags);
-	if (!graph_lock()) {
-		raw_local_irq_restore(flags);
-		return 0;
-	}
-
-	/* First, migrate all bootstrap stack traces and establish forwarding pointers */
-	for (i = 0; i < ARRAY_SIZE(stack_trace_hash); i++) {
-		struct hlist_node *n;
-		struct lock_trace *trace;
-
-		hlist_for_each_entry_safe(trace, n, &stack_trace_hash[i], hash_entry) {
-			if (is_bootstrap_trace(trace)) {
-				struct lock_trace *new_trace;
-				size_t sz = sizeof(*trace) + trace->nr_entries * sizeof(unsigned long);
-
-				new_trace = folio_scratchpad_alloc(&lockdep_trace_scratchpad, sz,
-								   sizeof(unsigned long), GFP_ATOMIC);
-				if (!new_trace) {
-					debug_locks_off_graph_unlock();
-					raw_local_irq_restore(flags);
-					pr_err("lockdep: trace scratchpad exhausted during boot compaction\n");
-					return -ENOMEM;
-				}
-				new_trace->hash = trace->hash;
-				new_trace->nr_entries = trace->nr_entries;
-				memcpy(new_trace->entries, trace->entries,
-				       trace->nr_entries * sizeof(unsigned long));
-				hlist_replace_rcu(&trace->hash_entry, &new_trace->hash_entry);
-				*(struct lock_trace **)trace = new_trace;
-				migrated_traces++;
-			}
-		}
-	}
-
-	list_for_each_entry(class, &all_lock_classes, lock_entry) {
-		for (k = 0; k < ARRAY_SIZE(class->usage_traces); k++) {
-			if (class->usage_traces[k] && is_bootstrap_trace(class->usage_traces[k]))
-				class->usage_traces[k] = *(struct lock_trace **)class->usage_traces[k];
-		}
-
-		list_for_each_entry_safe(entry, tmp, &class->locks_after, entry) {
-			if (entry->trace && is_bootstrap_trace(entry->trace))
-				entry->trace = *(struct lock_trace **)entry->trace;
-
-			if (is_bootstrap_entry(entry)) {
-				if (new_entry) {
-					*new_entry = *entry;
-					list_replace_rcu(&entry->entry, &new_entry->entry);
-					new_entry = NULL;
-				} else {
-					struct lock_list *slot;
-
-					slot = folio_pool_alloc_type(&lockdep_pool,
-								     struct lock_list,
-								     GFP_ATOMIC);
-					if (!slot) {
-						debug_locks_off_graph_unlock();
-						raw_local_irq_restore(flags);
-						pr_err("lockdep: folio chunk exhausted during boot compaction\n");
-						return -ENOMEM;
-					}
-					*slot = *entry;
-					list_replace_rcu(&entry->entry, &slot->entry);
-				}
-				migrated++;
-			}
-		}
-
-		list_for_each_entry_safe(entry, tmp, &class->locks_before, entry) {
-			if (entry->trace && is_bootstrap_trace(entry->trace))
-				entry->trace = *(struct lock_trace **)entry->trace;
-
-			if (is_bootstrap_entry(entry)) {
-				if (new_entry) {
-					*new_entry = *entry;
-					list_replace_rcu(&entry->entry, &new_entry->entry);
-					new_entry = NULL;
-				} else {
-					struct lock_list *slot;
-
-					slot = folio_pool_alloc_type(&lockdep_pool,
-								     struct lock_list,
-								     GFP_ATOMIC);
-					if (!slot) {
-						debug_locks_off_graph_unlock();
-						raw_local_irq_restore(flags);
-						pr_err("lockdep: folio chunk exhausted during boot compaction\n");
-						return -ENOMEM;
-					}
-					*slot = *entry;
-					list_replace_rcu(&entry->entry, &slot->entry);
-				}
-				migrated++;
-			}
-		}
-	}
-
-	/* Adjust counter so compaction does not double-count migrated nodes */
-	nr_list_entries -= migrated;
-
-	bootstrap_entries = NULL;
-	bootstrap_entries_in_use = NULL;
-	bootstrap_stack_trace = NULL;
-	bootstrap_stack_trace_in_use = NULL;
-	graph_unlock();
-	raw_local_irq_restore(flags);
-
-	pr_info("lockdep: compacted %lu boot entries and %lu traces into folio_pool/scratchpad\n",
-		migrated, migrated_traces);
-	return 0;
-}
-late_initcall(lockdep_compact_boot_graph);
 
 static void
 print_freed_lock_bug(struct task_struct *curr, const void *mem_from,
