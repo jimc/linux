@@ -332,10 +332,20 @@ static int lockdep_stats_show(struct seq_file *m, void *v)
 #ifdef CONFIG_PROVE_LOCKING
 	seq_printf(m, " dependency chains:             %11lu [max: %lu]\n",
 			lock_chain_count(), MAX_LOCKDEP_CHAINS);
-	seq_printf(m, " dependency chain hlocks used:  %11lu [max: %lu]\n",
-			MAX_LOCKDEP_CHAIN_HLOCKS -
-			(nr_free_chain_hlocks + nr_lost_chain_hlocks),
-			MAX_LOCKDEP_CHAIN_HLOCKS);
+	{
+		unsigned int hl_chunks = 0;
+		size_t hl_chunk_sz = 0, hl_tail_used = 0;
+
+		lockdep_hlock_stats(&hl_chunks, &hl_chunk_sz, &hl_tail_used);
+		if (hl_chunks) {
+			seq_printf(m, " dependency chain hlocks used:  %11u [dynamic: %u x %zu kB, tail: %zu kB/%zu kB]\n",
+				   chain_hlocks_used(), hl_chunks, hl_chunk_sz / 1024,
+				   hl_tail_used / 1024, hl_chunk_sz / 1024);
+		} else {
+			seq_printf(m, " dependency chain hlocks used:  %11u [bootstrap]\n",
+				   chain_hlocks_used());
+		}
+	}
 	seq_printf(m, " dependency chain hlocks lost:  %11u\n",
 			nr_lost_chain_hlocks);
 #endif

@@ -162,6 +162,8 @@ extern unsigned long lock_classes_in_use[];
 void lockdep_pool_stats(unsigned int *nr_chunks, size_t *chunk_size, size_t *tail_used);
 void lockdep_trace_stats(unsigned int *nr_chunks, size_t *chunk_size, size_t *tail_used);
 void lockdep_class_stats(unsigned int *nr_chunks, size_t *chunk_size, size_t *tail_used);
+void lockdep_hlock_stats(unsigned int *nr_chunks, size_t *chunk_size, size_t *tail_used);
+unsigned int chain_hlocks_used(void);
 
 #ifdef CONFIG_PROVE_LOCKING
 extern unsigned long lockdep_count_forward_deps(struct lock_class *);

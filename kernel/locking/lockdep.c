@@ -1160,7 +1160,8 @@ static bool class_lock_list_valid(struct lock_class *c, struct list_head *h)
 }
 
 #ifdef CONFIG_PROVE_LOCKING
-static u16 chain_hlocks[MAX_LOCKDEP_CHAIN_HLOCKS];
+static u16 get_chain_hlock(unsigned int offset);
+static void set_chain_hlock(unsigned int offset, u16 val);
 #endif
 
 static bool check_lock_chain_key(struct lock_chain *chain)
@@ -1170,7 +1171,7 @@ static bool check_lock_chain_key(struct lock_chain *chain)
 	int i;
 
 	for (i = chain->base; i < chain->base + chain->depth; i++)
-		chain_key = iterate_chain_key(chain_key, chain_hlocks[i]);
+		chain_key = iterate_chain_key(chain_key, get_chain_hlock(i));
 	/*
 	 * The 'unsigned long long' casts avoid that a compiler warning
 	 * is reported when building tools/lib/lockdep.
@@ -3467,7 +3468,50 @@ out_bug:
 
 struct lock_chain lock_chains[MAX_LOCKDEP_CHAINS];
 static DECLARE_BITMAP(lock_chains_in_use, MAX_LOCKDEP_CHAINS);
-static u16 chain_hlocks[MAX_LOCKDEP_CHAIN_HLOCKS];
+#define CHAIN_HLOCKS_PER_CHUNK_SHIFT 15
+#define CHAIN_HLOCKS_PER_CHUNK (1UL << CHAIN_HLOCKS_PER_CHUNK_SHIFT)
+#define CHAIN_HLOCKS_CHUNK_MASK (CHAIN_HLOCKS_PER_CHUNK - 1)
+#define NR_CHAIN_HLOCKS_CHUNKS (MAX_LOCKDEP_CHAIN_HLOCKS >> CHAIN_HLOCKS_PER_CHUNK_SHIFT)
+
+#define BOOTSTRAP_CHAIN_HLOCKS 16384
+
+static u16 early_chain_hlocks[BOOTSTRAP_CHAIN_HLOCKS];
+static u16 *chain_hlocks_chunks[NR_CHAIN_HLOCKS_CHUNKS] = { early_chain_hlocks };
+static unsigned int nr_chain_hlocks_chunks = 1;
+static unsigned int total_chain_hlocks_capacity = BOOTSTRAP_CHAIN_HLOCKS;
+
+static struct folio_pool lockdep_hlock_pool =
+	FOLIO_POOL_INIT(lockdep_hlock_pool,
+			sizeof(u16) * CHAIN_HLOCKS_PER_CHUNK,
+			FOLIO_POOL_64K_ORDER);
+
+void lockdep_hlock_stats(unsigned int *nr_chunks, size_t *chunk_size, size_t *tail_used)
+{
+	folio_pool_stats(&lockdep_hlock_pool, nr_chunks, chunk_size, tail_used);
+}
+
+unsigned int chain_hlocks_used(void)
+{
+	return total_chain_hlocks_capacity - (nr_free_chain_hlocks + nr_lost_chain_hlocks);
+}
+
+static inline u16 get_chain_hlock(unsigned int offset)
+{
+	unsigned int chunk = offset >> CHAIN_HLOCKS_PER_CHUNK_SHIFT;
+	unsigned int idx = offset & CHAIN_HLOCKS_CHUNK_MASK;
+
+	return chain_hlocks_chunks[chunk][idx];
+}
+
+static inline void set_chain_hlock(unsigned int offset, u16 val)
+{
+	unsigned int chunk = offset >> CHAIN_HLOCKS_PER_CHUNK_SHIFT;
+	unsigned int idx = offset & CHAIN_HLOCKS_CHUNK_MASK;
+
+	chain_hlocks_chunks[chunk][idx] = val;
+}
+
+>>>>>>> 4fb1d2f707d2 (locking/lockdep: Migrate chain_hlocks array to 2-level dynamic folio chunks)
 unsigned long nr_zapped_lock_chains;
 unsigned int nr_free_chain_hlocks;	/* Free chain_hlocks in buckets */
 unsigned int nr_lost_chain_hlocks;	/* Lost chain_hlocks */
@@ -3517,7 +3561,7 @@ static inline int size_to_bucket(int size)
  */
 static inline int chain_block_next(int offset)
 {
-	int next = chain_hlocks[offset];
+	int next = get_chain_hlock(offset);
 
 	WARN_ON_ONCE(!(next & CHAIN_BLK_FLAG));
 
@@ -3526,7 +3570,7 @@ static inline int chain_block_next(int offset)
 
 	next &= ~CHAIN_BLK_FLAG;
 	next <<= 16;
-	next |= chain_hlocks[offset + 1];
+	next |= get_chain_hlock(offset + 1);
 
 	return next;
 }
@@ -3536,17 +3580,17 @@ static inline int chain_block_next(int offset)
  */
 static inline int chain_block_size(int offset)
 {
-	return (chain_hlocks[offset + 2] << 16) | chain_hlocks[offset + 3];
+	return (get_chain_hlock(offset + 2) << 16) | get_chain_hlock(offset + 3);
 }
 
 static inline void init_chain_block(int offset, int next, int bucket, int size)
 {
-	chain_hlocks[offset] = (next >> 16) | CHAIN_BLK_FLAG;
-	chain_hlocks[offset + 1] = (u16)next;
+	set_chain_hlock(offset, (next >> 16) | CHAIN_BLK_FLAG);
+	set_chain_hlock(offset + 1, (u16)next);
 
 	if (size && !bucket) {
-		chain_hlocks[offset + 2] = size >> 16;
-		chain_hlocks[offset + 3] = (u16)size;
+		set_chain_hlock(offset + 2, size >> 16);
+		set_chain_hlock(offset + 3, (u16)size);
 	}
 }
 
@@ -3621,7 +3665,7 @@ static void init_chain_block_buckets(void)
 	for (i = 0; i < MAX_CHAIN_BUCKETS; i++)
 		chain_block_buckets[i] = -1;
 
-	add_chain_block(0, ARRAY_SIZE(chain_hlocks));
+	add_chain_block(0, BOOTSTRAP_CHAIN_HLOCKS);
 }
 
 /*
@@ -3642,14 +3686,32 @@ static int alloc_chain_hlocks(int req)
 
 	init_data_structures_once();
 
-	if (nr_free_chain_hlocks < req)
-		return -1;
-
 	/*
 	 * We require a minimum of 2 (u16) entries to encode a freelist
 	 * 'pointer'.
 	 */
 	req = max(req, 2);
+
+retry:
+	if (nr_free_chain_hlocks < req) {
+		if (nr_chain_hlocks_chunks < NR_CHAIN_HLOCKS_CHUNKS) {
+			unsigned int chunk_idx = nr_chain_hlocks_chunks;
+			unsigned int base_offset = chunk_idx * CHAIN_HLOCKS_PER_CHUNK;
+			u16 *chunk;
+
+			chunk = folio_pool_alloc(&lockdep_hlock_pool, GFP_ATOMIC);
+			if (chunk) {
+				memset(chunk, 0, sizeof(u16) * CHAIN_HLOCKS_PER_CHUNK);
+				chain_hlocks_chunks[chunk_idx] = chunk;
+				nr_chain_hlocks_chunks++;
+				total_chain_hlocks_capacity += CHAIN_HLOCKS_PER_CHUNK;
+				add_chain_block(base_offset, CHAIN_HLOCKS_PER_CHUNK);
+			}
+		}
+		if (nr_free_chain_hlocks < req)
+			return -1;
+	}
+
 	bucket = size_to_bucket(req);
 	curr = chain_block_buckets[bucket];
 
@@ -3690,6 +3752,23 @@ static int alloc_chain_hlocks(int req)
 		return curr;
 	}
 
+	/* If fragmented and chunks remain, expand with a new chunk */
+	if (nr_chain_hlocks_chunks < NR_CHAIN_HLOCKS_CHUNKS) {
+		unsigned int chunk_idx = nr_chain_hlocks_chunks;
+		unsigned int base_offset = chunk_idx * CHAIN_HLOCKS_PER_CHUNK;
+		u16 *chunk;
+
+		chunk = folio_pool_alloc(&lockdep_hlock_pool, GFP_ATOMIC);
+		if (chunk) {
+			memset(chunk, 0, sizeof(u16) * CHAIN_HLOCKS_PER_CHUNK);
+			chain_hlocks_chunks[chunk_idx] = chunk;
+			nr_chain_hlocks_chunks++;
+			total_chain_hlocks_capacity += CHAIN_HLOCKS_PER_CHUNK;
+			add_chain_block(base_offset, CHAIN_HLOCKS_PER_CHUNK);
+			goto retry;
+		}
+	}
+
 	return -1;
 }
 
@@ -3700,7 +3779,7 @@ static inline void free_chain_hlocks(int base, int size)
 
 struct lock_class *lock_chain_get_class(struct lock_chain *chain, int i)
 {
-	u16 chain_hlock = chain_hlocks[chain->base + i];
+	u16 chain_hlock = get_chain_hlock(chain->base + i);
 	unsigned int class_idx = chain_hlock_class_idx(chain_hlock);
 
 	return idx_to_lock_class(class_idx);
@@ -3901,9 +3980,9 @@ static inline int add_chain_cache(struct task_struct *curr,
 	i = get_first_held_lock(curr, hlock);
 	chain->depth = curr->lockdep_depth + 1 - i;
 
-	BUILD_BUG_ON((1UL << 24) <= ARRAY_SIZE(chain_hlocks));
+	BUILD_BUG_ON((1UL << 24) <= MAX_LOCKDEP_CHAIN_HLOCKS);
 	BUILD_BUG_ON((1UL << 6)  <= ARRAY_SIZE(curr->held_locks));
-	BUILD_BUG_ON((1UL << 8*sizeof(chain_hlocks[0])) <= MAX_LOCKDEP_KEYS);
+	BUILD_BUG_ON((1UL << (8 * sizeof(u16))) <= MAX_LOCKDEP_KEYS);
 
 	j = alloc_chain_hlocks(chain->depth);
 	if (j < 0) {
@@ -3921,9 +4000,9 @@ static inline int add_chain_cache(struct task_struct *curr,
 	for (j = 0; j < chain->depth - 1; j++, i++) {
 		int lock_id = hlock_id(curr->held_locks + i);
 
-		chain_hlocks[chain->base + j] = lock_id;
+		set_chain_hlock(chain->base + j, lock_id);
 	}
-	chain_hlocks[chain->base + j] = hlock_id(hlock);
+	set_chain_hlock(chain->base + j, hlock_id(hlock));
 	hlist_add_head_rcu(&chain->entry, hash_head);
 	debug_atomic_inc(chain_lookup_misses);
 	inc_chains(chain->irq_context);
@@ -6337,7 +6416,7 @@ static void remove_class_from_lock_chain(struct pending_free *pf,
 	int i;
 
 	for (i = chain->base; i < chain->base + chain->depth; i++) {
-		if (chain_hlock_class_idx(chain_hlocks[i]) != class->class_idx)
+		if (chain_hlock_class_idx(get_chain_hlock(i)) != class->class_idx)
 			continue;
 		/*
 		 * Each lock class occurs at most once in a lock chain so once
@@ -6832,7 +6911,7 @@ void __init lockdep_init(void)
 		+ sizeof(lock_cq)
 		+ sizeof(lock_chains)
 		+ sizeof(lock_chains_in_use)
-		+ sizeof(chain_hlocks)
+		+ sizeof(early_chain_hlocks)
 #endif
 		) / 1024
 		);
