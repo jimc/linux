@@ -114,6 +114,7 @@ struct lock_class {
 	 * "backward" graph nodes.
 	 */
 	struct list_head		locks_after, locks_before;
+	unsigned int			class_idx;
 
 	const struct lockdep_subclass_key *key;
 	lock_cmp_fn			cmp_fn;

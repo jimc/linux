@@ -124,7 +124,8 @@ enum {
 #define AVG_LOCKDEP_CHAIN_DEPTH		5
 #define MAX_LOCKDEP_CHAIN_HLOCKS (MAX_LOCKDEP_CHAINS * AVG_LOCKDEP_CHAIN_DEPTH)
 
-extern struct lock_chain lock_chains[];
+struct lock_chain *idx_to_lock_chain(unsigned int chain_idx);
+void lockdep_chain_stats(unsigned int *nr_chunks, size_t *chunk_size, size_t *tail_used);
 
 #define LOCK_USAGE_CHARS (2*XXX_LOCK_USAGE_STATES + 1)
 
@@ -156,8 +157,20 @@ extern unsigned int max_lockdep_depth;
 extern unsigned int max_bfs_queue_depth;
 extern unsigned long max_lock_class_idx;
 
-extern struct lock_class lock_classes[MAX_LOCKDEP_KEYS];
+struct lock_class *idx_to_lock_class(unsigned int class_idx);
 extern unsigned long lock_classes_in_use[];
+
+void lockdep_pool_stats(unsigned int *nr_chunks, size_t *chunk_size, size_t *tail_used);
+void lockdep_trace_stats(unsigned int *nr_chunks, size_t *chunk_size, size_t *tail_used);
+void lockdep_class_stats(unsigned int *nr_chunks, size_t *chunk_size, size_t *tail_used);
+void lockdep_hlock_stats(unsigned int *nr_chunks, size_t *chunk_size, size_t *tail_used);
+unsigned int chain_hlocks_used(void);
+
+#define BOOTSTRAP_LOCK_CLASSES_CAP	256UL
+#define BOOTSTRAP_LOCKDEP_ENTRIES_CAP	2048UL
+#define BOOTSTRAP_LOCK_CHAINS_CAP	1024UL
+#define BOOTSTRAP_CHAIN_HLOCKS_CAP	4096UL
+#define BOOTSTRAP_STACK_TRACE_CAP	16384UL
 
 #ifdef CONFIG_PROVE_LOCKING
 extern unsigned long lockdep_count_forward_deps(struct lock_class *);
