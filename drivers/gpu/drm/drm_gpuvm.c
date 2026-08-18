@@ -1072,6 +1072,9 @@ drm_gpuvm_resv_object_alloc(struct drm_device *drm)
 }
 EXPORT_SYMBOL_GPL(drm_gpuvm_resv_object_alloc);
 
+DEFINE_FOLIO_POOL_STATIC_KEY_PARAM(gpuvm_scratchpad_key, va_scratchpad,
+				   "Toggle DRM GPUVM range folio scratchpad allocator");
+
 /**
  * drm_gpuvm_init() - initialize a &drm_gpuvm
  * @gpuvm: pointer to the &drm_gpuvm to initialize
@@ -2851,9 +2854,6 @@ drm_gpuvm_sm_unmap_exec_lock(struct drm_gpuvm *gpuvm, struct drm_exec *exec,
 				    req_addr, req_range);
 }
 EXPORT_SYMBOL_GPL(drm_gpuvm_sm_unmap_exec_lock);
-
-DEFINE_FOLIO_POOL_STATIC_KEY_PARAM(gpuvm_scratchpad_key, va_scratchpad,
-				   "Toggle DRM GPUVM range folio scratchpad allocator");
 
 static struct drm_gpuva_op *
 gpuva_op_alloc(struct drm_gpuvm *gpuvm)
