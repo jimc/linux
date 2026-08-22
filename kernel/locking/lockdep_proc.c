@@ -28,20 +28,21 @@
  * Since iteration of lock_classes is done without holding the lockdep lock,
  * it is not safe to iterate all_lock_classes list directly as the iteration
  * may branch off to free_lock_classes or the zapped list. Iteration is done
- * directly on the lock_classes array by checking the lock_classes_in_use
+ * directly on the lock_classes chunk array by checking the lock_classes_in_use
  * bitmap and max_lock_class_idx.
  */
 #define iterate_lock_classes(idx, class)				\
-	for (idx = 0, class = lock_classes; idx <= max_lock_class_idx;	\
-	     idx++, class++)
+	for (idx = 0, class = idx_to_lock_class(0);			\
+	     idx <= max_lock_class_idx;					\
+	     idx++, class = idx_to_lock_class(idx))
 
 static void *l_next(struct seq_file *m, void *v, loff_t *pos)
 {
-	struct lock_class *class = v;
+	unsigned long idx = ++*pos;
 
-	++class;
-	*pos = class - lock_classes;
-	return (*pos > max_lock_class_idx) ? NULL : class;
+	if (idx > max_lock_class_idx)
+		return NULL;
+	return idx_to_lock_class(idx);
 }
 
 static void *l_start(struct seq_file *m, loff_t *pos)
@@ -50,7 +51,7 @@ static void *l_start(struct seq_file *m, loff_t *pos)
 
 	if (idx > max_lock_class_idx)
 		return NULL;
-	return lock_classes + idx;
+	return idx_to_lock_class(idx);
 }
 
 static void l_stop(struct seq_file *m, void *v)
@@ -79,9 +80,9 @@ static int l_show(struct seq_file *m, void *v)
 	struct lock_class *class = v;
 	struct lock_list *entry;
 	char usage[LOCK_USAGE_CHARS];
-	int idx = class - lock_classes;
+	int idx = class->class_idx;
 
-	if (v == lock_classes)
+	if (idx == 0)
 		seq_printf(m, "all lock classes:\n");
 
 	if (!test_bit(idx, lock_classes_in_use))
@@ -133,7 +134,7 @@ static void *lc_start(struct seq_file *m, loff_t *pos)
 	if (*pos == 0)
 		return SEQ_START_TOKEN;
 
-	return lock_chains + (*pos - 1);
+	return idx_to_lock_chain(*pos - 1);
 }
 
 static void *lc_next(struct seq_file *m, void *v, loff_t *pos)
@@ -284,12 +285,40 @@ static int lockdep_stats_show(struct seq_file *m, void *v)
 #endif
 
 #endif
-	seq_printf(m, " lock-classes:                  %11lu [max: %lu]\n",
-			nr_lock_classes, MAX_LOCKDEP_KEYS);
+
+	{
+		unsigned int lc_chunks = 0;
+		size_t lc_chunk_sz = 0, lc_tail_used = 0;
+
+		lockdep_class_stats(&lc_chunks, &lc_chunk_sz, &lc_tail_used);
+		if (lc_chunks) {
+			seq_printf(m, " lock-classes:                  %11lu [dynamic: %u x %zu kB, tail: %zu kB/%zu kB]\n",
+				   nr_lock_classes, lc_chunks, lc_chunk_sz / 1024,
+				   lc_tail_used / 1024, lc_chunk_sz / 1024);
+		} else {
+			seq_printf(m, " lock-classes:                  %11lu [bootstrap: %lu/%lu, %zu kB]\n",
+				   nr_lock_classes, nr_lock_classes, BOOTSTRAP_LOCK_CLASSES_CAP,
+				   (BOOTSTRAP_LOCK_CLASSES_CAP * sizeof(struct lock_class)) / 1024);
+		}
+	}
 	seq_printf(m, " dynamic-keys:                  %11lu\n",
 			nr_dynamic_keys);
-	seq_printf(m, " direct dependencies:           %11lu [max: %lu]\n",
-			nr_list_entries, MAX_LOCKDEP_ENTRIES);
+	{
+		unsigned int fp_chunks = 0;
+		size_t fp_chunk_sz = 0, fp_tail_used = 0;
+
+		lockdep_pool_stats(&fp_chunks, &fp_chunk_sz, &fp_tail_used);
+		if (fp_chunks) {
+			seq_printf(m, " direct dependencies:           %11lu [dynamic: %u x %zu kB, tail: %zu kB/%zu kB]\n",
+				   nr_list_entries, fp_chunks, fp_chunk_sz / 1024,
+				   fp_tail_used / 1024, fp_chunk_sz / 1024);
+		} else {
+			seq_printf(m, " direct dependencies:           %11lu [bootstrap: %lu/%lu, %zu kB]\n",
+				   nr_list_entries, nr_list_entries,
+				   BOOTSTRAP_LOCKDEP_ENTRIES_CAP,
+				   (BOOTSTRAP_LOCKDEP_ENTRIES_CAP * sizeof(struct lock_list)) / 1024);
+		}
+	}
 	seq_printf(m, " indirect dependencies:         %11lu\n",
 			sum_forward_deps);
 
@@ -305,12 +334,38 @@ static int lockdep_stats_show(struct seq_file *m, void *v)
 			nr_list_entries);
 
 #ifdef CONFIG_PROVE_LOCKING
-	seq_printf(m, " dependency chains:             %11lu [max: %lu]\n",
-			lock_chain_count(), MAX_LOCKDEP_CHAINS);
-	seq_printf(m, " dependency chain hlocks used:  %11lu [max: %lu]\n",
-			MAX_LOCKDEP_CHAIN_HLOCKS -
-			(nr_free_chain_hlocks + nr_lost_chain_hlocks),
-			MAX_LOCKDEP_CHAIN_HLOCKS);
+	{
+		unsigned int lc_chunks = 0;
+		size_t lc_chunk_sz = 0, lc_tail_used = 0;
+
+		lockdep_chain_stats(&lc_chunks, &lc_chunk_sz, &lc_tail_used);
+		if (lc_chunks) {
+			seq_printf(m, " dependency chains:             %11lu [dynamic: %u x %zu kB, tail: %zu kB/%zu kB]\n",
+				   lock_chain_count(), lc_chunks, lc_chunk_sz / 1024,
+				   lc_tail_used / 1024, lc_chunk_sz / 1024);
+		} else {
+			seq_printf(m, " dependency chains:             %11lu [bootstrap: %lu/%lu, %zu kB]\n",
+				   lock_chain_count(), lock_chain_count(),
+				   BOOTSTRAP_LOCK_CHAINS_CAP,
+				   (BOOTSTRAP_LOCK_CHAINS_CAP * sizeof(struct lock_chain)) / 1024);
+		}
+	}
+	{
+		unsigned int hl_chunks = 0;
+		size_t hl_chunk_sz = 0, hl_tail_used = 0;
+
+		lockdep_hlock_stats(&hl_chunks, &hl_chunk_sz, &hl_tail_used);
+		if (hl_chunks) {
+			seq_printf(m, " dependency chain hlocks used:  %11u [dynamic: %u x %zu kB, tail: %zu kB/%zu kB]\n",
+				   chain_hlocks_used(), hl_chunks, hl_chunk_sz / 1024,
+				   hl_tail_used / 1024, hl_chunk_sz / 1024);
+		} else {
+			seq_printf(m, " dependency chain hlocks used:  %11u [bootstrap: %u/%lu, %zu kB]\n",
+				   chain_hlocks_used(), chain_hlocks_used(),
+				   BOOTSTRAP_CHAIN_HLOCKS_CAP,
+				   (BOOTSTRAP_CHAIN_HLOCKS_CAP * sizeof(u16)) / 1024);
+		}
+	}
 	seq_printf(m, " dependency chain hlocks lost:  %11u\n",
 			nr_lost_chain_hlocks);
 #endif
@@ -323,8 +378,22 @@ static int lockdep_stats_show(struct seq_file *m, void *v)
 #endif
 	seq_printf(m, " in-process chains:             %11u\n",
 			nr_process_chains);
-	seq_printf(m, " stack-trace entries:           %11lu [max: %lu]\n",
-			nr_stack_trace_entries, MAX_STACK_TRACE_ENTRIES);
+	{
+		unsigned int trace_chunks = 0;
+		size_t trace_chunk_sz = 0, trace_tail_used = 0;
+
+		lockdep_trace_stats(&trace_chunks, &trace_chunk_sz, &trace_tail_used);
+		if (trace_chunks) {
+			seq_printf(m, " stack-trace entries:           %11lu [dynamic: %u x %zu kB, tail: %zu kB/%zu kB]\n",
+				   nr_stack_trace_entries, trace_chunks, trace_chunk_sz / 1024,
+				   trace_tail_used / 1024, trace_chunk_sz / 1024);
+		} else {
+			seq_printf(m, " stack-trace entries:           %11lu [bootstrap: %lu/%lu, %zu kB]\n",
+				   nr_stack_trace_entries, nr_stack_trace_entries,
+				   BOOTSTRAP_STACK_TRACE_CAP,
+				   (BOOTSTRAP_STACK_TRACE_CAP * sizeof(unsigned long)) / 1024);
+		}
+	}
 #if defined(CONFIG_TRACE_IRQFLAGS) && defined(CONFIG_PROVE_LOCKING)
 	seq_printf(m, " number of stack traces:        %11llu\n",
 		   lockdep_stack_trace_count());
