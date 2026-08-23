@@ -60,6 +60,10 @@
 #include <linux/slab.h>
 #include <linux/limits.h>
 #include <asm/barrier.h>
+#include <linux/scratchpad.h>
+
+DEFINE_SCRATCHPAD_PARAM(node, "Toggle maple tree node scratchpad");
+static DEFINE_PER_CPU(struct scratchpad, mt_node_pool);
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/maple_tree.h>
@@ -134,14 +138,60 @@ static const unsigned char mt_min_slots[] = {
 #define mt_min_slot_count(x) mt_min_slots[mte_node_type(x)]
 
 /* Functions */
-static inline struct maple_node *mt_alloc_one(gfp_t gfp)
+static inline struct maple_node *mt_alloc_one(struct maple_tree *mt, gfp_t gfp)
 {
+	if (mt && (mt->ma_flags & MT_FLAGS_DEDICATED_SLAB)) {
+		if (unlikely(!mt->ma_scratch)) {
+			mt->ma_scratch = kzalloc_obj(struct scratchpad, gfp);
+			if (mt->ma_scratch)
+				_scratchpad_init(mt->ma_scratch, sizeof(struct maple_node),
+						 sizeof(struct maple_node),
+						 SCRATCH_16K_ORDER,
+						 &node_ENABLE_KEY.key, gfp);
+		}
+		if (mt->ma_scratch) {
+			struct maple_node *node;
+
+			node = scratchpad_alloc(mt->ma_scratch, sizeof(struct maple_node));
+			if (node)
+				return node;
+		}
+	}
+
+	if (static_branch_likely(&node_ENABLE_KEY)) {
+		struct scratchpad *sp = get_cpu_ptr(&mt_node_pool);
+		struct maple_node *node;
+
+		node = scratchpad_alloc(sp, sizeof(struct maple_node));
+		put_cpu_ptr(&mt_node_pool);
+		if (node)
+			return node;
+	}
 	return kmem_cache_alloc(maple_node_cache, gfp);
+}
+
+static inline void mt_free_one(struct maple_node *node)
+{
+	if (!node)
+		return;
+	if (folio_test_slab(virt_to_folio(node))) {
+		kmem_cache_free(maple_node_cache, node);
+		return;
+	}
+
+	struct scratchpad *sp = get_cpu_ptr(&mt_node_pool);
+
+	scratchpad_put(sp, node);
+	put_cpu_ptr(&mt_node_pool);
 }
 
 static inline void mt_free_bulk(size_t size, void __rcu **nodes)
 {
-	kmem_cache_free_bulk(maple_node_cache, size, (void **)nodes);
+	for (size_t i = 0; i < size; i++) {
+		struct maple_node *node = (struct maple_node *)nodes[i];
+
+		mt_free_one(node);
+	}
 }
 
 static void mt_return_sheaf(struct slab_sheaf *sheaf)
@@ -160,6 +210,13 @@ static int mt_refill_sheaf(gfp_t gfp, struct slab_sheaf **sheaf,
 	return kmem_cache_refill_sheaf(maple_node_cache, gfp, sheaf, size);
 }
 
+static void mt_rcu_free_cb(struct rcu_head *head)
+{
+	struct maple_node *node = container_of(head, struct maple_node, rcu);
+
+	mt_free_one(node);
+}
+
 /*
  * ma_free_rcu() - Use rcu callback to free a maple node
  * @node: The node to free
@@ -170,6 +227,10 @@ static int mt_refill_sheaf(gfp_t gfp, struct slab_sheaf **sheaf,
 static void ma_free_rcu(struct maple_node *node)
 {
 	WARN_ON(node->parent != ma_parent_ptr(node));
+	if (static_branch_likely(&node_ENABLE_KEY)) {
+		call_rcu(&node->rcu, mt_rcu_free_cb);
+		return;
+	}
 	kfree_rcu(node, rcu);
 }
 
@@ -1065,7 +1126,8 @@ static __always_inline struct maple_node *mas_pop_node(struct ma_state *mas)
 	ret = kmem_cache_alloc_from_sheaf(maple_node_cache, GFP_NOWAIT, mas->sheaf);
 
 out:
-	memset(ret, 0, sizeof(*ret));
+	if (ret)
+		memset(ret, 0, sizeof(*ret));
 	return ret;
 }
 
@@ -1086,7 +1148,7 @@ static inline void mas_alloc_nodes(struct ma_state *mas, gfp_t gfp)
 		if (mas->alloc)
 			return;
 
-		mas->alloc = mt_alloc_one(gfp);
+		mas->alloc = mt_alloc_one(mas->tree, gfp);
 		if (!mas->alloc)
 			goto error;
 
@@ -1096,7 +1158,7 @@ static inline void mas_alloc_nodes(struct ma_state *mas, gfp_t gfp)
 
 use_sheaf:
 	if (unlikely(mas->alloc)) {
-		kfree(mas->alloc);
+		mt_free_one(mas->alloc);
 		mas->alloc = NULL;
 	}
 
@@ -1135,7 +1197,7 @@ static inline void mas_empty_nodes(struct ma_state *mas)
 	}
 
 	if (mas->alloc) {
-		kfree(mas->alloc);
+		mt_free_one(mas->alloc);
 		mas->alloc = NULL;
 	}
 }
@@ -4708,7 +4770,7 @@ static void mt_free_walk(struct rcu_head *head)
 	mt_free_bulk(node->slot_len, slots);
 
 free_leaf:
-	kfree(node);
+	mt_free_one(node);
 }
 
 static inline void __rcu **mte_destroy_descend(struct maple_enode **enode,
@@ -4792,7 +4854,7 @@ next:
 
 free_leaf:
 	if (free)
-		kfree(node);
+		mt_free_one(node);
 	else
 		mt_clear_meta(mt, node, node->type);
 }
@@ -5633,6 +5695,16 @@ void __init maple_tree_init(void)
 		.align  = sizeof(struct maple_node),
 		.sheaf_capacity = 32,
 	};
+	int cpu;
+
+	for_each_possible_cpu(cpu) {
+		struct scratchpad *sp = per_cpu_ptr(&mt_node_pool, cpu);
+
+		_scratchpad_init(sp, sizeof(struct maple_node),
+				 sizeof(struct maple_node),
+				 SCRATCH_16K_ORDER,
+				 &node_ENABLE_KEY.key, GFP_KERNEL);
+	}
 
 	maple_node_cache = kmem_cache_create("maple_node",
 			sizeof(struct maple_node), &args,
@@ -5972,7 +6044,7 @@ static void mas_dup_free(struct ma_state *mas)
 	}
 
 	node = mte_to_node(mas->node);
-	kfree(node);
+	mt_free_one(node);
 }
 
 /*
@@ -6073,7 +6145,7 @@ static inline void mas_dup_build(struct ma_state *mas, struct ma_state *new_mas,
 	if (mas_is_ptr(mas) || mas_is_none(mas))
 		goto set_new_tree;
 
-	node = mt_alloc_one(gfp);
+	node = mt_alloc_one(new_mas->tree, gfp);
 	if (!node) {
 		new_mas->status = ma_none;
 		mas_set_err(mas, -ENOMEM);
@@ -6219,8 +6291,13 @@ void __mt_destroy(struct maple_tree *mt)
 	void *root = mt_root_locked(mt);
 
 	rcu_assign_pointer(mt->ma_root, NULL);
-	if (xa_is_node(root))
+	if ((mt->ma_flags & MT_FLAGS_DEDICATED_SLAB) && mt->ma_scratch) {
+		scratchpad_free(mt->ma_scratch);
+		kfree(mt->ma_scratch);
+		mt->ma_scratch = NULL;
+	} else if (xa_is_node(root)) {
 		mte_destroy_walk(root, mt);
+	}
 
 	mt->ma_flags = mt_attr(mt);
 }
