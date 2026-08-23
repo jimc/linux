@@ -4,11 +4,14 @@
 
 #include <linux/io_uring_types.h>
 #include <linux/kasan.h>
+#include <linux/scratchpad.h>
 
 /*
  * Don't allow the cache to grow beyond this size.
  */
 #define IO_ALLOC_CACHE_MAX	128
+
+DECLARE_STATIC_KEY_TRUE(cache_ENABLE_KEY);
 
 void io_alloc_cache_free(struct io_alloc_cache *cache,
 			 void (*free)(const void *));
@@ -21,6 +24,11 @@ void *io_cache_alloc_new(struct io_alloc_cache *cache, gfp_t gfp);
 static inline bool io_alloc_cache_put(struct io_alloc_cache *cache,
 				      void *entry)
 {
+	if (static_branch_likely(&cache_ENABLE_KEY)) {
+		scratchpad_put(&cache->rec, entry);
+		return true;
+	}
+
 	if (cache->nr_cached < cache->max_cached) {
 		if (!kasan_mempool_poison_object(entry))
 			return false;
@@ -32,6 +40,14 @@ static inline bool io_alloc_cache_put(struct io_alloc_cache *cache,
 
 static inline void *io_alloc_cache_get(struct io_alloc_cache *cache)
 {
+	if (static_branch_likely(&cache_ENABLE_KEY)) {
+		void *entry = scratchpad_alloc(&cache->rec, cache->elem_size);
+
+		if (entry && cache->init_clear)
+			memset(entry, 0, cache->init_clear);
+		return entry;
+	}
+
 	if (cache->nr_cached) {
 		void *entry = cache->entries[--cache->nr_cached];
 
@@ -53,9 +69,16 @@ static inline void *io_alloc_cache_get(struct io_alloc_cache *cache)
 
 static inline void *io_cache_alloc(struct io_alloc_cache *cache, gfp_t gfp)
 {
-	void *obj;
+	if (static_branch_likely(&cache_ENABLE_KEY)) {
+		void *obj = scratchpad_alloc(&cache->rec, cache->elem_size);
 
-	obj = io_alloc_cache_get(cache);
+		if (obj && cache->init_clear)
+			memset(obj, 0, cache->init_clear);
+		return obj;
+	}
+
+	void *obj = io_alloc_cache_get(cache);
+
 	if (obj)
 		return obj;
 	return io_cache_alloc_new(cache, gfp);
@@ -63,6 +86,11 @@ static inline void *io_cache_alloc(struct io_alloc_cache *cache, gfp_t gfp)
 
 static inline void io_cache_free(struct io_alloc_cache *cache, void *obj)
 {
+	if (static_branch_likely(&cache_ENABLE_KEY)) {
+		scratchpad_put(&cache->rec, obj);
+		return;
+	}
+
 	if (!io_alloc_cache_put(cache, obj))
 		kvfree(obj);
 }

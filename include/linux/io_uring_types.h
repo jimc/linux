@@ -6,6 +6,7 @@
 #include <linux/task_work.h>
 #include <linux/bitmap.h>
 #include <linux/llist.h>
+#include <linux/scratchpad.h>
 #include <uapi/linux/io_uring.h>
 
 struct iou_loop_params;
@@ -291,6 +292,7 @@ struct io_alloc_cache {
 	unsigned int		max_cached;
 	unsigned int		elem_size;
 	unsigned int		init_clear;
+	struct scratchpad	rec;
 };
 
 enum {
