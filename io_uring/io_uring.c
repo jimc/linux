@@ -323,7 +323,8 @@ static void io_clean_op(struct io_kiocb *req)
 	if (req->flags & REQ_F_CREDS)
 		put_cred(req->creds);
 	if (req->flags & REQ_F_ASYNC_DATA) {
-		kfree(req->async_data);
+		if (!static_branch_likely(&cache_ENABLE_KEY))
+			kfree(req->async_data);
 		req->async_data = NULL;
 	}
 	req->flags &= ~IO_REQ_CLEAN_FLAGS;
