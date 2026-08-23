@@ -4,5 +4,5 @@
 # No binaries, but make sure arg-less "make" doesn't trigger "run_tests"
 all:
 
-TEST_PROGS := bitmap.sh
+TEST_PROGS := bitmap.sh scratchpad_bench.sh
 include ../lib.mk
