@@ -13,6 +13,7 @@
 #include <net/netlink.h>
 #include <net/flow_offload.h>
 #include <net/netns/generic.h>
+#include <linux/scratchpad.h>
 
 #define NFT_MAX_HOOKS	(NF_INET_INGRESS + 1)
 
@@ -1941,6 +1942,7 @@ __printf(2, 3) int nft_request_module(struct net *net, const char *fmt, ...);
 static inline int nft_request_module(struct net *net, const char *fmt, ...) { return -ENOENT; }
 #endif
 
+
 struct nftables_pernet {
 	struct list_head	tables;
 	struct list_head	commit_list;
@@ -1949,6 +1951,7 @@ struct nftables_pernet {
 	struct list_head	binding_list;
 	struct list_head	module_list;
 	struct list_head	notify_list;
+	struct scratchpad	trans_scratchpad;
 	struct mutex		commit_mutex;
 	u64			table_handle;
 	u64			tstamp;
