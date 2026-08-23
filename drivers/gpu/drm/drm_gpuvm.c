@@ -1072,6 +1072,9 @@ drm_gpuvm_resv_object_alloc(struct drm_device *drm)
 }
 EXPORT_SYMBOL_GPL(drm_gpuvm_resv_object_alloc);
 
+DEFINE_SCRATCHPAD_PARAM(ops,
+			"Toggle DRM GPUVM operations scratchpad allocator");
+
 /**
  * drm_gpuvm_init() - initialize a &drm_gpuvm
  * @gpuvm: pointer to the &drm_gpuvm to initialize
@@ -1083,12 +1086,9 @@ EXPORT_SYMBOL_GPL(drm_gpuvm_resv_object_alloc);
  * @range: the size of the GPU VA space
  * @reserve_offset: the start of the kernel reserved GPU VA area
  * @reserve_range: the size of the kernel reserved GPU VA area
- * @ops: &drm_gpuvm_ops called on &drm_gpuvm_sm_map / &drm_gpuvm_sm_unmap
+ * @ops: &drm_gpuvm_ops providing callback functions for drivers
  *
- * The &drm_gpuvm must be initialized with this function before use.
- *
- * Note that @gpuvm must be cleared to 0 before calling this function. The given
- * &name is expected to be managed by the surrounding driver structures.
+ * Initialize the &drm_gpuvm instance.
  */
 void
 drm_gpuvm_init(struct drm_gpuvm *gpuvm, const char *name,
@@ -1109,6 +1109,7 @@ drm_gpuvm_init(struct drm_gpuvm *gpuvm, const char *name,
 	spin_lock_init(&gpuvm->evict.lock);
 
 	init_llist_head(&gpuvm->bo_defer);
+	scratchpad_init(&gpuvm->va_scratchpad, ops, GFP_KERNEL);
 
 	kref_init(&gpuvm->kref);
 
@@ -1155,6 +1156,7 @@ drm_gpuvm_fini(struct drm_gpuvm *gpuvm)
 	drm_WARN(gpuvm->drm, !llist_empty(&gpuvm->bo_defer),
 		 "VM BO cleanup list should be empty.\n");
 
+	scratchpad_free(&gpuvm->va_scratchpad);
 	drm_gem_object_put(gpuvm->r_obj);
 }
 
@@ -2853,17 +2855,12 @@ static struct drm_gpuva_op *
 gpuva_op_alloc(struct drm_gpuvm *gpuvm)
 {
 	const struct drm_gpuvm_ops *fn = gpuvm->ops;
-	struct drm_gpuva_op *op;
 
 	if (fn && fn->op_alloc)
-		op = fn->op_alloc();
-	else
-		op = kzalloc_obj(*op);
+		return fn->op_alloc();
 
-	if (unlikely(!op))
-		return NULL;
-
-	return op;
+	return scratchpad_alloc_obj(struct drm_gpuva_op,
+				    gpuvm, va_scratchpad);
 }
 
 static void
@@ -2875,7 +2872,7 @@ gpuva_op_free(struct drm_gpuvm *gpuvm,
 	if (fn && fn->op_free)
 		fn->op_free(op);
 	else
-		kfree(op);
+		scratchpad_free_obj(gpuvm, va_scratchpad, op);
 }
 
 static int
