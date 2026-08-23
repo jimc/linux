@@ -13,6 +13,9 @@
 #include <linux/rculist.h>
 #include <linux/rcupdate.h>
 #include <linux/mm.h>
+#include <linux/scratchpad.h>
+
+DECLARE_STATIC_KEY_TRUE(modload_ENABLE_KEY);
 
 #ifndef ARCH_SHF_SMALL
 #define ARCH_SHF_SMALL 0
@@ -60,6 +63,7 @@ extern const u8 __start___kflagstab[];
 extern char modprobe_path[];
 
 struct load_info {
+	struct scratchpad sp;
 	const char *name;
 	/* pointer to module in temporary copy, freed at end of load_module() */
 	struct module *mod;
