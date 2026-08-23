@@ -20,6 +20,12 @@
 #include <asm/text-patching.h>
 #include <asm/unwind.h>
 #include <asm/cfi.h>
+#include <linux/scratchpad.h>
+
+#undef MODULE_PARAM_PREFIX
+#define MODULE_PARAM_PREFIX "bpf."
+
+DEFINE_SCRATCHPAD_PARAM(jit, "Toggle BPF x86 JIT compilation scratchpad");
 
 static bool all_callee_regs_used[4] = {true, true, true, true};
 
@@ -3671,16 +3677,17 @@ int arch_prepare_bpf_trampoline(struct bpf_tramp_image *im, void *image, void *i
 				struct bpf_tramp_nodes *tnodes,
 				void *func_addr)
 {
+	struct scratchpad tramp_sp;
 	void *rw_image, *tmp;
 	int ret;
 	u32 size = image_end - image;
 
-	/* rw_image doesn't need to be in module memory range, so we can
-	 * use kvmalloc.
-	 */
-	rw_image = kvmalloc(size, GFP_KERNEL);
-	if (!rw_image)
+	scratchpad_init(&tramp_sp, jit, GFP_KERNEL);
+	rw_image = scratchpad_alloc_buf(&tramp_sp, size);
+	if (!rw_image) {
+		scratchpad_free(&tramp_sp);
 		return -ENOMEM;
+	}
 
 	ret = __arch_prepare_bpf_trampoline(im, rw_image, rw_image + size, image, m,
 					    flags, tnodes, func_addr);
@@ -3691,7 +3698,8 @@ int arch_prepare_bpf_trampoline(struct bpf_tramp_image *im, void *image, void *i
 	if (IS_ERR(tmp))
 		ret = PTR_ERR(tmp);
 out:
-	kvfree(rw_image);
+	scratchpad_free_buf(&tramp_sp, rw_image);
+	scratchpad_free(&tramp_sp);
 	return ret;
 }
 
@@ -3843,6 +3851,7 @@ struct x64_jit_data {
 	u8 *image;
 	int proglen;
 	struct jit_context ctx;
+	struct scratchpad sp;
 };
 
 #define MAX_PASSES 20
@@ -3873,6 +3882,7 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_verifier_env *env, struct bpf_pr
 		jit_data = kzalloc_obj(*jit_data);
 		if (!jit_data)
 			return prog;
+		scratchpad_init(&jit_data->sp, jit, GFP_KERNEL);
 		prog->aux->jit_data = jit_data;
 	}
 	priv_stack_ptr = prog->aux->priv_stack_ptr;
@@ -3902,7 +3912,7 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_verifier_env *env, struct bpf_pr
 		padding = true;
 		goto skip_init_addrs;
 	}
-	addrs = kvmalloc_objs(*addrs, prog->len + 1);
+	addrs = scratchpad_alloc_objs(int, &jit_data->sp, prog->len + 1);
 	if (!addrs)
 		goto out_addrs;
 
@@ -4027,7 +4037,8 @@ out_image:
 		if (image)
 			bpf_prog_fill_jited_linfo(prog, addrs + 1);
 out_addrs:
-		kvfree(addrs);
+		scratchpad_free_objs(&jit_data->sp, addrs);
+		scratchpad_free(&jit_data->sp);
 		if (!image && priv_stack_ptr) {
 			free_percpu(priv_stack_ptr);
 			prog->aux->priv_stack_ptr = NULL;
@@ -4084,7 +4095,8 @@ void bpf_jit_free(struct bpf_prog *prog)
 		if (jit_data) {
 			bpf_jit_binary_pack_finalize(jit_data->header,
 						     jit_data->rw_header);
-			kvfree(jit_data->addrs);
+			scratchpad_free_objs(&jit_data->sp, jit_data->addrs);
+			scratchpad_free(&jit_data->sp);
 			kfree(jit_data);
 		}
 		prog->bpf_func = (void *)prog->bpf_func - cfi_get_offset();
