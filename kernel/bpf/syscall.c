@@ -19,6 +19,7 @@
 #include <linux/fdtable.h>
 #include <linux/file.h>
 #include <linux/fs.h>
+#include <linux/scratchpad.h>
 #include <linux/license.h>
 #include <linux/filter.h>
 #include <linux/kernel.h>
@@ -2059,12 +2060,19 @@ int generic_map_delete_batch(struct bpf_map *map,
 	return err;
 }
 
+#undef MODULE_PARAM_PREFIX
+#define MODULE_PARAM_PREFIX "bpf."
+
+DEFINE_SCRATCHPAD_PARAM(batch,
+			"Toggle BPF generic map update batch scratchpad");
+
 int generic_map_update_batch(struct bpf_map *map, struct file *map_file,
 			     const union bpf_attr *attr,
 			     union bpf_attr __user *uattr)
 {
 	void __user *values = u64_to_user_ptr(attr->batch.values);
 	void __user *keys = u64_to_user_ptr(attr->batch.keys);
+	struct scratchpad batch_sp;
 	u32 value_size, cp, max_count;
 	void *key, *value;
 	int err = 0;
@@ -2083,13 +2091,17 @@ int generic_map_update_batch(struct bpf_map *map, struct file *map_file,
 	if (put_user(0, &uattr->batch.count))
 		return -EFAULT;
 
-	key = kvmalloc(map->key_size, GFP_USER | __GFP_NOWARN);
-	if (!key)
-		return -ENOMEM;
+	scratchpad_init(&batch_sp, batch, GFP_USER | __GFP_NOWARN);
 
-	value = kvmalloc(value_size, GFP_USER | __GFP_NOWARN);
+	key = scratchpad_alloc(&batch_sp, map->key_size);
+	if (!key) {
+		scratchpad_free(&batch_sp);
+		return -ENOMEM;
+	}
+
+	value = scratchpad_alloc(&batch_sp, value_size);
 	if (!value) {
-		kvfree(key);
+		scratchpad_free(&batch_sp);
 		return -ENOMEM;
 	}
 
@@ -2111,8 +2123,7 @@ int generic_map_update_batch(struct bpf_map *map, struct file *map_file,
 	if (copy_to_user(&uattr->batch.count, &cp, sizeof(cp)))
 		err = -EFAULT;
 
-	kvfree(value);
-	kvfree(key);
+	scratchpad_free(&batch_sp);
 
 	return err;
 }
