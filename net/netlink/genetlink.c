@@ -19,10 +19,15 @@
 #include <linux/bitmap.h>
 #include <linux/rwsem.h>
 #include <linux/idr.h>
+#include <linux/mm.h>
+#include <linux/scratchpad.h>
 #include <net/sock.h>
 #include <net/genetlink.h>
 
 #include "genetlink.h"
+
+DEFINE_SCRATCHPAD_PARAM(attr, "Toggle Generic Netlink attribute scratchpad");
+static DEFINE_PER_CPU(struct scratchpad, genl_attr_scratch);
 
 static DEFINE_MUTEX(genl_mutex); /* serialization of message processing */
 static DECLARE_RWSEM(cb_lock);
@@ -915,6 +920,21 @@ static void genl_dumpit_info_free(const struct genl_dumpit_info *info)
 	kfree(info);
 }
 
+static void genl_family_rcv_msg_attrs_free(struct nlattr **attrbuf)
+{
+	struct scratchpad *sp;
+
+	if (!attrbuf)
+		return;
+	if (folio_test_slab(virt_to_folio(attrbuf))) {
+		kfree(attrbuf);
+		return;
+	}
+	sp = get_cpu_ptr(&genl_attr_scratch);
+	scratchpad_reset(sp);
+	put_cpu_ptr(&genl_attr_scratch);
+}
+
 static struct nlattr **
 genl_family_rcv_msg_attrs_parse(const struct genl_family *family,
 				struct nlmsghdr *nlh,
@@ -933,7 +953,17 @@ genl_family_rcv_msg_attrs_parse(const struct genl_family *family,
 		return NULL;
 
 	if (ops->maxattr) {
-		attrbuf = kmalloc_objs(struct nlattr *, ops->maxattr + 1);
+		size_t size = (ops->maxattr + 1) * sizeof(struct nlattr *);
+
+		if (!(no_strict_flag & GENL_DONT_VALIDATE_DUMP_STRICT) &&
+		    static_branch_likely(&attr_ENABLE_KEY)) {
+			struct scratchpad *sp = get_cpu_ptr(&genl_attr_scratch);
+
+			attrbuf = __scratchpad_alloc(sp, size, __alignof__(void *), GFP_KERNEL);
+			put_cpu_ptr(&genl_attr_scratch);
+		} else {
+			attrbuf = kmalloc_objs(struct nlattr *, ops->maxattr + 1);
+		}
 		if (!attrbuf)
 			return ERR_PTR(-ENOMEM);
 	} else {
@@ -944,15 +974,10 @@ genl_family_rcv_msg_attrs_parse(const struct genl_family *family,
 	err = __nlmsg_parse(nlh, hdrlen, attrbuf, ops->maxattr, ops->policy,
 			    validate, extack);
 	if (err) {
-		kfree(attrbuf);
+		genl_family_rcv_msg_attrs_free(attrbuf);
 		return ERR_PTR(err);
 	}
 	return attrbuf;
-}
-
-static void genl_family_rcv_msg_attrs_free(struct nlattr **attrbuf)
-{
-	kfree(attrbuf);
 }
 
 struct genl_start_context {
@@ -1909,7 +1934,13 @@ static struct pernet_operations genl_pernet_ops = {
 
 static int __init genl_init(void)
 {
-	int err;
+	int err, cpu;
+
+	for_each_possible_cpu(cpu) {
+		struct scratchpad *sp = per_cpu_ptr(&genl_attr_scratch, cpu);
+
+		scratchpad_init_order(sp, attr, SCRATCH_16K_ORDER, GFP_KERNEL);
+	}
 
 	err = genl_register_family(&genl_ctrl);
 	if (err < 0)
