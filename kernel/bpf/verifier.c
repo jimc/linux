@@ -1725,7 +1725,7 @@ static int pop_stack(struct bpf_verifier_env *env, int *prev_insn_idx,
 		*prev_insn_idx = head->prev_insn_idx;
 	elem = head->next;
 	bpf_free_verifier_state(&head->st, false);
-	kfree(head);
+	scratchrec_put_obj(env, state_pool, head);
 	env->head = elem;
 	env->stack_size--;
 	return 0;
@@ -1743,6 +1743,12 @@ static bool error_recoverable_with_nospec(int err)
 	return err == -EPERM || err == -EACCES || err == -EINVAL;
 }
 
+#undef MODULE_PARAM_PREFIX
+#define MODULE_PARAM_PREFIX "bpf."
+
+DEFINE_SCRATCHPAD_PARAM(verifier,
+			"Toggle BPF verifier stack state scratchpad pool");
+
 static struct bpf_verifier_state *push_stack(struct bpf_verifier_env *env,
 					     int insn_idx, int prev_insn_idx,
 					     bool speculative)
@@ -1751,7 +1757,9 @@ static struct bpf_verifier_state *push_stack(struct bpf_verifier_env *env,
 	struct bpf_verifier_stack_elem *elem;
 	int err;
 
-	elem = kzalloc_obj(struct bpf_verifier_stack_elem, GFP_KERNEL_ACCOUNT);
+	elem = scratchrec_alloc_obj(env, state_pool,
+				    struct bpf_verifier_stack_elem,
+				    GFP_KERNEL_ACCOUNT);
 	if (!elem)
 		return ERR_PTR(-ENOMEM);
 
@@ -2275,7 +2283,9 @@ static struct bpf_verifier_state *push_async_cb(struct bpf_verifier_env *env,
 	struct bpf_verifier_stack_elem *elem;
 	struct bpf_func_state *frame;
 
-	elem = kzalloc_obj(struct bpf_verifier_stack_elem, GFP_KERNEL_ACCOUNT);
+	elem = scratchrec_alloc_obj(env, state_pool,
+				    struct bpf_verifier_stack_elem,
+				    GFP_KERNEL_ACCOUNT);
 	if (!elem)
 		return ERR_PTR(-ENOMEM);
 
@@ -19789,6 +19799,10 @@ int bpf_check(struct bpf_prog **prog, union bpf_attr *attr, bpfptr_t uattr,
 	if (!env)
 		return -ENOMEM;
 
+	scratchrec_init_order(&env->state_pool, verifier,
+			      sizeof(struct bpf_verifier_stack_elem),
+			      get_order(SZ_64K), GFP_KERNEL_ACCOUNT);
+
 	env->bt.env = env;
 
 	len = (*prog)->len;
@@ -20055,6 +20069,7 @@ err_unlock:
 	bpf_clear_insn_aux_data(env, 0, env->prog->len);
 err_free_env:
 	bpf_stack_liveness_free(env);
+	scratchrec_free(&env->state_pool);
 	kvfree(env->cfg.insn_postorder);
 	kvfree(env->scc_info);
 	kvfree(env->succ);
