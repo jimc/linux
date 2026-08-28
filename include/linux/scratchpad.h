@@ -144,6 +144,45 @@ static inline struct scratchpad_mark scratchpad_mark(struct scratchpad *sp)
 void scratchpad_rewind(struct scratchpad *sp, struct scratchpad_mark mark);
 
 /*
+ * Relative Indexing & Compact Link Addressing
+ */
+static inline void *scratchpad_base(struct scratchpad *sp)
+{
+	if (sp->static_buf)
+		return sp->static_buf;
+	if (!list_empty(&sp->chunks)) {
+		struct scratchpad_chunk *chunk;
+		size_t align = sp->align_quantum ?: sizeof(void *);
+
+		chunk = list_first_entry(&sp->chunks, struct scratchpad_chunk, link);
+		return (void *)PTR_ALIGN((char *)chunk + sizeof(*chunk), align);
+	}
+	return NULL;
+}
+
+static inline u16 scratchpad_idx(struct scratchpad *sp, const void *ptr)
+{
+	void *base = scratchpad_base(sp);
+
+	if (!ptr || !base || ptr < base)
+		return 0;
+	return (u16)(((uintptr_t)ptr - (uintptr_t)base) /
+		     (sp->elem_size ?: sizeof(void *))) + 1;
+}
+
+static inline void *scratchpad_at(struct scratchpad *sp, u16 idx)
+{
+	void *base = scratchpad_base(sp);
+
+	if (!idx || !base)
+		return NULL;
+	return (void *)((char *)base +
+			((size_t)(idx - 1) * (sp->elem_size ?: sizeof(void *))));
+}
+
+#define scratchpad_at_type(type, sp, idx) ((type *)scratchpad_at((sp), (idx)))
+
+/*
  * Allocations & Deallocations
  */
 void *__scratchpad_alloc(struct scratchpad *sp, size_t size,
