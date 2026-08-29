@@ -127,7 +127,7 @@ static int __init test_bonsai_init(void)
 
 	/* Test 2: Insert 100 sequential ranges (triggers splits and auto-repotting) */
 	for (i = 0; i < 100; i++) {
-		ret = bonsai_store(&bt, i * 10, (void *)(i + 1), GFP_KERNEL);
+		ret = bonsai_store(&bt, i * 10, xa_mk_value(i + 1), GFP_KERNEL);
 		if (ret) {
 			pr_err("test_bonsai: store failed at key %lu (%d)\n", i * 10, ret);
 			bonsai_destroy(&bt);
@@ -138,7 +138,7 @@ static int __init test_bonsai_init(void)
 	/* Test 3: Lookup verification across all keys */
 	for (i = 0; i < 100; i++) {
 		val = bonsai_lookup(&bt, i * 10);
-		if (val != (void *)(i + 1)) {
+		if (val != xa_mk_value(i + 1)) {
 			pr_err("test_bonsai: lookup mismatch at key %lu (got %p, expected %lu)\n",
 			       i * 10, val, i + 1);
 			bonsai_destroy(&bt);
@@ -157,14 +157,37 @@ static int __init test_bonsai_init(void)
 	/* Verify lookups still match post-repot */
 	for (i = 0; i < 100; i++) {
 		val = bonsai_lookup(&bt, i * 10);
-		if (val != (void *)(i + 1)) {
+		if (val != xa_mk_value(i + 1)) {
 			pr_err("test_bonsai: post-repot lookup failed at key %lu\n", i * 10);
 			bonsai_destroy(&bt);
 			return -EINVAL;
 		}
 	}
 
-	/* Test 5: O(1) Bulk Teardown */
+	/* Test 5: Bonsai -> Maple Tree Graduation */
+	{
+		struct maple_tree mt_grad;
+		mt_init_flags(&mt_grad, MT_FLAGS_ALLOC_RANGE);
+		ret = bonsai_to_maple(&bt, &mt_grad, GFP_KERNEL);
+		if (ret) {
+			pr_err("test_bonsai: bonsai_to_maple failed (%d)\n", ret);
+			bonsai_destroy(&bt);
+			return ret;
+		}
+		for (i = 0; i < 100; i++) {
+			val = mtree_load(&mt_grad, i * 10);
+			if (val != xa_mk_value(i + 1)) {
+				pr_err("test_bonsai: graduated maple lookup failed at %lu\n", i * 10);
+				mtree_destroy(&mt_grad);
+				bonsai_destroy(&bt);
+				return -EINVAL;
+			}
+		}
+		mtree_destroy(&mt_grad);
+		pr_info("test_bonsai: Bonsai -> Maple Tree graduation verified 100 entries\n");
+	}
+
+	/* Test 6: O(1) Bulk Teardown */
 	bonsai_destroy(&bt);
 	pr_info("test_bonsai: All unit tests PASSED!\n");
 

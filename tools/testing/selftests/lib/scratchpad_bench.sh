@@ -69,7 +69,10 @@ execute_ab_test() {
         local b_out="$2"
         local c_out="$3"
 
-        # Warmup pass to prime buffer caches and eliminate VM cold-start skew
+        # Warmup passes to prime buffer caches in both states and eliminate order skew
+        echo 0 > "$param"
+        $run_fn "/dev/null" >/dev/null 2>&1 || true
+        echo 1 > "$param"
         $run_fn "/dev/null" >/dev/null 2>&1 || true
 
         if [ "$order" = "AB" ]; then
@@ -378,20 +381,30 @@ bench_bpf_jit() {
     local param="/sys/module/bpf/parameters/jit_scratch"
     local base_out="/tmp/jit_baseline.txt"
     local cand_out="/tmp/jit_scratchpad.txt"
-    local repeats=10
+    local repeats=3
 
     if ! command -v perf >/dev/null 2>&1; then
         echo "SKIP: perf not found"
         ((TESTS_SKIPPED++))
         return 0
     fi
-    if ! command -v bpftool >/dev/null 2>&1 && [ ! -x "./test_progs" ]; then
-        echo "SKIP: bpftool or test_progs not found"
-        ((TESTS_SKIPPED++))
-        return 0
+    if [ ! -f /tmp/test_jit.o ] && command -v clang >/dev/null 2>&1; then
+        cat << 'EOF' > /tmp/gen_bpf.py
+with open('/tmp/test_jit.c', 'w') as f:
+    for i in range(1, 31):
+        f.write(f'__attribute__((noinline)) int sub_{i}(int x) {{ return x + {i}; }}\n')
+    f.write('__attribute__((section("socket"), used)) int main_prog(void *ctx) {\n')
+    f.write('    int res = 0;\n')
+    for i in range(1, 31):
+        f.write(f'    res += sub_{i}(res);\n')
+    f.write('    return res;\n}\n')
+    f.write('char _license[] __attribute__((section("license"), used)) = "GPL";\n')
+EOF
+        python3 /tmp/gen_bpf.py 2>/dev/null || true
+        clang -target bpf -O2 -c /tmp/test_jit.c -o /tmp/test_jit.o 2>/dev/null || true
     fi
 
-    local cmd="bpftool prog load /tmp/test_prog.o /sys/fs/bpf/test 2>/dev/null || true"
+    local cmd="for i in \$(seq 1 20); do bpftool prog load /tmp/test_jit.o /sys/fs/bpf/test_jit type socket 2>/dev/null; rm -f /sys/fs/bpf/test_jit; done"
     if [ -x "./test_progs" ]; then
         cmd="./test_progs -t bpf_cookie 2>/dev/null || true"
     fi

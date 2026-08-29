@@ -106,6 +106,11 @@ int bonsai_store_range(struct bonsai_tree *bt, unsigned long first,
 int bonsai_store(struct bonsai_tree *bt, unsigned long index, void *val, gfp_t gfp);
 int bonsai_repot(struct bonsai_tree *bt, unsigned int new_order, gfp_t gfp);
 
+/* Maple Tree Graduation & Potting Bridge */
+struct maple_tree;
+int bonsai_to_maple(const struct bonsai_tree *bt, struct maple_tree *mt, gfp_t gfp);
+int maple_to_bonsai(struct maple_tree *mt, struct bonsai_tree *bt, gfp_t gfp);
+
 /* Inline Index Conversion Helpers */
 static inline union bonsai_node *bonsai_node_at(const struct bonsai_tree *bt, u16 idx)
 {

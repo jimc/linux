@@ -8,6 +8,7 @@
  */
 
 #include <linux/bonsai_tree.h>
+#include <linux/maple_tree.h>
 #include <linux/slab.h>
 #include <linux/export.h>
 
@@ -422,3 +423,53 @@ int bonsai_store_range(struct bonsai_tree *bt, unsigned long first,
 	return -EOPNOTSUPP;
 }
 EXPORT_SYMBOL_GPL(bonsai_store_range);
+
+int bonsai_to_maple(const struct bonsai_tree *bt, struct maple_tree *mt, gfp_t gfp)
+{
+	unsigned int idx;
+
+	if (!bt || !bt->pot || !mt)
+		return -EINVAL;
+
+	for (idx = 1; idx <= bt->node_count; idx++) {
+		union bonsai_node *n = bonsai_node_at(bt, idx);
+
+		if (n && n->m.node_type == BONSAI_TYPE_LEAF) {
+			int i, count = n->l.meta.num_pivots;
+
+			for (i = 0; i < count; i++) {
+				unsigned long key = n->l.pivot[i];
+				void *val = n->l.slot[i];
+
+				if (val)
+					mtree_store_range(mt, key, key, val, gfp);
+			}
+		}
+	}
+	return 0;
+}
+EXPORT_SYMBOL_GPL(bonsai_to_maple);
+
+int maple_to_bonsai(struct maple_tree *mt, struct bonsai_tree *bt, gfp_t gfp)
+{
+	MA_STATE(mas, mt, 0, 0);
+	void *entry;
+	int ret;
+
+	ret = bonsai_init(bt, 0, gfp);
+	if (ret)
+		return ret;
+
+	mas_lock(&mas);
+	mas_for_each(&mas, entry, ULONG_MAX) {
+		ret = bonsai_store_range(bt, mas.index, mas.last, entry, gfp);
+		if (ret) {
+			mas_unlock(&mas);
+			bonsai_destroy(bt);
+			return ret;
+		}
+	}
+	mas_unlock(&mas);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(maple_to_bonsai);
