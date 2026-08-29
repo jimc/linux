@@ -35,6 +35,7 @@
 #include <linux/xattr.h>
 #include <linux/key.h>
 #include <linux/ftrace.h>
+#include <linux/bonsai_tree.h>
 #include <asm/rqspinlock.h>
 
 struct bpf_verifier_env;
@@ -1795,6 +1796,7 @@ struct bpf_prog_aux {
 	/* function name for valid attach_btf_id */
 	const char *attach_func_name;
 	struct bpf_prog **func;
+	struct bonsai_tree bonsai_funcs;
 	struct bpf_prog_aux *main_prog_aux;
 	void *jit_data; /* JIT specific data. arch dependent */
 	struct bpf_jit_poke_descriptor *poke_tab;

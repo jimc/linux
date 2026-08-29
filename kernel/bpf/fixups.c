@@ -1266,6 +1266,17 @@ static int jit_subprogs(struct bpf_verifier_env *env)
 	prog->aux->bpf_exception_cb = (void *)func[env->exception_callback_subprog]->bpf_func;
 	prog->aux->exception_boundary = func[0]->aux->exception_boundary;
 	prog->aux->stack_arg_sp_adjust = func[0]->aux->stack_arg_sp_adjust;
+
+	if (env->subprog_cnt > 1) {
+		bonsai_init(&prog->aux->bonsai_funcs, 0, GFP_KERNEL);
+		for (i = 0; i < env->subprog_cnt; i++) {
+			unsigned long start = (unsigned long)func[i]->bpf_func;
+			unsigned long end = start + func[i]->jited_len;
+
+			bonsai_store_range(&prog->aux->bonsai_funcs, start, end, func[i], GFP_KERNEL);
+		}
+	}
+
 	bpf_prog_jit_attempt_done(prog);
 	return 0;
 out_free:
