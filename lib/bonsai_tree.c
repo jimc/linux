@@ -119,34 +119,26 @@ int bonsai_repot(struct bonsai_tree *bt, unsigned int new_order, gfp_t gfp)
 }
 EXPORT_SYMBOL_GPL(bonsai_repot);
 
-static int leaf_find_slot(const struct bonsai_leaf *leaf, unsigned long index)
+static inline int leaf_find_slot(const struct bonsai_leaf *leaf, unsigned long index)
 {
-	int l = 0, r = leaf->meta.num_pivots - 1;
+	int i, count = leaf->meta.num_pivots;
 
-	while (l <= r) {
-		int m = l + (r - l) / 2;
-
-		if (index <= leaf->pivot[m])
-			r = m - 1;
-		else
-			l = m + 1;
+	for (i = 0; i < count; i++) {
+		if (index <= leaf->pivot[i])
+			return i;
 	}
-	return l;
+	return count;
 }
 
-static int branch_find_child(const struct bonsai_branch *br, unsigned long index)
+static inline int branch_find_child(const struct bonsai_branch *br, unsigned long index)
 {
-	int l = 0, r = br->meta.num_pivots - 1;
+	int i, count = br->meta.num_pivots;
 
-	while (l <= r) {
-		int m = l + (r - l) / 2;
-
-		if (index <= br->pivot[m])
-			r = m - 1;
-		else
-			l = m + 1;
+	for (i = 0; i < count; i++) {
+		if (index <= br->pivot[i])
+			return i;
 	}
-	return l;
+	return count;
 }
 
 void *bonsai_lookup(const struct bonsai_tree *bt, unsigned long index)
