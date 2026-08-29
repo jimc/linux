@@ -1905,6 +1905,18 @@ struct bpf_prog {
 	};
 };
 
+static inline struct bpf_prog *bpf_prog_find_subprog(const struct bpf_prog *prog, unsigned long addr)
+{
+	if (!prog || !prog->aux)
+		return NULL;
+	if (prog->aux->bonsai_funcs.root_idx)
+		return (struct bpf_prog *)bonsai_lookup(&prog->aux->bonsai_funcs, addr);
+	if (addr >= (unsigned long)prog->bpf_func &&
+	    addr < (unsigned long)prog->bpf_func + prog->jited_len)
+		return (struct bpf_prog *)prog;
+	return NULL;
+}
+
 struct bpf_array_aux {
 	/* Programs with direct jumps into programs part of this array. */
 	struct list_head poke_progs;
