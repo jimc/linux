@@ -17,23 +17,24 @@ static union bonsai_node *bonsai_alloc_node(struct bonsai_tree *bt,
 					    gfp_t gfp)
 {
 	union bonsai_node *node;
+	struct scratchpad *sp;
 
 	if (!bt->pot) {
 		if (bonsai_init(bt, bt->pot_order ?: 0, gfp))
 			return NULL;
 	}
 
-	node = scratchpad_alloc_align(bt->pot, sizeof(union bonsai_node),
-				      BONSAI_NODE_SIZE, gfp);
-	if (!node) {
-		/* Pot full: trigger automatic repotting to double capacity */
+	sp = bt->pot;
+	if (sp->remaining < sizeof(union bonsai_node)) {
+		/* Pot full: trigger automatic repotting to grow capacity */
 		if (bonsai_repot(bt, bt->pot_order + 1, gfp))
 			return NULL;
-		node = scratchpad_alloc_align(bt->pot, sizeof(union bonsai_node),
-					      BONSAI_NODE_SIZE, gfp);
-		if (!node)
-			return NULL;
+		sp = bt->pot;
 	}
+
+	node = (union bonsai_node *)sp->free_ptr;
+	sp->free_ptr = (char *)sp->free_ptr + sizeof(union bonsai_node);
+	sp->remaining -= sizeof(union bonsai_node);
 
 	memset(node, 0, sizeof(*node));
 	node->m.node_type = type;
@@ -43,12 +44,36 @@ static union bonsai_node *bonsai_alloc_node(struct bonsai_tree *bt,
 
 int bonsai_init(struct bonsai_tree *bt, unsigned int initial_order, gfp_t gfp)
 {
-	bt->pot = kzalloc_obj(struct scratchpad, gfp);
-	if (!bt->pot)
+	struct scratchpad *sp;
+
+	sp = kzalloc_obj(struct scratchpad, gfp);
+	if (!sp)
 		return -ENOMEM;
 
-	_scratchpad_init(bt->pot, sizeof(union bonsai_node), BONSAI_NODE_SIZE,
-			 initial_order, NULL, gfp);
+	if (initial_order == 0) {
+		/* Sub-page seedling: start with single-node 256-byte kmalloc slab */
+		void *buf = kmalloc(BONSAI_NODE_SIZE, gfp);
+		if (!buf) {
+			kfree(sp);
+			return -ENOMEM;
+		}
+		INIT_LIST_HEAD(&sp->chunks);
+		sp->free_ptr = buf;
+		sp->remaining = BONSAI_NODE_SIZE;
+		sp->static_buf = buf;
+		sp->static_size = BONSAI_NODE_SIZE;
+		sp->elem_size = sizeof(union bonsai_node);
+		sp->align_quantum = BONSAI_NODE_SIZE;
+		sp->gfp = gfp;
+	} else {
+		/* Multi-page compound block */
+		_scratchpad_init(sp, sizeof(union bonsai_node), BONSAI_NODE_SIZE,
+				 initial_order, NULL, gfp);
+		sp->free_ptr = scratchpad_base(sp);
+		sp->remaining = ((size_t)PAGE_SIZE << initial_order) - BONSAI_NODE_SIZE;
+	}
+
+	bt->pot = sp;
 	bt->root_idx = 0;
 	bt->height = 0;
 	bt->pot_order = initial_order;
@@ -64,11 +89,16 @@ void bonsai_destroy(struct bonsai_tree *bt)
 	if (!bt || !bt->pot)
 		return;
 
-	scratchpad_free(bt->pot);
+	if (bt->pot->static_buf)
+		kfree(bt->pot->static_buf);
+	else
+		scratchpad_free(bt->pot);
+
 	kfree(bt->pot);
 	bt->pot = NULL;
 	bt->root_idx = 0;
 	bt->height = 0;
+	bt->pot_order = 0;
 	bt->node_count = 0;
 	bt->entry_count = 0;
 	bt->is_u16 = false;
@@ -80,7 +110,14 @@ void bonsai_reset(struct bonsai_tree *bt)
 	if (!bt || !bt->pot)
 		return;
 
-	scratchpad_reset(bt->pot);
+	if (bt->pot->static_buf) {
+		bt->pot->free_ptr = bt->pot->static_buf;
+		bt->pot->remaining = bt->pot->static_size;
+	} else {
+		scratchpad_reset(bt->pot);
+		bt->pot->free_ptr = scratchpad_base(bt->pot);
+		bt->pot->remaining = ((size_t)PAGE_SIZE << bt->pot_order) - BONSAI_NODE_SIZE;
+	}
 	bt->root_idx = 0;
 	bt->height = 0;
 	bt->node_count = 0;
@@ -91,23 +128,43 @@ EXPORT_SYMBOL_GPL(bonsai_reset);
 
 int bonsai_repot(struct bonsai_tree *bt, unsigned int new_order, gfp_t gfp)
 {
-	struct scratchpad *new_pot;
+	struct scratchpad *sp = bt->pot;
 	size_t used_bytes;
 	void *old_base, *new_base;
-	bool needs_transmute = (!bt->is_u16 && new_order > 4);
 
-	if (!bt->pot)
+	if (!sp)
 		return bonsai_init(bt, new_order, gfp);
+
+	/* 1. Sub-page growth within kmalloc slabs (256 B -> 512 B -> 1K -> 2K -> 4K) */
+	if (sp->static_buf && sp->static_size < PAGE_SIZE) {
+		size_t new_size = sp->static_size * 2;
+		void *new_buf = krealloc(sp->static_buf, new_size, gfp);
+		if (!new_buf)
+			return -ENOMEM;
+
+		sp->static_buf = new_buf;
+		sp->static_size = new_size;
+		sp->free_ptr = (char *)new_buf + bt->node_count * BONSAI_NODE_SIZE;
+		sp->remaining = new_size - bt->node_count * BONSAI_NODE_SIZE;
+		return 0;
+	}
+
+	/* 2. Graduation from slab (4KB) to multi-page, or multi-page expansion */
+	struct scratchpad *new_pot;
+	bool needs_transmute = (!bt->is_u16 && new_order > 4);
+	unsigned int target_order = new_order ?: 1;
+	size_t total_capacity;
 
 	new_pot = kzalloc_obj(struct scratchpad, gfp);
 	if (!new_pot)
 		return -ENOMEM;
 
 	_scratchpad_init(new_pot, sizeof(union bonsai_node), BONSAI_NODE_SIZE,
-			 new_order, NULL, gfp);
+			 target_order, NULL, gfp);
 
-	old_base = scratchpad_base(bt->pot);
+	old_base = scratchpad_base(sp);
 	new_base = scratchpad_base(new_pot);
+	total_capacity = ((size_t)PAGE_SIZE << target_order) - BONSAI_NODE_SIZE;
 
 	if (bt->node_count > 0 && old_base && new_base) {
 		used_bytes = bt->node_count * sizeof(union bonsai_node);
@@ -132,14 +189,20 @@ int bonsai_repot(struct bonsai_tree *bt, unsigned int new_order, gfp_t gfp)
 		}
 
 		new_pot->free_ptr = (char *)new_base + used_bytes;
-		new_pot->remaining -= used_bytes;
+		new_pot->remaining = (total_capacity > used_bytes) ? (total_capacity - used_bytes) : 0;
+	} else {
+		new_pot->free_ptr = new_base;
+		new_pot->remaining = total_capacity;
 	}
 
-	scratchpad_free(bt->pot);
-	kfree(bt->pot);
+	if (sp->static_buf)
+		kfree(sp->static_buf);
+	else
+		scratchpad_free(sp);
 
+	kfree(sp);
 	bt->pot = new_pot;
-	bt->pot_order = new_order;
+	bt->pot_order = target_order;
 	return 0;
 }
 EXPORT_SYMBOL_GPL(bonsai_repot);
@@ -212,7 +275,7 @@ void *bonsai_lookup(const struct bonsai_tree *bt, unsigned long index)
 	if (curr->m.node_type == BONSAI_TYPE_LEAF) {
 		int slot = leaf_find_slot(&curr->l, index);
 
-		if (slot < curr->l.meta.num_pivots && curr->l.pivot[slot] == index)
+		if (slot < curr->l.meta.num_pivots && index <= curr->l.pivot[slot])
 			return curr->l.slot[slot];
 	}
 
@@ -246,96 +309,125 @@ static int leaf_insert(struct bonsai_leaf *leaf, unsigned long index, void *val)
 	return 0;
 }
 
-int bonsai_store(struct bonsai_tree *bt, unsigned long index, void *val, gfp_t gfp)
-{
-	return bonsai_store_range(bt, index, index, val, gfp);
-}
-EXPORT_SYMBOL_GPL(bonsai_store);
-
 int bonsai_store_range(struct bonsai_tree *bt, unsigned long first,
 		       unsigned long last, void *val, gfp_t gfp)
 {
-	union bonsai_node *root, *leaf, *new_leaf, *new_root;
-	u16 leaf_idx, new_leaf_idx, new_root_idx;
-	int ret, split_mid, i;
+	u16 path_idx[8];
+	int path_slot[8];
+	int depth = 0;
+	u16 curr_idx;
+	union bonsai_node *curr, *leaf, *new_leaf;
+	int ret, split_mid, i, d;
+	u16 insert_child_idx;
+	unsigned long insert_pivot;
 
 	if (!bt->root_idx) {
-		root = bonsai_alloc_node(bt, BONSAI_TYPE_LEAF, gfp);
-		if (!root)
+		curr = bonsai_alloc_node(bt, BONSAI_TYPE_LEAF, gfp);
+		if (!curr)
 			return -ENOMEM;
-		root->l.pivot[0] = last;
-		root->l.slot[0] = val;
-		root->l.meta.num_pivots = 1;
-		bt->root_idx = bonsai_node_idx(bt, root);
+		curr->l.pivot[0] = last;
+		curr->l.slot[0] = val;
+		curr->l.meta.num_pivots = 1;
+		bt->root_idx = bonsai_node_idx(bt, curr);
 		bt->height = 1;
 		bt->entry_count = 1;
 		return 0;
 	}
 
-	root = bonsai_node_at(bt, bt->root_idx);
-	if (!root)
+	/* 1. Traverse down to the leaf */
+	curr_idx = bt->root_idx;
+	curr = bonsai_node_at(bt, curr_idx);
+	if (!curr)
 		return -EINVAL;
 
-	/* Height 1 simple leaf insertion */
-	if (bt->height == 1) {
-		ret = leaf_insert(&root->l, last, val);
-		if (ret == 0) {
-			bt->entry_count++;
-			return 0;
+	while (curr->m.node_type == BONSAI_TYPE_BRANCH_8 ||
+	       curr->m.node_type == BONSAI_TYPE_BRANCH_16) {
+		int slot;
+
+		if (curr->m.node_type == BONSAI_TYPE_BRANCH_8) {
+			slot = branch_8_find_child(&curr->b8, last);
+			path_idx[depth] = curr_idx;
+			path_slot[depth] = slot;
+			depth++;
+			curr_idx = curr->b8.child_idx[slot];
+		} else {
+			slot = branch_16_find_child(&curr->b16, last);
+			path_idx[depth] = curr_idx;
+			path_slot[depth] = slot;
+			depth++;
+			curr_idx = curr->b16.child_idx[slot];
 		}
 
-		/* Leaf is full: split root into 2 leaves and create 28-way branch root */
-		new_leaf = bonsai_alloc_node(bt, BONSAI_TYPE_LEAF, gfp);
-		if (!new_leaf)
-			return -ENOMEM;
+		if (!curr_idx)
+			return -EINVAL;
+		curr = bonsai_node_at(bt, curr_idx);
+		if (!curr)
+			return -EINVAL;
+	}
 
-		/* Re-fetch root in case repotting relocated the buffer */
-		root = bonsai_node_at(bt, bt->root_idx);
-		leaf_idx = bt->root_idx;
-		new_leaf_idx = bonsai_node_idx(bt, new_leaf);
+	leaf = curr;
+	ret = leaf_insert(&leaf->l, last, val);
+	if (ret == 0) {
+		bt->entry_count++;
+		return 0;
+	}
 
-		split_mid = root->l.meta.num_pivots / 2;
-		for (i = split_mid; i < root->l.meta.num_pivots; i++) {
-			new_leaf->l.pivot[i - split_mid] = root->l.pivot[i];
-			new_leaf->l.slot[i - split_mid] = root->l.slot[i];
-			root->l.pivot[i] = 0;
-			root->l.slot[i] = NULL;
+	/* 2. Leaf is full: split leaf into 2 leaves */
+	new_leaf = bonsai_alloc_node(bt, BONSAI_TYPE_LEAF, gfp);
+	if (!new_leaf)
+		return -ENOMEM;
+
+	/* Re-fetch after possible repotting */
+	leaf = bonsai_node_at(bt, curr_idx);
+	u16 new_leaf_idx = bonsai_node_idx(bt, new_leaf);
+
+	if (last > leaf->l.pivot[leaf->l.meta.num_pivots - 1]) {
+		/* Append-optimized: keep full leaf, put new entry in new_leaf */
+		new_leaf->l.pivot[0] = last;
+		new_leaf->l.slot[0] = val;
+		new_leaf->l.meta.num_pivots = 1;
+	} else {
+		/* Random insertion: 50/50 midpoint split */
+		split_mid = leaf->l.meta.num_pivots / 2;
+		for (i = split_mid; i < leaf->l.meta.num_pivots; i++) {
+			new_leaf->l.pivot[i - split_mid] = leaf->l.pivot[i];
+			new_leaf->l.slot[i - split_mid] = leaf->l.slot[i];
+			leaf->l.pivot[i] = 0;
+			leaf->l.slot[i] = NULL;
 		}
-		new_leaf->l.meta.num_pivots = root->l.meta.num_pivots - split_mid;
-		root->l.meta.num_pivots = split_mid;
+		new_leaf->l.meta.num_pivots = leaf->l.meta.num_pivots - split_mid;
+		leaf->l.meta.num_pivots = split_mid;
 
-		/* Insert new entry into the appropriate half */
-		if (last <= root->l.pivot[split_mid - 1])
-			leaf_insert(&root->l, last, val);
+		if (last <= leaf->l.pivot[split_mid - 1])
+			leaf_insert(&leaf->l, last, val);
 		else
 			leaf_insert(&new_leaf->l, last, val);
+	}
 
-		/* Allocate new branch root */
+	/* 3. If leaf was root (depth == 0), create a new branch root */
+	if (depth == 0) {
+		union bonsai_node *new_root;
+		u16 new_root_idx;
+
 		new_root = bonsai_alloc_node(bt, bt->is_u16 ? BONSAI_TYPE_BRANCH_16 : BONSAI_TYPE_BRANCH_8, gfp);
 		if (!new_root)
 			return -ENOMEM;
 
-		/* Re-fetch after possible repotting */
-		root = bonsai_node_at(bt, leaf_idx);
+		leaf = bonsai_node_at(bt, curr_idx);
 		new_leaf = bonsai_node_at(bt, new_leaf_idx);
 		new_root_idx = bonsai_node_idx(bt, new_root);
 
 		if (!bt->is_u16) {
-			new_root->b8.pivot[0] = root->l.pivot[root->l.meta.num_pivots - 1];
-			new_root->b8.child_idx[0] = (u8)leaf_idx;
+			new_root->b8.pivot[0] = leaf->l.pivot[leaf->l.meta.num_pivots - 1];
+			new_root->b8.child_idx[0] = (u8)curr_idx;
 			new_root->b8.child_idx[1] = (u8)new_leaf_idx;
 			new_root->b8.meta.num_pivots = 1;
 		} else {
-			new_root->b16.pivot[0] = root->l.pivot[root->l.meta.num_pivots - 1];
-			new_root->b16.child_idx[0] = leaf_idx;
+			new_root->b16.pivot[0] = leaf->l.pivot[leaf->l.meta.num_pivots - 1];
+			new_root->b16.child_idx[0] = curr_idx;
 			new_root->b16.child_idx[1] = new_leaf_idx;
 			new_root->b16.meta.num_pivots = 1;
 		}
-
-		root->l.meta.parent_idx = new_root_idx;
-		root->l.meta.parent_slot = 0;
-		new_leaf->l.meta.parent_idx = new_root_idx;
-		new_leaf->l.meta.parent_slot = 1;
 
 		bt->root_idx = new_root_idx;
 		bt->height = 2;
@@ -343,86 +435,172 @@ int bonsai_store_range(struct bonsai_tree *bt, unsigned long first,
 		return 0;
 	}
 
-	/* Height 2 branch -> leaf insertion */
-	if (bt->height == 2) {
-		int child_slot;
+	/* 4. Propagate splits up the tree */
+	insert_child_idx = new_leaf_idx;
+	leaf = bonsai_node_at(bt, curr_idx);
+	insert_pivot = leaf->l.pivot[leaf->l.meta.num_pivots - 1];
 
-		if (root->m.node_type == BONSAI_TYPE_BRANCH_8)
-			child_slot = branch_8_find_child(&root->b8, last);
-		else
-			child_slot = branch_16_find_child(&root->b16, last);
+	for (d = depth - 1; d >= 0; d--) {
+		u16 node_idx = path_idx[d];
+		int slot = path_slot[d];
+		union bonsai_node *node = bonsai_node_at(bt, node_idx);
+		int max_slots = (node->m.node_type == BONSAI_TYPE_BRANCH_8) ?
+				BONSAI_BRANCH_SLOTS_8 : BONSAI_BRANCH_SLOTS_16;
 
-		leaf_idx = (root->m.node_type == BONSAI_TYPE_BRANCH_8) ?
-			   root->b8.child_idx[child_slot] : root->b16.child_idx[child_slot];
-		leaf = bonsai_node_at(bt, leaf_idx);
-		if (!leaf)
-			return -EINVAL;
-
-		ret = leaf_insert(&leaf->l, last, val);
-		if (ret == 0) {
-			bt->entry_count++;
-			return 0;
-		}
-
-		/* Leaf full: split leaf under branch root */
-		int max_branch_slots = (root->m.node_type == BONSAI_TYPE_BRANCH_8) ?
-				       BONSAI_BRANCH_SLOTS_8 : BONSAI_BRANCH_SLOTS_16;
-
-		if (root->m.num_pivots < max_branch_slots - 1) {
-			new_leaf = bonsai_alloc_node(bt, BONSAI_TYPE_LEAF, gfp);
-			if (!new_leaf)
-				return -ENOMEM;
-
-			/* Re-fetch after possible repotting */
-			root = bonsai_node_at(bt, bt->root_idx);
-			leaf = bonsai_node_at(bt, leaf_idx);
-			new_leaf_idx = bonsai_node_idx(bt, new_leaf);
-
-			split_mid = leaf->l.meta.num_pivots / 2;
-			for (i = split_mid; i < leaf->l.meta.num_pivots; i++) {
-				new_leaf->l.pivot[i - split_mid] = leaf->l.pivot[i];
-				new_leaf->l.slot[i - split_mid] = leaf->l.slot[i];
-				leaf->l.pivot[i] = 0;
-				leaf->l.slot[i] = NULL;
-			}
-			new_leaf->l.meta.num_pivots = leaf->l.meta.num_pivots - split_mid;
-			leaf->l.meta.num_pivots = split_mid;
-
-			if (last <= leaf->l.pivot[split_mid - 1])
-				leaf_insert(&leaf->l, last, val);
-			else
-				leaf_insert(&new_leaf->l, last, val);
-
-			/* Insert new child into branch root */
-			if (root->m.node_type == BONSAI_TYPE_BRANCH_8) {
-				for (i = root->b8.meta.num_pivots; i > child_slot; i--) {
-					root->b8.pivot[i] = root->b8.pivot[i - 1];
-					root->b8.child_idx[i + 1] = root->b8.child_idx[i];
+		if (node->m.num_pivots < max_slots - 1) {
+			/* Node has space: insert and return */
+			if (node->m.node_type == BONSAI_TYPE_BRANCH_8) {
+				for (i = node->b8.meta.num_pivots; i > slot; i--) {
+					node->b8.pivot[i] = node->b8.pivot[i - 1];
+					node->b8.child_idx[i + 1] = node->b8.child_idx[i];
 				}
-				root->b8.pivot[child_slot] = leaf->l.pivot[leaf->l.meta.num_pivots - 1];
-				root->b8.child_idx[child_slot + 1] = (u8)new_leaf_idx;
-				root->b8.meta.num_pivots++;
+				node->b8.pivot[slot] = insert_pivot;
+				node->b8.child_idx[slot + 1] = (u8)insert_child_idx;
+				node->b8.meta.num_pivots++;
 			} else {
-				for (i = root->b16.meta.num_pivots; i > child_slot; i--) {
-					root->b16.pivot[i] = root->b16.pivot[i - 1];
-					root->b16.child_idx[i + 1] = root->b16.child_idx[i];
+				for (i = node->b16.meta.num_pivots; i > slot; i--) {
+					node->b16.pivot[i] = node->b16.pivot[i - 1];
+					node->b16.child_idx[i + 1] = node->b16.child_idx[i];
 				}
-				root->b16.pivot[child_slot] = leaf->l.pivot[leaf->l.meta.num_pivots - 1];
-				root->b16.child_idx[child_slot + 1] = new_leaf_idx;
-				root->b16.meta.num_pivots++;
+				node->b16.pivot[slot] = insert_pivot;
+				node->b16.child_idx[slot + 1] = insert_child_idx;
+				node->b16.meta.num_pivots++;
 			}
-
-			new_leaf->l.meta.parent_idx = bt->root_idx;
-			new_leaf->l.meta.parent_slot = child_slot + 1;
-
 			bt->entry_count++;
 			return 0;
 		}
+
+		/* Node is full: split node into node and new_branch */
+		union bonsai_node *new_branch;
+		u16 new_branch_idx;
+		int old_pivots = node->m.num_pivots;
+		int mid = old_pivots / 2;
+		unsigned long sep_pivot;
+
+		new_branch = bonsai_alloc_node(bt, bt->is_u16 ? BONSAI_TYPE_BRANCH_16 : BONSAI_TYPE_BRANCH_8, gfp);
+		if (!new_branch)
+			return -ENOMEM;
+
+		node = bonsai_node_at(bt, node_idx);
+		new_branch_idx = bonsai_node_idx(bt, new_branch);
+
+		if (!bt->is_u16) {
+			if (slot == old_pivots) {
+				/* Append-optimized branch split */
+				sep_pivot = insert_pivot;
+				new_branch->b8.child_idx[0] = (u8)insert_child_idx;
+				new_branch->b8.meta.num_pivots = 0;
+			} else {
+				sep_pivot = node->b8.pivot[mid];
+				for (i = mid + 1; i < old_pivots; i++) {
+					new_branch->b8.pivot[i - (mid + 1)] = node->b8.pivot[i];
+					node->b8.pivot[i] = 0;
+				}
+				for (i = mid + 1; i <= old_pivots; i++) {
+					new_branch->b8.child_idx[i - (mid + 1)] = node->b8.child_idx[i];
+					node->b8.child_idx[i] = 0;
+				}
+				node->b8.pivot[mid] = 0;
+				new_branch->b8.meta.num_pivots = old_pivots - 1 - mid;
+				node->b8.meta.num_pivots = mid;
+
+				if (slot <= mid) {
+					for (i = node->b8.meta.num_pivots; i > slot; i--) {
+						node->b8.pivot[i] = node->b8.pivot[i - 1];
+						node->b8.child_idx[i + 1] = node->b8.child_idx[i];
+					}
+					node->b8.pivot[slot] = insert_pivot;
+					node->b8.child_idx[slot + 1] = (u8)insert_child_idx;
+					node->b8.meta.num_pivots++;
+				} else {
+					int b_slot = slot - (mid + 1);
+					for (i = new_branch->b8.meta.num_pivots; i > b_slot; i--) {
+						new_branch->b8.pivot[i] = new_branch->b8.pivot[i - 1];
+						new_branch->b8.child_idx[i + 1] = new_branch->b8.child_idx[i];
+					}
+					new_branch->b8.pivot[b_slot] = insert_pivot;
+					new_branch->b8.child_idx[b_slot + 1] = (u8)insert_child_idx;
+					new_branch->b8.meta.num_pivots++;
+				}
+			}
+		} else {
+			if (slot == old_pivots) {
+				/* Append-optimized branch split */
+				sep_pivot = insert_pivot;
+				new_branch->b16.child_idx[0] = insert_child_idx;
+				new_branch->b16.meta.num_pivots = 0;
+			} else {
+				sep_pivot = node->b16.pivot[mid];
+				for (i = mid + 1; i < old_pivots; i++) {
+					new_branch->b16.pivot[i - (mid + 1)] = node->b16.pivot[i];
+					node->b16.pivot[i] = 0;
+				}
+				for (i = mid + 1; i <= old_pivots; i++) {
+					new_branch->b16.child_idx[i - (mid + 1)] = node->b16.child_idx[i];
+					node->b16.child_idx[i] = 0;
+				}
+				node->b16.pivot[mid] = 0;
+				new_branch->b16.meta.num_pivots = old_pivots - 1 - mid;
+				node->b16.meta.num_pivots = mid;
+
+				if (slot <= mid) {
+					for (i = node->b16.meta.num_pivots; i > slot; i--) {
+						node->b16.pivot[i] = node->b16.pivot[i - 1];
+						node->b16.child_idx[i + 1] = node->b16.child_idx[i];
+					}
+					node->b16.pivot[slot] = insert_pivot;
+					node->b16.child_idx[slot + 1] = insert_child_idx;
+					node->b16.meta.num_pivots++;
+				} else {
+					int b_slot = slot - (mid + 1);
+					for (i = new_branch->b16.meta.num_pivots; i > b_slot; i--) {
+						new_branch->b16.pivot[i] = new_branch->b16.pivot[i - 1];
+						new_branch->b16.child_idx[i + 1] = new_branch->b16.child_idx[i];
+					}
+					new_branch->b16.pivot[b_slot] = insert_pivot;
+					new_branch->b16.child_idx[b_slot + 1] = insert_child_idx;
+					new_branch->b16.meta.num_pivots++;
+				}
+			}
+		}
+
+		insert_child_idx = new_branch_idx;
+		insert_pivot = sep_pivot;
 	}
 
-	return -EOPNOTSUPP;
+	/* Split reached above the root: allocate new root */
+	union bonsai_node *new_root;
+	u16 new_root_idx;
+
+	new_root = bonsai_alloc_node(bt, bt->is_u16 ? BONSAI_TYPE_BRANCH_16 : BONSAI_TYPE_BRANCH_8, gfp);
+	if (!new_root)
+		return -ENOMEM;
+
+	new_root_idx = bonsai_node_idx(bt, new_root);
+	if (!bt->is_u16) {
+		new_root->b8.pivot[0] = insert_pivot;
+		new_root->b8.child_idx[0] = (u8)bt->root_idx;
+		new_root->b8.child_idx[1] = (u8)insert_child_idx;
+		new_root->b8.meta.num_pivots = 1;
+	} else {
+		new_root->b16.pivot[0] = insert_pivot;
+		new_root->b16.child_idx[0] = bt->root_idx;
+		new_root->b16.child_idx[1] = insert_child_idx;
+		new_root->b16.meta.num_pivots = 1;
+	}
+
+	bt->root_idx = new_root_idx;
+	bt->height++;
+	bt->entry_count++;
+	return 0;
 }
 EXPORT_SYMBOL_GPL(bonsai_store_range);
+
+int bonsai_store(struct bonsai_tree *bt, unsigned long index, void *val, gfp_t gfp)
+{
+	return bonsai_store_range(bt, index, index, val, gfp);
+}
+EXPORT_SYMBOL_GPL(bonsai_store);
 
 int bonsai_to_maple(const struct bonsai_tree *bt, struct maple_tree *mt, gfp_t gfp)
 {
