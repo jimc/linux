@@ -679,7 +679,7 @@ function GOLDEN_RECORDS {
 #K= f49de2063a545721cf5e959efc160836 FT_multi_query.2
 #K= 2ff49f0c4d18ec99bcb1c30840fe8afc FT_multi_query.3
 #K= 9a1b13c32a15363dcf93913308edeea5 FT_multi_query.4
-#K= 68b329da9893e34099c7d8ad5cb9c940 FT_comma_terminators.1
+#K= 3dbf634bbf0364431b3c99f6a294eb14 FT_comma_terminators.1
 #K= 99985cce918eb5108ecb3658249f6bc7 FT_comma_terminators.2
 #K= 68b329da9893e34099c7d8ad5cb9c940 FT_comma_terminators.3
 #K= 85f93d30f4006c99a806639970b92f20 FT_comma_terminators.4
