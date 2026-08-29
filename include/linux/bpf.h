@@ -1797,6 +1797,7 @@ struct bpf_prog_aux {
 	const char *attach_func_name;
 	struct bpf_prog **func;
 	struct bonsai_tree bonsai_funcs;
+	struct scratchpad *jit_scratch;
 	struct bpf_prog_aux *main_prog_aux;
 	void *jit_data; /* JIT specific data. arch dependent */
 	struct bpf_jit_poke_descriptor *poke_tab;

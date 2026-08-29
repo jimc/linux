@@ -1080,6 +1080,13 @@ static int jit_subprogs(struct bpf_verifier_env *env)
 	if (!func)
 		goto out_undo_insn;
 
+	if (env->subprog_cnt > 1) {
+		prog->aux->jit_scratch = kzalloc_obj(struct scratchpad, GFP_KERNEL);
+		if (prog->aux->jit_scratch)
+			_scratchpad_init(prog->aux->jit_scratch, sizeof(int), sizeof(int),
+					 SCRATCH_16K_ORDER, NULL, GFP_KERNEL);
+	}
+
 	for (i = 0; i < env->subprog_cnt; i++) {
 		subprog_start = subprog_end;
 		subprog_end = env->subprog_info[i + 1].start;
@@ -1111,6 +1118,7 @@ static int jit_subprogs(struct bpf_verifier_env *env)
 		func[i]->aux->poke_tab = prog->aux->poke_tab;
 		func[i]->aux->size_poke_tab = prog->aux->size_poke_tab;
 		func[i]->aux->main_prog_aux = prog->aux;
+		func[i]->aux->jit_scratch = prog->aux->jit_scratch;
 
 		for (j = 0; j < prog->aux->size_poke_tab; j++) {
 			struct bpf_jit_poke_descriptor *poke;
@@ -1277,6 +1285,12 @@ static int jit_subprogs(struct bpf_verifier_env *env)
 		}
 	}
 
+	if (prog->aux->jit_scratch) {
+		scratchpad_free(prog->aux->jit_scratch);
+		kfree(prog->aux->jit_scratch);
+		prog->aux->jit_scratch = NULL;
+	}
+
 	bpf_prog_jit_attempt_done(prog);
 	return 0;
 out_free:
@@ -1299,6 +1313,11 @@ out_free:
 		bpf_jit_free(func[i]);
 	}
 	kfree(func);
+	if (prog->aux->jit_scratch) {
+		scratchpad_free(prog->aux->jit_scratch);
+		kfree(prog->aux->jit_scratch);
+		prog->aux->jit_scratch = NULL;
+	}
 out_undo_insn:
 	bpf_prog_jit_attempt_done(prog);
 	return err;

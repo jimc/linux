@@ -3882,7 +3882,8 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_verifier_env *env, struct bpf_pr
 		jit_data = kzalloc_obj(*jit_data);
 		if (!jit_data)
 			return prog;
-		scratchpad_init(&jit_data->sp, jit, GFP_KERNEL);
+		if (!prog->aux->jit_scratch)
+			scratchpad_init(&jit_data->sp, jit, GFP_KERNEL);
 		prog->aux->jit_data = jit_data;
 	}
 	priv_stack_ptr = prog->aux->priv_stack_ptr;
@@ -3912,7 +3913,10 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_verifier_env *env, struct bpf_pr
 		padding = true;
 		goto skip_init_addrs;
 	}
-	addrs = scratchpad_alloc_objs(int, &jit_data->sp, prog->len + 1);
+	if (prog->aux->jit_scratch)
+		addrs = scratchpad_alloc_objs(int, prog->aux->jit_scratch, prog->len + 1);
+	else
+		addrs = scratchpad_alloc_objs(int, &jit_data->sp, prog->len + 1);
 	if (!addrs)
 		goto out_addrs;
 
@@ -4037,8 +4041,12 @@ out_image:
 		if (image)
 			bpf_prog_fill_jited_linfo(prog, addrs + 1);
 out_addrs:
-		scratchpad_free_objs(&jit_data->sp, addrs);
-		scratchpad_free(&jit_data->sp);
+		if (prog->aux->jit_scratch) {
+			scratchpad_free_objs(prog->aux->jit_scratch, addrs);
+		} else {
+			scratchpad_free_objs(&jit_data->sp, addrs);
+			scratchpad_free(&jit_data->sp);
+		}
 		if (!image && priv_stack_ptr) {
 			free_percpu(priv_stack_ptr);
 			prog->aux->priv_stack_ptr = NULL;
@@ -4095,8 +4103,12 @@ void bpf_jit_free(struct bpf_prog *prog)
 		if (jit_data) {
 			bpf_jit_binary_pack_finalize(jit_data->header,
 						     jit_data->rw_header);
-			scratchpad_free_objs(&jit_data->sp, jit_data->addrs);
-			scratchpad_free(&jit_data->sp);
+			if (prog->aux->jit_scratch) {
+				scratchpad_free_objs(prog->aux->jit_scratch, jit_data->addrs);
+			} else {
+				scratchpad_free_objs(&jit_data->sp, jit_data->addrs);
+				scratchpad_free(&jit_data->sp);
+			}
 			kfree(jit_data);
 		}
 		prog->bpf_func = (void *)prog->bpf_func - cfi_get_offset();
