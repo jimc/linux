@@ -201,9 +201,6 @@ zstd -19 -f "$PAYLOAD_RAW" -o "$OUTPUT"
 echo "Generated $OUTPUT ($(stat -c%s "$OUTPUT") bytes)"
 
 if [[ "$STRIP" -eq 1 ]]; then
-    objcopy --remove-section=__dyndbg_sites \
-            --remove-section=__dyndbg_strings_mod \
-            --remove-section=__dyndbg_strings_file \
-            "$TARGET"
-    echo "Stripped dyndbg site sections from $TARGET"
+    objcopy --remove-section=__dyndbg_sites "$TARGET"
+    echo "Stripped __dyndbg_sites from $TARGET"
 fi

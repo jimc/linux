@@ -50,10 +50,6 @@ extern struct _ddebug __start___dyndbg_descs[];
 extern struct _ddebug __stop___dyndbg_descs[];
 extern const struct _ddebug_site __start___dyndbg_sites[];
 extern const struct _ddebug_site __stop___dyndbg_sites[];
-extern const char __start___dyndbg_strings_mod[];
-extern const char __stop___dyndbg_strings_mod[];
-extern const char __start___dyndbg_strings_file[];
-extern const char __stop___dyndbg_strings_file[];
 extern struct ddebug_class_map __start___dyndbg_class_maps[];
 extern struct ddebug_class_map __stop___dyndbg_class_maps[];
 extern struct ddebug_class_user __start___dyndbg_class_users[];
@@ -2691,14 +2687,10 @@ static int __init dynamic_debug_init(void)
 	struct _ddebug_info di = {
 		.descs.start = __start___dyndbg_descs,
 		.sites.start = __start___dyndbg_sites,
-		.strings_mod.start = __start___dyndbg_strings_mod,
-		.strings_file.start = __start___dyndbg_strings_file,
 		.maps.start  = __start___dyndbg_class_maps,
 		.users.start = __start___dyndbg_class_users,
 		.descs.len = __stop___dyndbg_descs - __start___dyndbg_descs,
 		.sites.len = __stop___dyndbg_sites - __start___dyndbg_sites,
-		.strings_mod.len = __stop___dyndbg_strings_mod - __start___dyndbg_strings_mod,
-		.strings_file.len = __stop___dyndbg_strings_file - __start___dyndbg_strings_file,
 		.maps.len  = __stop___dyndbg_class_maps - __start___dyndbg_class_maps,
 		.users.len = __stop___dyndbg_class_users - __start___dyndbg_class_users,
 	};

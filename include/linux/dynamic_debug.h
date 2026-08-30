@@ -136,11 +136,6 @@ struct _ddebug_sites {
 	const struct _ddebug_site *start;
 } __packed;
 
-struct _ddebug_strings {
-	const char *start;
-	unsigned int len;
-} __packed;
-
 struct _ddebug_class_maps {
 	struct ddebug_class_map *start;
 	unsigned int len;
@@ -156,8 +151,6 @@ struct _ddebug_info {
 	/* tetris packing */
 	struct _ddebug_descs descs;
 	struct _ddebug_sites sites;
-	struct _ddebug_strings strings_mod;
-	struct _ddebug_strings strings_file;
 	struct _ddebug_class_maps maps;
 	struct _ddebug_class_users users;
 } __aligned(8);
@@ -389,13 +382,11 @@ void __dynamic_ibdev_dbg(struct _ddebug *descriptor,
 }
 
 #define DEFINE_DYNAMIC_DEBUG_METADATA_CLS(name, cls, fmt, ...)	\
-	static const char __section("__dyndbg_strings_mod") name ##_mod[] = DDEBUG_MODNAME; \
-	static const char __section("__dyndbg_strings_file") name ##_file[] = __FILE__; \
 	static const struct _ddebug_site  __aligned(8) __used	\
 	__section("__dyndbg_sites") name ##_site = {		\
-		._modname = name ##_mod,			\
+		._modname = DDEBUG_MODNAME,			\
 		._function = __func__,				\
-		._filename = name ##_file,			\
+		._filename = __FILE__,				\
 	};							\
 	static struct _ddebug  __aligned(8) __used		\
 	__section("__dyndbg_descs") name = {			\

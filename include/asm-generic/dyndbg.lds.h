@@ -11,23 +11,15 @@
 
 #define DYNDBG_RO_SECTIONS()						\
 	__start___dyndbg_sites = .;					\
-	__stop___dyndbg_sites = .;					\
-	__start___dyndbg_strings_mod = .;				\
-	__stop___dyndbg_strings_mod = .;				\
-	__start___dyndbg_strings_file = .;				\
-	__stop___dyndbg_strings_file = .;
+	__stop___dyndbg_sites = .;
 
 #define DYNDBG_DISCARDS							\
-	*(__dyndbg_sites)						\
-	*(__dyndbg_strings_mod)						\
-	*(__dyndbg_strings_file)
+	*(__dyndbg_sites)
 #else
 #define DYNDBG_SECTIONS()						\
 	BOUNDED_SECTION_BY(__dyndbg_descs, ___dyndbg_descs)		\
 	BOUNDED_SECTION_BY(__dyndbg_class_maps, ___dyndbg_class_maps)	\
-	BOUNDED_SECTION_BY(__dyndbg_class_users, ___dyndbg_class_users)	\
-	BOUNDED_SECTION_BY(__dyndbg_strings_mod, ___dyndbg_strings_mod)	\
-	BOUNDED_SECTION_BY(__dyndbg_strings_file, ___dyndbg_strings_file)
+	BOUNDED_SECTION_BY(__dyndbg_class_users, ___dyndbg_class_users)
 
 #define DYNDBG_RO_SECTIONS()						\
 	BOUNDED_SECTION_BY(__dyndbg_sites, ___dyndbg_sites)
@@ -44,12 +36,6 @@
 	}								\
 	__dyndbg_class_users 0 : ALIGN(8) {				\
 		KEEP(*(__dyndbg_class_users))				\
-	}								\
-	__dyndbg_strings_mod 0 : ALIGN(8) {				\
-		KEEP(*(__dyndbg_strings_mod))				\
-	}								\
-	__dyndbg_strings_file 0 : ALIGN(8) {				\
-		KEEP(*(__dyndbg_strings_file))				\
 	}
 
 #define MOD_DYNDBG_RO_SECTIONS()					\
