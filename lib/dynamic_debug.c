@@ -822,6 +822,8 @@ static inline bool str_has_suffix(const char *str, const char *suffix)
 	return str_len >= suffix_len && !strcmp(str + str_len - suffix_len, suffix);
 }
 
+static char *ddebug_pending_firmware;
+
 static int ddebug_load_firmware_metadata(const char *name)
 {
 	const struct firmware *fw;
@@ -829,6 +831,11 @@ static int ddebug_load_firmware_metadata(const char *name)
 
 	ret = request_firmware_direct(&fw, name, NULL);
 	if (ret) {
+		if (system_state < SYSTEM_RUNNING && !ddebug_pending_firmware) {
+			ddebug_pending_firmware = kstrdup(name, GFP_KERNEL);
+			vpr_info("deferring site metadata firmware '%s' until filesystems mount\n", name);
+			return 0;
+		}
 		pr_err("failed to load site metadata firmware '%s': %d\n", name, ret);
 		return ret;
 	}
@@ -837,6 +844,18 @@ static int ddebug_load_firmware_metadata(const char *name)
 	release_firmware(fw);
 	return ret;
 }
+
+static int __init dynamic_debug_late_firmware(void)
+{
+	if (ddebug_pending_firmware) {
+		vpr_info("loading deferred site metadata firmware '%s'\n", ddebug_pending_firmware);
+		ddebug_load_firmware_metadata(ddebug_pending_firmware);
+		kfree(ddebug_pending_firmware);
+		ddebug_pending_firmware = NULL;
+	}
+	return 0;
+}
+late_initcall_sync(dynamic_debug_late_firmware);
 
 static int ddebug_exec_query(char *query_string, const char *modname)
 {
