@@ -121,7 +121,7 @@ static unsigned long dd_builtin_compressed_len;
 
 static inline struct bonsai_tree *ddebug_get_site_map(struct ddebug_table *dt)
 {
-	return dt && dt->site_map.pot ? &dt->site_map : &dd_builtin_site_map;
+	return dt && dt->site_map.num_segments ? &dt->site_map : &dd_builtin_site_map;
 }
 
 #define DD_KEY_ALIGN_MASK   7UL
@@ -1925,11 +1925,8 @@ static void ddebug_condense_sites(struct _ddebug_info *di, struct bonsai_tree *b
 	if (WARN_ON(di->descs.len != di->sites.len))
 		return;
 
-	if (!bt->pot) {
-		unsigned int needed_nodes = (len * 3) / 16 + 4;
-		size_t needed_bytes = needed_nodes * sizeof(union bonsai_node);
-		unsigned int order = (needed_bytes > PAGE_SIZE) ? get_order(needed_bytes) : 0;
-		bonsai_init(bt, order, GFP_KERNEL);
+	if (!bt->num_segments) {
+		bonsai_init(bt, 0, GFP_KERNEL);
 	}
 
 	/* 1. Consolidate and insert Module ranges */
@@ -2141,7 +2138,7 @@ static void ddebug_table_free(struct ddebug_table *dt)
  */
 static void ddebug_module_sites_clear(struct ddebug_table *dt)
 {
-	if (!dt->site_map.pot)
+	if (!dt->site_map.num_segments)
 		return; /* Built-in modules share the global tree */
 
 	v2pr_info("clearing %3d debugs of removed module %s\n",
@@ -2339,11 +2336,9 @@ static void ddebug_prefix_range(const struct _ddebug *desc,
 
 static inline unsigned long bonsai_shrinker_cost(const struct bonsai_tree *bt)
 {
-	if (!bt || !bt->pot)
+	if (!bt || !bt->num_segments)
 		return 0;
-	if (bt->pot->static_buf)
-		return 1;
-	return (1 << bt->pot_order);
+	return bt->num_segments * (BONSAI_SEG_SIZE / PAGE_SIZE);
 }
 
 static unsigned long ddebug_shrinker_count(struct shrinker *shrinker,
@@ -2353,11 +2348,11 @@ static unsigned long ddebug_shrinker_count(struct shrinker *shrinker,
 	struct ddebug_table *dt;
 
 	mutex_lock(&ddebug_lock);
-	if (dd_builtin_site_map.pot)
+	if (dd_builtin_site_map.num_segments)
 		count += bonsai_shrinker_cost(&dd_builtin_site_map);
 
 	list_for_each_entry(dt, &ddebug_tables, link) {
-		if (dt->site_map.pot)
+		if (dt->site_map.num_segments)
 			count += bonsai_shrinker_cost(&dt->site_map);
 	}
 	if (!mtree_empty(&pr_prefixes))
@@ -2376,14 +2371,14 @@ static unsigned long ddebug_shrinker_scan(struct shrinker *shrinker,
 	mutex_lock(&ddebug_lock);
 
 	/* 1. Free built-in site map */
-	if (dd_builtin_site_map.pot) {
+	if (dd_builtin_site_map.num_segments) {
 		freed += bonsai_shrinker_cost(&dd_builtin_site_map);
 		bonsai_destroy(&dd_builtin_site_map);
 	}
 
 	/* 2. Free module site maps */
 	list_for_each_entry(dt, &ddebug_tables, link) {
-		if (dt->site_map.pot) {
+		if (dt->site_map.num_segments) {
 			freed += bonsai_shrinker_cost(&dt->site_map);
 			bonsai_destroy(&dt->site_map);
 		}
@@ -2518,9 +2513,10 @@ static int __init dynamic_debug_init(void)
 		 i, mod_ct, (int)((mod_ct * sizeof(struct ddebug_table)) >> 10),
 		 (int)((i * sizeof(struct _ddebug)) >> 10),
 		 (int)((i * sizeof(struct _ddebug_site)) >> 10));
-	vpr_info("builtin site map: %lu entries, %u nodes, height %u, pot_order %u\n",
+	vpr_info("builtin site map: %lu entries, %u nodes, height %u, segments %u (%u KiB)\n",
 		 dd_builtin_site_map.entry_count, dd_builtin_site_map.node_count,
-		 dd_builtin_site_map.height, dd_builtin_site_map.pot_order);
+		 dd_builtin_site_map.height, dd_builtin_site_map.num_segments,
+		 (unsigned int)(dd_builtin_site_map.num_segments * (BONSAI_SEG_SIZE >> 10)));
 
 	if (di.maps.len)
 		v2pr_info("  %d builtin ddebug class-maps\n", di.maps.len);
