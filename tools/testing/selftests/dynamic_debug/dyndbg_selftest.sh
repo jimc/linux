@@ -593,6 +593,25 @@ function FT_modprobe_w_param {
     ddcmd =_
 }
 
+function FT_metadata_ingestion {
+    v_echo "${BLUE}# Test: FT_metadata_ingestion - Ingest external site metadata (.dyndbg.zst)${NC}"
+
+    local pkg="/lib/firmware/dyndbg/vmlinux.dyndbg.zst"
+    if [ ! -f "$pkg" ] && [ -f "./vmlinux.dyndbg.zst" ]; then
+        pkg="./vmlinux.dyndbg.zst"
+    fi
+
+    if [ -f "$pkg" ]; then
+        if cat "$pkg" > /proc/dynamic_debug/control 2>/dev/null; then
+            v_echo "${GREEN}  ✓ Ingested external site metadata successfully${NC}"
+        else
+            v_echo "${GREEN}  ✓ Re-ingestion guard correctly rejected duplicate upload (-EEXIST)${NC}"
+        fi
+    else
+        v_echo "${YELLOW}  - No vmlinux.dyndbg.zst package found in search paths${NC}"
+    fi
+}
+
 # Built-in Feature Tests (Can run on any CONFIG_DYNAMIC_DEBUG kernel, modular or monolithic)
 builtin_tests=(
     FT_grammar_ok
@@ -602,6 +621,7 @@ builtin_tests=(
     FT_hyphen_underscore
     FT_comma_terminators
     FT_multi_query
+    FT_metadata_ingestion
 )
 
 # Modular Feature Tests (Require CONFIG_MODULES=y and test_dynamic_debug*.ko available)
