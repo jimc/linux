@@ -614,6 +614,7 @@ function FT_metadata_ingestion {
 
 # Built-in Feature Tests (Can run on any CONFIG_DYNAMIC_DEBUG kernel, modular or monolithic)
 builtin_tests=(
+    FT_metadata_ingestion
     FT_grammar_ok
     FT_grammar_errs
     FT_basic_queries
@@ -621,7 +622,6 @@ builtin_tests=(
     FT_hyphen_underscore
     FT_comma_terminators
     FT_multi_query
-    FT_metadata_ingestion
 )
 
 # Modular Feature Tests (Require CONFIG_MODULES=y and test_dynamic_debug*.ko available)
