@@ -42,6 +42,7 @@
 #include <linux/netdevice.h>
 #include <linux/zstd.h>
 #include <linux/vmalloc.h>
+#include <linux/firmware.h>
 
 #include <rdma/ib_verbs.h>
 
@@ -155,8 +156,6 @@ static void ddebug_prefix_range(const struct _ddebug *desc,
 				struct _dd_prefix_key_range *range);
 
 static int ddebug_reconstruct_site_map(struct ddebug_table *dt);
-static void ddebug_condense_sites(struct _ddebug_info *di,
-				  struct bonsai_tree *bt);
 
 #define prefix_flags(flags)  (flags & _DPRINTK_FLAGS_INCL_LOOKUP)
 
@@ -388,12 +387,20 @@ static bool ddebug_match_desc(const struct ddebug_query *query,
 {
 	struct ddebug_class_map *class_map;
 	struct ddebug_table *dt = container_of(di, struct ddebug_table, info);
-	const char *dp_filename = NULL, *dp_function = NULL;
+	const char *dp_modname = NULL, *dp_filename = NULL, *dp_function = NULL;
 
 	/* get site vals needed to match this query */
-	ddebug_resolve_site(ddebug_get_site_map(dt), dp, NULL,
+	ddebug_resolve_site(ddebug_get_site_map(dt), dp,
+			    (query->module && !strcmp(di->mod_name, "vmlinux")) ? &dp_modname : NULL,
 			    query->filename ? &dp_filename : NULL,
 			    query->function ? &dp_function : NULL);
+
+	/* match against module for stripped fallback tables */
+	if (query->module && !strcmp(di->mod_name, "vmlinux") &&
+	    (!dp_modname ||
+	     (!match_wildcard_hyphen(query->module, dp_modname) &&
+	      !match_wildcard_hyphen(query->module, kbasename(dp_modname)))))
+		return false;
 
 	/* match against the source filename */
 	if (query->filename &&
@@ -488,6 +495,7 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 
 		/* match against the module name */
 		if (query->module &&
+		    strcmp(di->mod_name, "vmlinux") != 0 &&
 		    !match_wildcard_hyphen(query->module, di->mod_name) &&
 		    !match_wildcard_hyphen(query->module, kbasename(di->mod_name)))
 			continue;
@@ -804,6 +812,32 @@ static int ddebug_parse_flags(const char *str, struct flag_settings *modifiers)
 	return 0;
 }
 
+static int ddebug_load_zstd_metadata(const void *src, size_t src_len);
+
+static inline bool str_has_suffix(const char *str, const char *suffix)
+{
+	size_t str_len = strlen(str);
+	size_t suffix_len = strlen(suffix);
+
+	return str_len >= suffix_len && !strcmp(str + str_len - suffix_len, suffix);
+}
+
+static int ddebug_load_firmware_metadata(const char *name)
+{
+	const struct firmware *fw;
+	int ret;
+
+	ret = request_firmware_direct(&fw, name, NULL);
+	if (ret) {
+		pr_err("failed to load site metadata firmware '%s': %d\n", name, ret);
+		return ret;
+	}
+
+	ret = ddebug_load_zstd_metadata(fw->data, fw->size);
+	release_firmware(fw);
+	return ret;
+}
+
 static int ddebug_exec_query(char *query_string, const char *modname)
 {
 	struct flag_settings modifiers = {};
@@ -817,6 +851,11 @@ static int ddebug_exec_query(char *query_string, const char *modname)
 		pr_err("tokenize failed\n");
 		return -EINVAL;
 	}
+
+	/* Check for standalone metadata load directive: ends in .zst or .dyndbg */
+	if (nwords == 1 && (str_has_suffix(words[0], ".zst") || str_has_suffix(words[0], ".dyndbg")))
+		return ddebug_load_firmware_metadata(words[0]);
+
 	/* check flags 1st (last arg) so query is pairs of spec,val */
 	if (ddebug_parse_flags(words[nwords-1], &modifiers)) {
 		pr_err("flags parse failed\n");
@@ -1299,14 +1338,34 @@ static void reset_ddebug_call_count(void)
  * command text from userspace, parses and executes it.
  */
 #define USER_BUF_PAGE 4096
+static int ddebug_load_zstd_metadata(const void *src, size_t src_len);
+
 static ssize_t ddebug_proc_write(struct file *file, const char __user *ubuf,
 				  size_t len, loff_t *offp)
 {
+	u32 magic;
 	char *tmpbuf;
 	int ret;
 
 	if (len == 0)
 		return 0;
+
+	/* Detect binary ZSTD metadata stream */
+	if (len >= sizeof(magic) &&
+	    !copy_from_user(&magic, ubuf, sizeof(magic)) &&
+	    magic == ZSTD_MAGICNUMBER) {
+		void *zbuf = vmemdup_user(ubuf, len);
+		if (IS_ERR(zbuf))
+			return PTR_ERR(zbuf);
+
+		ret = ddebug_load_zstd_metadata(zbuf, len);
+		kvfree(zbuf);
+		if (ret < 0)
+			return ret;
+		*offp += len;
+		return len;
+	}
+
 	if (len > USER_BUF_PAGE - 1) {
 		pr_warn("expected <%d bytes into control\n", USER_BUF_PAGE);
 		return -E2BIG;
@@ -1474,7 +1533,7 @@ static int ddebug_proc_show(struct seq_file *m, void *p)
 	struct ddebug_iter *iter = m->private;
 	struct _ddebug *dp = p;
 	struct flagsbuf flags;
-	char const *class, *filename, *function;
+	char const *class, *filename, *function, *modname;
 
 	if (p == SEQ_START_TOKEN) {
 		seq_puts(m,
@@ -1488,11 +1547,14 @@ static int ddebug_proc_show(struct seq_file *m, void *p)
 		return 0;
 	}
 
-	ddebug_resolve_site(ddebug_get_site_map(iter->table), dp, NULL, &filename, &function);
+	modname = NULL;
+	ddebug_resolve_site(ddebug_get_site_map(iter->table), dp, &modname, &filename, &function);
+	if (!modname)
+		modname = iter->table->info.mod_name;
 
 	seq_printf(m, "%s:%u [%s]%s =%s \"",
 		   trim_prefix(filename), dp->lineno,
-		   iter->table->info.mod_name, function,
+		   modname, function,
 		   ddebug_describe_flags(dp->flags, &flags));
 	seq_escape_str(m, dp->format, ESCAPE_SPACE, "\t\r\n\"");
 	seq_putc(m, '"');
@@ -1762,96 +1824,166 @@ static const ZSTD_customMem ddebug_zstd_mem = {
 	.opaque = NULL,
 };
 
-static int ddebug_compress_sites(const char *name, const struct _ddebug_site *sites, unsigned int count,
-				void **out_buf, unsigned long *out_len)
+#define DDEBUG_META_MAGIC 0x44594E44 /* 'DYND' */
+#define DDEBUG_META_VERSION 2
+#define ZSTD_MAGICNUMBER  0xFD2FB528
+
+struct _ddebug_metadata_header {
+	u32 magic;          /* DDEBUG_META_MAGIC */
+	u16 version;        /* DDEBUG_META_VERSION (2) */
+	u16 flags;          /* reserved / flags */
+	u32 desc_count;     /* Total descriptors represented */
+	u32 interval_count; /* Number of condensed interval records */
+	u32 strings_len;    /* Byte size of string pool */
+	u8  build_id[20];   /* Optional ELF .note.gnu.build-id */
+	u8  reserved[8];    /* Alignment padding to 48 bytes */
+};
+
+struct _ddebug_interval_record {
+	u16 start_idx;      /* 0-indexed descriptor start */
+	u16 end_idx;        /* 0-indexed descriptor end (inclusive) */
+	u8  tag;            /* DD_TAG_MOD (0), DD_TAG_FILE (1), DD_TAG_FUNC (2) */
+	u8  reserved;
+	u32 string_offset;  /* Byte offset into string pool */
+};
+
+struct ddebug_string_pool {
+	char *buf;
+	unsigned int len;
+	unsigned int cap;
+};
+
+static unsigned int ddebug_pool_add_string(struct ddebug_string_pool *pool, const char *str)
 {
-	unsigned long src_len = count * sizeof(struct _ddebug_site);
-	unsigned long max_dst_len = ZSTD_compressBound(src_len);
-	ZSTD_CCtx *cctx;
-	void *dst;
-	size_t clen;
+	unsigned int offset, slen;
 
-	if (!count) {
-		*out_buf = NULL;
-		*out_len = 0;
-		return 0;
+	if (!str)
+		str = "";
+	slen = strlen(str) + 1;
+
+	/* Simple deduplication scan */
+	for (offset = 0; offset < pool->len; ) {
+		if (strcmp(pool->buf + offset, str) == 0)
+			return offset;
+		offset += strlen(pool->buf + offset) + 1;
 	}
 
-	cctx = ZSTD_createCCtx_advanced(ddebug_zstd_mem);
-	if (!cctx)
-		return -ENOMEM;
-
-	dst = kvmalloc(max_dst_len, GFP_KERNEL);
-	if (!dst) {
-		ZSTD_freeCCtx(cctx);
-		return -ENOMEM;
+	if (pool->len + slen > pool->cap) {
+		unsigned int new_cap = max(pool->cap * 2, pool->len + slen + 4096);
+		char *new_buf = kvmalloc(new_cap, GFP_KERNEL);
+		if (!new_buf)
+			return 0;
+		if (pool->buf) {
+			memcpy(new_buf, pool->buf, pool->len);
+			kvfree(pool->buf);
+		}
+		pool->buf = new_buf;
+		pool->cap = new_cap;
 	}
 
-	clen = ZSTD_compressCCtx(cctx, dst, max_dst_len, sites, src_len, 3);
-	ZSTD_freeCCtx(cctx);
-
-	if (ZSTD_isError(clen)) {
-		kvfree(dst);
-		return -EINVAL;
-	}
-
-	*out_len = clen;
-	/* Reallocate to exact size to save memory */
-	*out_buf = kvmalloc(clen, GFP_KERNEL);
-	if (!*out_buf) {
-		kvfree(dst);
-		return -ENOMEM;
-	}
-	memcpy(*out_buf, dst, clen);
-	kvfree(dst);
-
-	v3pr_info("compressed %s sites: %u records, %lu bytes -> %zu bytes (%lu%% savings)\n",
-		  name, count, src_len, clen,
-		  src_len ? 100 - (clen * 100 / src_len) : 0);
-	return 0;
+	offset = pool->len;
+	memcpy(pool->buf + offset, str, slen);
+	pool->len += slen;
+	return offset;
 }
 
-static int ddebug_decompress_sites(void *src, unsigned long src_len,
-				   struct _ddebug_site **out_sites, unsigned int count)
+static int ddebug_hydrate_intervals(const void *src, size_t src_len,
+				    struct _ddebug *descs, unsigned int desc_count,
+				    struct bonsai_tree *bt)
 {
-	unsigned long dst_len = count * sizeof(struct _ddebug_site);
-	struct _ddebug_site *dst;
+	unsigned long long uncomp_sz;
+	struct _ddebug_metadata_header *hdr;
+	const struct _ddebug_interval_record *intervals;
+	const char *strings_base;
+	char *permanent_strings = NULL;
 	ZSTD_DCtx *dctx;
+	void *uncomp_buf;
 	size_t dlen;
+	unsigned int i;
 
-	if (!count || !src) {
-		*out_sites = NULL;
-		return 0;
-	}
+	if (src_len < 4)
+		return -EINVAL;
+
+	uncomp_sz = ZSTD_getFrameContentSize(src, src_len);
+	if (uncomp_sz == ZSTD_CONTENTSIZE_UNKNOWN || uncomp_sz == ZSTD_CONTENTSIZE_ERROR)
+		return -EINVAL;
+	if (uncomp_sz < sizeof(*hdr))
+		return -EINVAL;
 
 	dctx = ZSTD_createDCtx_advanced(ddebug_zstd_mem);
 	if (!dctx)
 		return -ENOMEM;
 
-	dst = kvmalloc(dst_len, GFP_KERNEL);
-	if (!dst) {
+	uncomp_buf = kvmalloc(uncomp_sz, GFP_KERNEL);
+	if (!uncomp_buf) {
 		ZSTD_freeDCtx(dctx);
 		return -ENOMEM;
 	}
 
-	dlen = ZSTD_decompressDCtx(dctx, dst, dst_len, src, src_len);
+	dlen = ZSTD_decompressDCtx(dctx, uncomp_buf, uncomp_sz, src, src_len);
 	ZSTD_freeDCtx(dctx);
 
-	if (ZSTD_isError(dlen)) {
-		kvfree(dst);
+	if (ZSTD_isError(dlen) || dlen < sizeof(*hdr)) {
+		kvfree(uncomp_buf);
 		return -EINVAL;
 	}
 
-	*out_sites = dst;
+	hdr = (struct _ddebug_metadata_header *)uncomp_buf;
+	if (hdr->magic != DDEBUG_META_MAGIC || hdr->version != DDEBUG_META_VERSION) {
+		kvfree(uncomp_buf);
+		return -EINVAL;
+	}
+
+	if (hdr->desc_count != desc_count) {
+		kvfree(uncomp_buf);
+		return -EINVAL;
+	}
+
+	intervals = (const struct _ddebug_interval_record *)(uncomp_buf + sizeof(*hdr));
+	strings_base = (const char *)uncomp_buf + sizeof(*hdr) +
+		       hdr->interval_count * sizeof(struct _ddebug_interval_record);
+
+	if (hdr->strings_len > 0) {
+		permanent_strings = kvmemdup(strings_base, hdr->strings_len, GFP_KERNEL);
+		if (!permanent_strings) {
+			kvfree(uncomp_buf);
+			return -ENOMEM;
+		}
+		strings_base = permanent_strings;
+	}
+
+	if (!bt->num_segments)
+		bonsai_init(bt, 0, GFP_KERNEL);
+
+	/* Single linear pass pouring intervals into Bonsai tree */
+	for (i = 0; i < hdr->interval_count; i++) {
+		const struct _ddebug_interval_record *rec = &intervals[i];
+		const char *str;
+		unsigned long start_k, end_k;
+
+		if (rec->start_idx >= desc_count || rec->end_idx >= desc_count)
+			continue;
+		if (rec->string_offset >= hdr->strings_len)
+			continue;
+
+		str = strings_base + rec->string_offset;
+		start_k = ddebug_site_tag_key((unsigned long)&descs[rec->start_idx], rec->tag);
+		end_k   = ddebug_site_tag_key((unsigned long)&descs[rec->end_idx],   rec->tag);
+		bonsai_store_range(bt, start_k, end_k, (void *)str, GFP_KERNEL);
+	}
+
+	bonsai_seal(bt);
+	kvfree(uncomp_buf);
 	return 0;
 }
 
 static int ddebug_reconstruct_site_map(struct ddebug_table *dt)
 {
-	struct _ddebug_info di;
-	struct _ddebug_site *decompressed_sites = NULL;
+	struct _ddebug *descs;
+	unsigned int desc_count;
+	void *compressed_buf;
+	unsigned long compressed_len;
 	struct bonsai_tree *bt;
-	int ret;
 	bool is_builtin = !dt;
 
 	if (is_builtin) {
@@ -1860,80 +1992,98 @@ static int ddebug_reconstruct_site_map(struct ddebug_table *dt)
 		if (!dd_builtin_compressed_sites)
 			return -ENODATA;
 		bt = &dd_builtin_site_map;
+		descs = __start___dyndbg_descs;
+		desc_count = __stop___dyndbg_descs - __start___dyndbg_descs;
+		compressed_buf = dd_builtin_compressed_sites;
+		compressed_len = dd_builtin_compressed_len;
 	} else {
 		if (dt->site_map.root_idx)
 			return 0;
 		if (!dt->compressed_sites)
 			return 0;
 		bt = &dt->site_map;
+		descs = dt->info.descs.start;
+		desc_count = dt->info.descs.len;
+		compressed_buf = dt->compressed_sites;
+		compressed_len = dt->compressed_len;
 	}
 
-	/* Prepare temporary di for condensing */
-	if (is_builtin) {
-		di.descs.start = __start___dyndbg_descs;
-		di.descs.len = __stop___dyndbg_descs - __start___dyndbg_descs;
-		di.sites.len = di.descs.len;
-		ret = ddebug_decompress_sites(dd_builtin_compressed_sites,
-					      dd_builtin_compressed_len,
-					      &decompressed_sites, di.sites.len);
-	} else {
-		di.descs.start = dt->info.descs.start;
-		di.descs.len = dt->info.descs.len;
-		di.sites.len = di.descs.len;
-		ret = ddebug_decompress_sites(dt->compressed_sites,
-					      dt->compressed_len,
-					      &decompressed_sites, di.sites.len);
+	return ddebug_hydrate_intervals(compressed_buf, compressed_len,
+					descs, desc_count, bt);
+}
+
+static int ddebug_load_zstd_metadata(const void *src, size_t src_len)
+{
+	struct _ddebug *descs = __start___dyndbg_descs;
+	unsigned int desc_count = __stop___dyndbg_descs - __start___dyndbg_descs;
+	int ret;
+
+	mutex_lock(&ddebug_lock);
+	if (dd_builtin_site_map.num_segments > 0) {
+		mutex_unlock(&ddebug_lock);
+		return -EEXIST;
 	}
 
-	if (ret)
+	ret = ddebug_hydrate_intervals(src, src_len, descs, desc_count,
+				       &dd_builtin_site_map);
+	if (ret) {
+		mutex_unlock(&ddebug_lock);
 		return ret;
+	}
 
-	di.sites.start = decompressed_sites;
-	ddebug_condense_sites(&di, bt);
-	kvfree(decompressed_sites);
+	kvfree(dd_builtin_compressed_sites);
+	dd_builtin_compressed_sites = kvmemdup(src, src_len, GFP_KERNEL);
+	dd_builtin_compressed_len = src_len;
+
+	mutex_unlock(&ddebug_lock);
+
+	vpr_info("ingested external site metadata: %u descs, %zu compressed bytes -> %u nodes, %u segments (%u KiB)\n",
+		 desc_count, src_len, dd_builtin_site_map.node_count,
+		 dd_builtin_site_map.num_segments,
+		 (unsigned int)(dd_builtin_site_map.num_segments * (BONSAI_SEG_SIZE >> 10)));
 
 	return 0;
 }
 
-/*
- * ddebug_condense_sites() - Pack site-info into a potted Bonsai tree.
- *
- * Temporal order becomes spatial placement: descriptor metadata is bulk-loaded
- * in linear linker sequence. Descriptor addresses are 8-byte aligned, allowing
- * function, file, and module string pointers to be tagged:
- *   - Function: addr                      (low bits 000)
- *   - File:     addr - DD_KEY_FILE_OFFSET (low bits 111)
- *   - Module:   addr - DD_KEY_MOD_OFFSET  (low bits 110)
- *
- * Storing contiguous callsite metadata in natural compiler order preserves
- * strict spatial locality: an entire callsite's strings (and adjacent sites)
- * reside within the exact same 256-byte leaf node. Sequential scans across
- * /proc/dynamic_debug/control and rule-matching passes in ddebug_change()
- * resolve consecutive callsites within single L1/L2 cachelines with zero
- * pointer indirection.
- */
-static void ddebug_condense_sites(struct _ddebug_info *di, struct bonsai_tree *bt)
+static int ddebug_condense_and_compress_sites(struct _ddebug_info *di, struct bonsai_tree *bt,
+					     void **out_zbuf, unsigned long *out_zlen)
 {
 	struct _ddebug *p = di->descs.start;
 	const struct _ddebug_site *site = di->sites.start;
 	unsigned int len = di->sites.len;
-	int i, start;
+	struct ddebug_string_pool pool = { 0 };
+	struct _ddebug_interval_record *records;
+	unsigned int max_records = len * 3 + 16;
+	unsigned int rec_count = 0;
+	unsigned int i, start, offset;
+	unsigned long total_raw_sz, max_dst_sz;
+	struct _ddebug_metadata_header *hdr;
+	ZSTD_CCtx *cctx;
+	void *uncomp_payload, *compressed_payload;
+	size_t clen;
 
 	if (!len)
-		return;
+		return 0;
 
-	if (WARN_ON(di->descs.len != di->sites.len))
-		return;
+	records = kvmalloc_array(max_records, sizeof(*records), GFP_KERNEL);
+	if (!records)
+		return -ENOMEM;
 
-	if (!bt->num_segments) {
+	if (!bt->num_segments)
 		bonsai_init(bt, 0, GFP_KERNEL);
-	}
 
 	/* 1. Consolidate and insert Module ranges */
 	start = 0;
 	for (i = 1; i < len; i++) {
 		if (site[i]._modname != site[start]._modname &&
 		    strcmp(site[i]._modname, site[start]._modname) != 0) {
+			offset = ddebug_pool_add_string(&pool, site[start]._modname);
+			records[rec_count++] = (struct _ddebug_interval_record){
+				.start_idx = start,
+				.end_idx = i - 1,
+				.tag = DD_TAG_MOD,
+				.string_offset = offset,
+			};
 			bonsai_store_range(bt,
 					   ddebug_site_tag_key((unsigned long)&p[start], DD_TAG_MOD),
 					   ddebug_site_tag_key((unsigned long)&p[i - 1], DD_TAG_MOD),
@@ -1941,6 +2091,13 @@ static void ddebug_condense_sites(struct _ddebug_info *di, struct bonsai_tree *b
 			start = i;
 		}
 	}
+	offset = ddebug_pool_add_string(&pool, site[start]._modname);
+	records[rec_count++] = (struct _ddebug_interval_record){
+		.start_idx = start,
+		.end_idx = len - 1,
+		.tag = DD_TAG_MOD,
+		.string_offset = offset,
+	};
 	bonsai_store_range(bt,
 			   ddebug_site_tag_key((unsigned long)&p[start], DD_TAG_MOD),
 			   ddebug_site_tag_key((unsigned long)&p[len - 1], DD_TAG_MOD),
@@ -1951,6 +2108,13 @@ static void ddebug_condense_sites(struct _ddebug_info *di, struct bonsai_tree *b
 	for (i = 1; i < len; i++) {
 		if (site[i]._filename != site[start]._filename &&
 		    strcmp(site[i]._filename, site[start]._filename) != 0) {
+			offset = ddebug_pool_add_string(&pool, site[start]._filename);
+			records[rec_count++] = (struct _ddebug_interval_record){
+				.start_idx = start,
+				.end_idx = i - 1,
+				.tag = DD_TAG_FILE,
+				.string_offset = offset,
+			};
 			bonsai_store_range(bt,
 					   ddebug_site_tag_key((unsigned long)&p[start], DD_TAG_FILE),
 					   ddebug_site_tag_key((unsigned long)&p[i - 1], DD_TAG_FILE),
@@ -1958,6 +2122,13 @@ static void ddebug_condense_sites(struct _ddebug_info *di, struct bonsai_tree *b
 			start = i;
 		}
 	}
+	offset = ddebug_pool_add_string(&pool, site[start]._filename);
+	records[rec_count++] = (struct _ddebug_interval_record){
+		.start_idx = start,
+		.end_idx = len - 1,
+		.tag = DD_TAG_FILE,
+		.string_offset = offset,
+	};
 	bonsai_store_range(bt,
 			   ddebug_site_tag_key((unsigned long)&p[start], DD_TAG_FILE),
 			   ddebug_site_tag_key((unsigned long)&p[len - 1], DD_TAG_FILE),
@@ -1968,6 +2139,13 @@ static void ddebug_condense_sites(struct _ddebug_info *di, struct bonsai_tree *b
 	for (i = 1; i < len; i++) {
 		if (site[i]._function != site[start]._function &&
 		    strcmp(site[i]._function, site[start]._function) != 0) {
+			offset = ddebug_pool_add_string(&pool, site[start]._function);
+			records[rec_count++] = (struct _ddebug_interval_record){
+				.start_idx = start,
+				.end_idx = i - 1,
+				.tag = DD_TAG_FUNC,
+				.string_offset = offset,
+			};
 			bonsai_store_range(bt,
 					   ddebug_site_tag_key((unsigned long)&p[start], DD_TAG_FUNC),
 					   ddebug_site_tag_key((unsigned long)&p[i - 1], DD_TAG_FUNC),
@@ -1975,12 +2153,73 @@ static void ddebug_condense_sites(struct _ddebug_info *di, struct bonsai_tree *b
 			start = i;
 		}
 	}
+	offset = ddebug_pool_add_string(&pool, site[start]._function);
+	records[rec_count++] = (struct _ddebug_interval_record){
+		.start_idx = start,
+		.end_idx = len - 1,
+		.tag = DD_TAG_FUNC,
+		.string_offset = offset,
+	};
 	bonsai_store_range(bt,
 			   ddebug_site_tag_key((unsigned long)&p[start], DD_TAG_FUNC),
 			   ddebug_site_tag_key((unsigned long)&p[len - 1], DD_TAG_FUNC),
 			   (void *)site[start]._function, GFP_KERNEL);
 
-	di->sites.len = 0;
+	bonsai_seal(bt);
+
+	/* Build canonical uncompressed payload */
+	total_raw_sz = sizeof(*hdr) + rec_count * sizeof(*records) + pool.len;
+	uncomp_payload = kvmalloc(total_raw_sz, GFP_KERNEL);
+	if (!uncomp_payload) {
+		kvfree(records);
+		kvfree(pool.buf);
+		return -ENOMEM;
+	}
+
+	hdr = (struct _ddebug_metadata_header *)uncomp_payload;
+	*hdr = (struct _ddebug_metadata_header){
+		.magic = DDEBUG_META_MAGIC,
+		.version = DDEBUG_META_VERSION,
+		.desc_count = len,
+		.interval_count = rec_count,
+		.strings_len = pool.len,
+	};
+
+	memcpy(uncomp_payload + sizeof(*hdr), records, rec_count * sizeof(*records));
+	if (pool.len > 0)
+		memcpy(uncomp_payload + sizeof(*hdr) + rec_count * sizeof(*records), pool.buf, pool.len);
+
+	kvfree(records);
+	kvfree(pool.buf);
+
+	/* Compress payload */
+	max_dst_sz = ZSTD_compressBound(total_raw_sz);
+	cctx = ZSTD_createCCtx_advanced(ddebug_zstd_mem);
+	compressed_payload = kvmalloc(max_dst_sz, GFP_KERNEL);
+	if (!cctx || !compressed_payload) {
+		if (cctx) ZSTD_freeCCtx(cctx);
+		kvfree(compressed_payload);
+		kvfree(uncomp_payload);
+		return -ENOMEM;
+	}
+
+	clen = ZSTD_compressCCtx(cctx, compressed_payload, max_dst_sz, uncomp_payload, total_raw_sz, 3);
+	ZSTD_freeCCtx(cctx);
+	kvfree(uncomp_payload);
+
+	if (ZSTD_isError(clen)) {
+		kvfree(compressed_payload);
+		return -EINVAL;
+	}
+
+	*out_zbuf = kvmemdup(compressed_payload, clen, GFP_KERNEL);
+	*out_zlen = clen;
+	kvfree(compressed_payload);
+
+	v3pr_info("condensed and compressed %s metadata: %u intervals, %lu bytes -> %zu bytes\n",
+		  di->mod_name ? di->mod_name : "builtin", rec_count, total_raw_sz, clen);
+
+	return 0;
 }
 
 /*
@@ -2015,13 +2254,9 @@ static int ddebug_add_module(struct _ddebug_info *di)
 	 * Loadable modules get their own dedicated site_map tree.
 	 */
 	if (dt->info.sites.len) {
-		unsigned int count = dt->info.sites.len;
-
-		ddebug_condense_sites(&dt->info, &dt->site_map);
-
-		/* Compress the sites data so we can shrink the tree later */
-		ddebug_compress_sites(dt->info.mod_name, dt->info.sites.start, count,
-				      &dt->compressed_sites, &dt->compressed_len);
+		ddebug_condense_and_compress_sites(&dt->info, &dt->site_map,
+						   &dt->compressed_sites, &dt->compressed_len);
+		dt->info.sites.len = 0;
 	}
 
 	dd_set_module_subrange(i, cm, &dt->info, maps);
@@ -2474,9 +2709,8 @@ static int __init dynamic_debug_init(void)
 		struct _ddebug *range_start = di.descs.start;
 		const char *cur_mod = di.sites.start[0]._modname;
 
-		ddebug_condense_sites(&di, &dd_builtin_site_map);
-		ddebug_compress_sites("builtin", di.sites.start, count,
-				      &dd_builtin_compressed_sites, &dd_builtin_compressed_len);
+		ddebug_condense_and_compress_sites(&di, &dd_builtin_site_map,
+						   &dd_builtin_compressed_sites, &dd_builtin_compressed_len);
 
 		for (i = 0; i < count; i++) {
 			const char *p_mod = di.sites.start[i]._modname;
@@ -2501,11 +2735,21 @@ static int __init dynamic_debug_init(void)
 			mod_di.descs.len = (di.descs.start + count) - range_start;
 			mod_di.sites.len = 0;
 			ret = ddebug_add_module(&mod_di);
-			if (ret)
-				goto out_err;
 			mod_ct++;
 		}
 		i = count;
+	} else {
+		/* Built-in metadata is stripped: register single table covering descs */
+		struct _ddebug_info mod_di = di;
+		mod_di.mod_name = "vmlinux";
+		mod_di.descs.start = di.descs.start;
+		mod_di.descs.len = di.descs.len;
+		mod_di.sites.len = 0;
+		ret = ddebug_add_module(&mod_di);
+		if (ret)
+			goto out_err;
+		mod_ct = 1;
+		i = di.descs.len;
 	}
 
 	ddebug_init_success = 1;
