@@ -78,6 +78,7 @@ int bonsai_init(struct bonsai_tree *bt, unsigned int initial_order, gfp_t gfp)
 	bt->height = 0;
 	bt->pot_order = initial_order;
 	bt->is_u16 = (initial_order > 4);
+	bt->is_sealed = false;
 	bt->node_count = 0;
 	bt->entry_count = 0;
 	return 0;
@@ -102,8 +103,16 @@ void bonsai_destroy(struct bonsai_tree *bt)
 	bt->node_count = 0;
 	bt->entry_count = 0;
 	bt->is_u16 = false;
+	bt->is_sealed = false;
 }
 EXPORT_SYMBOL_GPL(bonsai_destroy);
+
+void bonsai_seal(struct bonsai_tree *bt)
+{
+	if (bt)
+		bt->is_sealed = true;
+}
+EXPORT_SYMBOL_GPL(bonsai_seal);
 
 void bonsai_reset(struct bonsai_tree *bt)
 {
@@ -123,6 +132,7 @@ void bonsai_reset(struct bonsai_tree *bt)
 	bt->node_count = 0;
 	bt->entry_count = 0;
 	bt->is_u16 = (bt->pot_order > 4);
+	bt->is_sealed = false;
 }
 EXPORT_SYMBOL_GPL(bonsai_reset);
 
@@ -320,6 +330,9 @@ int bonsai_store_range(struct bonsai_tree *bt, unsigned long first,
 	int ret, split_mid, i, d;
 	u16 insert_child_idx;
 	unsigned long insert_pivot;
+
+	if (!bt || WARN_ON_ONCE(bt->is_sealed))
+		return -EPERM;
 
 	if (!bt->root_idx) {
 		curr = bonsai_alloc_node(bt, BONSAI_TYPE_LEAF, gfp);

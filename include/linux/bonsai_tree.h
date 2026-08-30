@@ -88,16 +88,18 @@ struct bonsai_tree {
 	u8 height;			/* 0 = empty, 1 = root leaf, 2 = root branch + leaves */
 	u8 pot_order;			/* Current page order of the pot */
 	bool is_u16;			/* False = u8 seedling (28-way), True = u16 expanded (25-way) */
+	bool is_sealed;			/* True = frozen/read-only table */
 	unsigned int node_count;	/* Total active nodes allocated */
 	unsigned long entry_count;	/* Total range entries stored */
 };
 
-#define BONSAI_TREE_INIT { NULL, 0, 0, 0, false, 0, 0 }
+#define BONSAI_TREE_INIT { NULL, 0, 0, 0, false, false, 0, 0 }
 
 /* Core Lifecycle API */
 int bonsai_init(struct bonsai_tree *bt, unsigned int initial_order, gfp_t gfp);
 void bonsai_destroy(struct bonsai_tree *bt);
 void bonsai_reset(struct bonsai_tree *bt);
+void bonsai_seal(struct bonsai_tree *bt);
 
 /* Query & Mutation API */
 void *bonsai_lookup(const struct bonsai_tree *bt, unsigned long index);
