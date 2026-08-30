@@ -229,6 +229,16 @@ config DEBUG_BUGVERBOSE_DETAILED
 
 	  Say N if unsure.
 
+config DYNAMIC_DEBUG_STRIPPED
+	bool "Strip dynamic debug site metadata from kernel image"
+	depends on DYNAMIC_DEBUG_CORE
+	default n
+	help
+	  Say Y here to discard built-in dynamic debug site metadata
+	  (__dyndbg_sites and string sections) from the kernel binary at
+	  link time. The metadata can be packaged into an external .zst file
+	  and ingested at runtime or early boot.
+
 
 endmenu # "printk and dmesg options"
 

@@ -1022,6 +1022,7 @@
 #define COMMON_DISCARDS							\
 	SANITIZER_DISCARDS						\
 	PATCHABLE_DISCARDS						\
+	DYNDBG_DISCARDS							\
 	*(.discard)							\
 	*(.discard.*)							\
 	*(.export_symbol)						\
