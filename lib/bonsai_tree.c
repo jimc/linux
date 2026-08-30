@@ -16,26 +16,22 @@ static union bonsai_node *bonsai_alloc_node(struct bonsai_tree *bt,
 					    enum bonsai_node_type type,
 					    gfp_t gfp)
 {
+	unsigned int seg = bt->node_count >> BONSAI_SEG_SHIFT;
+	unsigned int offset = bt->node_count & BONSAI_SEG_MASK;
 	union bonsai_node *node;
-	struct scratchpad *sp;
 
-	if (!bt->pot) {
-		if (bonsai_init(bt, bt->pot_order ?: 0, gfp))
+	if (seg >= bt->num_segments) {
+		if (seg >= BONSAI_MAX_SEGS)
 			return NULL;
+		bt->segments[seg] = kmalloc(BONSAI_SEG_SIZE, gfp);
+		if (!bt->segments[seg])
+			return NULL;
+		bt->num_segments = seg + 1;
+		if (bt->num_segments > 4)
+			bt->is_u16 = true;
 	}
 
-	sp = bt->pot;
-	if (sp->remaining < sizeof(union bonsai_node)) {
-		/* Pot full: trigger automatic repotting to grow capacity */
-		if (bonsai_repot(bt, bt->pot_order + 1, gfp))
-			return NULL;
-		sp = bt->pot;
-	}
-
-	node = (union bonsai_node *)sp->free_ptr;
-	sp->free_ptr = (char *)sp->free_ptr + sizeof(union bonsai_node);
-	sp->remaining -= sizeof(union bonsai_node);
-
+	node = (union bonsai_node *)((char *)bt->segments[seg] + offset * BONSAI_NODE_SIZE);
 	memset(node, 0, sizeof(*node));
 	node->m.node_type = type;
 	bt->node_count++;
@@ -44,62 +40,40 @@ static union bonsai_node *bonsai_alloc_node(struct bonsai_tree *bt,
 
 int bonsai_init(struct bonsai_tree *bt, unsigned int initial_order, gfp_t gfp)
 {
-	struct scratchpad *sp;
+	int i;
 
-	sp = kzalloc_obj(struct scratchpad, gfp);
-	if (!sp)
-		return -ENOMEM;
-
-	if (initial_order == 0) {
-		/* Sub-page seedling: start with single-node 256-byte kmalloc slab */
-		void *buf = kmalloc(BONSAI_NODE_SIZE, gfp);
-		if (!buf) {
-			kfree(sp);
-			return -ENOMEM;
-		}
-		INIT_LIST_HEAD(&sp->chunks);
-		sp->free_ptr = buf;
-		sp->remaining = BONSAI_NODE_SIZE;
-		sp->static_buf = buf;
-		sp->static_size = BONSAI_NODE_SIZE;
-		sp->elem_size = sizeof(union bonsai_node);
-		sp->align_quantum = BONSAI_NODE_SIZE;
-		sp->gfp = gfp;
-	} else {
-		/* Multi-page compound block */
-		_scratchpad_init(sp, sizeof(union bonsai_node), BONSAI_NODE_SIZE,
-				 initial_order, NULL, gfp);
-		sp->free_ptr = scratchpad_base(sp);
-		sp->remaining = ((size_t)PAGE_SIZE << initial_order) - BONSAI_NODE_SIZE;
+	for (i = 0; i < bt->num_segments; i++) {
+		kfree(bt->segments[i]);
+		bt->segments[i] = NULL;
 	}
 
-	bt->pot = sp;
+	bt->num_segments = 0;
 	bt->root_idx = 0;
 	bt->height = 0;
-	bt->pot_order = initial_order;
-	bt->is_u16 = (initial_order > 4);
-	bt->is_sealed = false;
 	bt->node_count = 0;
 	bt->entry_count = 0;
+	bt->is_u16 = false;
+	bt->is_sealed = false;
+
 	return 0;
 }
 EXPORT_SYMBOL_GPL(bonsai_init);
 
 void bonsai_destroy(struct bonsai_tree *bt)
 {
-	if (!bt || !bt->pot)
+	int i;
+
+	if (!bt)
 		return;
 
-	if (bt->pot->static_buf)
-		kfree(bt->pot->static_buf);
-	else
-		scratchpad_free(bt->pot);
+	for (i = 0; i < bt->num_segments; i++) {
+		kfree(bt->segments[i]);
+		bt->segments[i] = NULL;
+	}
 
-	kfree(bt->pot);
-	bt->pot = NULL;
+	bt->num_segments = 0;
 	bt->root_idx = 0;
 	bt->height = 0;
-	bt->pot_order = 0;
 	bt->node_count = 0;
 	bt->entry_count = 0;
 	bt->is_u16 = false;
@@ -116,103 +90,20 @@ EXPORT_SYMBOL_GPL(bonsai_seal);
 
 void bonsai_reset(struct bonsai_tree *bt)
 {
-	if (!bt || !bt->pot)
+	if (!bt)
 		return;
 
-	if (bt->pot->static_buf) {
-		bt->pot->free_ptr = bt->pot->static_buf;
-		bt->pot->remaining = bt->pot->static_size;
-	} else {
-		scratchpad_reset(bt->pot);
-		bt->pot->free_ptr = scratchpad_base(bt->pot);
-		bt->pot->remaining = ((size_t)PAGE_SIZE << bt->pot_order) - BONSAI_NODE_SIZE;
-	}
 	bt->root_idx = 0;
 	bt->height = 0;
 	bt->node_count = 0;
 	bt->entry_count = 0;
-	bt->is_u16 = (bt->pot_order > 4);
 	bt->is_sealed = false;
 }
 EXPORT_SYMBOL_GPL(bonsai_reset);
 
 int bonsai_repot(struct bonsai_tree *bt, unsigned int new_order, gfp_t gfp)
 {
-	struct scratchpad *sp = bt->pot;
-	size_t used_bytes;
-	void *old_base, *new_base;
-
-	if (!sp)
-		return bonsai_init(bt, new_order, gfp);
-
-	/* 1. Sub-page growth within kmalloc slabs (256 B -> 512 B -> 1K -> 2K -> 4K) */
-	if (sp->static_buf && sp->static_size < PAGE_SIZE) {
-		size_t new_size = sp->static_size * 2;
-		void *new_buf = krealloc(sp->static_buf, new_size, gfp);
-		if (!new_buf)
-			return -ENOMEM;
-
-		sp->static_buf = new_buf;
-		sp->static_size = new_size;
-		sp->free_ptr = (char *)new_buf + bt->node_count * BONSAI_NODE_SIZE;
-		sp->remaining = new_size - bt->node_count * BONSAI_NODE_SIZE;
-		return 0;
-	}
-
-	/* 2. Graduation from slab (4KB) to multi-page, or multi-page expansion */
-	struct scratchpad *new_pot;
-	bool needs_transmute = (!bt->is_u16 && new_order > 4);
-	unsigned int target_order = new_order ?: 1;
-	size_t total_capacity;
-
-	new_pot = kzalloc_obj(struct scratchpad, gfp);
-	if (!new_pot)
-		return -ENOMEM;
-
-	_scratchpad_init(new_pot, sizeof(union bonsai_node), BONSAI_NODE_SIZE,
-			 target_order, NULL, gfp);
-
-	old_base = scratchpad_base(sp);
-	new_base = scratchpad_base(new_pot);
-	total_capacity = ((size_t)PAGE_SIZE << target_order) - BONSAI_NODE_SIZE;
-
-	if (bt->node_count > 0 && old_base && new_base) {
-		used_bytes = bt->node_count * sizeof(union bonsai_node);
-		memcpy(new_base, old_base, used_bytes);
-
-		/* Transmute u8 branch nodes to u16 when crossing 64KB threshold */
-		if (needs_transmute) {
-			unsigned int idx;
-			for (idx = 1; idx <= bt->node_count; idx++) {
-				union bonsai_node *n = (union bonsai_node *)((char *)new_base + (idx - 1) * BONSAI_NODE_SIZE);
-				if (n->m.node_type == BONSAI_TYPE_BRANCH_8) {
-					int i, cnt = n->m.num_pivots;
-					u8 tmp_child[BONSAI_BRANCH_SLOTS_8];
-					memcpy(tmp_child, n->b8.child_idx, cnt + 1);
-
-					n->m.node_type = BONSAI_TYPE_BRANCH_16;
-					for (i = 0; i <= cnt; i++)
-						n->b16.child_idx[i] = (u16)tmp_child[i];
-				}
-			}
-			bt->is_u16 = true;
-		}
-
-		new_pot->free_ptr = (char *)new_base + used_bytes;
-		new_pot->remaining = (total_capacity > used_bytes) ? (total_capacity - used_bytes) : 0;
-	} else {
-		new_pot->free_ptr = new_base;
-		new_pot->remaining = total_capacity;
-	}
-
-	if (sp->static_buf)
-		kfree(sp->static_buf);
-	else
-		scratchpad_free(sp);
-
-	kfree(sp);
-	bt->pot = new_pot;
-	bt->pot_order = target_order;
+	/* Dynamic segmented allocator handles growth automatically */
 	return 0;
 }
 EXPORT_SYMBOL_GPL(bonsai_repot);
@@ -619,7 +510,7 @@ int bonsai_to_maple(const struct bonsai_tree *bt, struct maple_tree *mt, gfp_t g
 {
 	unsigned int idx;
 
-	if (!bt || !bt->pot || !mt)
+	if (!bt || !bt->num_segments || !mt)
 		return -EINVAL;
 
 	for (idx = 1; idx <= bt->node_count; idx++) {

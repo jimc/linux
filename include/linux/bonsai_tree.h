@@ -80,20 +80,31 @@ static_assert(offsetof(struct bonsai_leaf, meta) == 0);
 #endif
 
 /*
+ * Segmented Scratchpad Slab Configuration:
+ * 64 nodes per segment = 16 KiB per slab
+ * Up to 16 segments = 1024 nodes (256 KiB capacity)
+ */
+#define BONSAI_NODES_PER_SEG	64
+#define BONSAI_SEG_SHIFT	6
+#define BONSAI_SEG_MASK		0x3F
+#define BONSAI_SEG_SIZE		(BONSAI_NODES_PER_SEG * sizeof(union bonsai_node))
+#define BONSAI_MAX_SEGS		16
+
+/*
  * Potted Bonsai Tree Root
  */
 struct bonsai_tree {
-	struct scratchpad *pot;		/* Backing contiguous scratchpad memory */
-	u16 root_idx;			/* 1-based index to root node (0 = empty) */
+	void *segments[BONSAI_MAX_SEGS];/* Array of 16 KiB slab segments */
+	u8 num_segments;		/* Number of active segments allocated */
 	u8 height;			/* 0 = empty, 1 = root leaf, 2 = root branch + leaves */
-	u8 pot_order;			/* Current page order of the pot */
+	u16 root_idx;			/* 1-based index to root node (0 = empty) */
 	bool is_u16;			/* False = u8 seedling (28-way), True = u16 expanded (25-way) */
 	bool is_sealed;			/* True = frozen/read-only table */
 	unsigned int node_count;	/* Total active nodes allocated */
 	unsigned long entry_count;	/* Total range entries stored */
 };
 
-#define BONSAI_TREE_INIT { NULL, 0, 0, 0, false, false, 0, 0 }
+#define BONSAI_TREE_INIT { { NULL }, 0, 0, 0, false, false, 0, 0 }
 
 /* Core Lifecycle API */
 int bonsai_init(struct bonsai_tree *bt, unsigned int initial_order, gfp_t gfp);
@@ -116,16 +127,36 @@ int maple_to_bonsai(struct maple_tree *mt, struct bonsai_tree *bt, gfp_t gfp);
 /* Inline Index Conversion Helpers */
 static inline union bonsai_node *bonsai_node_at(const struct bonsai_tree *bt, u16 idx)
 {
-	if (!idx || !bt->pot)
+	unsigned int seg, offset;
+
+	if (!idx || !bt)
 		return NULL;
-	return scratchpad_at_type(union bonsai_node, bt->pot, idx);
+
+	seg = (idx - 1) >> BONSAI_SEG_SHIFT;
+	offset = (idx - 1) & BONSAI_SEG_MASK;
+
+	if (seg >= bt->num_segments || !bt->segments[seg])
+		return NULL;
+
+	return (union bonsai_node *)((char *)bt->segments[seg] + offset * BONSAI_NODE_SIZE);
 }
 
 static inline u16 bonsai_node_idx(const struct bonsai_tree *bt, const union bonsai_node *node)
 {
-	if (!node || !bt->pot)
+	unsigned int seg;
+
+	if (!node || !bt)
 		return 0;
-	return scratchpad_idx(bt->pot, node);
+
+	for (seg = 0; seg < bt->num_segments; seg++) {
+		const char *base = (const char *)bt->segments[seg];
+		const char *ptr = (const char *)node;
+		if (ptr >= base && ptr < base + BONSAI_SEG_SIZE) {
+			unsigned int offset = (ptr - base) / BONSAI_NODE_SIZE;
+			return (u16)((seg << BONSAI_SEG_SHIFT) + offset + 1);
+		}
+	}
+	return 0;
 }
 
 #endif /* _LINUX_BONSAI_TREE_H */

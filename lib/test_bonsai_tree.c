@@ -147,7 +147,7 @@ static int __init test_bonsai_init(void)
 	}
 
 	/* Test 4: Explicit Repotting Test */
-	ret = bonsai_repot(&bt, bt.pot_order + 1, GFP_KERNEL);
+	ret = bonsai_repot(&bt, 0, GFP_KERNEL);
 	if (ret) {
 		pr_err("test_bonsai: explicit bonsai_repot failed (%d)\n", ret);
 		bonsai_destroy(&bt);
