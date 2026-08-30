@@ -15,7 +15,9 @@
  * KBUILD_MODFILE includes the path (e.g., drivers/usb/core/usbcore) for built-ins.
  * Fall back to KBUILD_MODNAME for modules (loader requires unique names).
  */
-#ifdef KBUILD_MODFILE
+#ifdef KBUILD_DD_MODNAME
+# define DDEBUG_MODNAME KBUILD_DD_MODNAME
+#elif defined(KBUILD_MODFILE)
 # define DDEBUG_MODNAME KBUILD_MODFILE
 #else
 # define DDEBUG_MODNAME KBUILD_MODNAME
