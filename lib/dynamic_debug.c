@@ -2377,6 +2377,9 @@ int ddebug_dyndbg_module_param_cb(char *param, char *val, const char *module)
 static void ddebug_table_free(struct ddebug_table *dt)
 {
 	list_del_init(&dt->link);
+	if (dt->site_map.num_segments)
+		bonsai_destroy(&dt->site_map);
+	kvfree(dt->compressed_sites);
 	kfree(dt);
 }
 
