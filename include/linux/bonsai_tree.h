@@ -4,7 +4,6 @@
 
 #include <linux/kernel.h>
 #include <linux/types.h>
-#include <linux/scratchpad.h>
 
 #define BONSAI_NODE_SIZE	256
 #define BONSAI_BRANCH_SLOTS_8	28	/* 27 pivots + 28 u8 child indices (u8 seedling) */
@@ -81,36 +80,48 @@ static_assert(offsetof(struct bonsai_leaf, meta) == 0);
 
 /*
  * Segmented Scratchpad Slab Configuration:
- * 64 nodes per segment = 16 KiB per slab
- * Up to 16 segments = 1024 nodes (256 KiB capacity)
+ * 64 nodes per slab = 16 KiB per slab
+ * Up to 16 slabs = 1024 nodes (256 KiB capacity)
  */
-#define BONSAI_NODES_PER_SEG	64
-#define BONSAI_SEG_SHIFT	6
-#define BONSAI_SEG_MASK		0x3F
-#define BONSAI_SEG_SIZE		(BONSAI_NODES_PER_SEG * sizeof(union bonsai_node))
-#define BONSAI_MAX_SEGS		16
+#define BONSAI_NODES_PER_SLAB	64
+#define BONSAI_SLAB_SHIFT	6
+#define BONSAI_SLAB_MASK	0x3F
+#define BONSAI_SLAB_SIZE	(BONSAI_NODES_PER_SLAB * sizeof(union bonsai_node))
+#define BONSAI_MAX_NODE_SLABS	16
+
+struct bonsai_val_slab {
+	struct bonsai_val_slab *next;
+	size_t size;
+	size_t used;
+	char data[] __aligned(8);
+};
 
 /*
  * Potted Bonsai Tree Root
  */
 struct bonsai_tree {
-	void *segments[BONSAI_MAX_SEGS];/* Array of 16 KiB slab segments */
-	u8 num_segments;		/* Number of active segments allocated */
-	u8 height;			/* 0 = empty, 1 = root leaf, 2 = root branch + leaves */
-	u16 root_idx;			/* 1-based index to root node (0 = empty) */
-	bool is_u16;			/* False = u8 seedling (28-way), True = u16 expanded (25-way) */
-	bool is_sealed;			/* True = frozen/read-only table */
-	unsigned int node_count;	/* Total active nodes allocated */
-	unsigned long entry_count;	/* Total range entries stored */
+	void *node_slabs[BONSAI_MAX_NODE_SLABS];/* Array of 16 KiB B-Tree node slabs */
+	struct bonsai_val_slab *val_slabs;      /* Linked value/string slabs */
+	u8 num_node_slabs;                      /* Number of active node slabs allocated */
+	u8 num_val_slabs;                       /* Number of active value slabs allocated */
+	u8 height;                              /* 0 = empty, 1 = root leaf, 2 = root branch + leaves */
+	u16 root_idx;                           /* 1-based index to root node (0 = empty) */
+	bool is_u16;                            /* False = u8 seedling (28-way), True = u16 expanded (25-way) */
+	bool is_sealed;                         /* True = frozen/read-only table */
+	u32 val_bytes_used;                     /* Total bytes consumed in value slabs */
+	unsigned int node_count;                /* Total active nodes allocated */
+	unsigned long entry_count;              /* Total range entries stored */
 };
 
-#define BONSAI_TREE_INIT { { NULL }, 0, 0, 0, false, false, 0, 0 }
+#define BONSAI_TREE_INIT { { NULL }, NULL, 0, 0, 0, 0, false, false, 0, 0, 0 }
 
 /* Core Lifecycle API */
-int bonsai_init(struct bonsai_tree *bt, unsigned int initial_order, gfp_t gfp);
+void bonsai_init(struct bonsai_tree *bt);
 void bonsai_destroy(struct bonsai_tree *bt);
 void bonsai_reset(struct bonsai_tree *bt);
 void bonsai_seal(struct bonsai_tree *bt);
+void *bonsai_alloc_val_space(struct bonsai_tree *bt, size_t len, gfp_t gfp);
+const char *bonsai_copy_string_pool(struct bonsai_tree *bt, const char *src, size_t len, gfp_t gfp);
 
 /* Query & Mutation API */
 void *bonsai_lookup(const struct bonsai_tree *bt, unsigned long index);
@@ -127,33 +138,33 @@ int maple_to_bonsai(struct maple_tree *mt, struct bonsai_tree *bt, gfp_t gfp);
 /* Inline Index Conversion Helpers */
 static inline union bonsai_node *bonsai_node_at(const struct bonsai_tree *bt, u16 idx)
 {
-	unsigned int seg, offset;
+	unsigned int slab, offset;
 
 	if (!idx || !bt)
 		return NULL;
 
-	seg = (idx - 1) >> BONSAI_SEG_SHIFT;
-	offset = (idx - 1) & BONSAI_SEG_MASK;
+	slab = (idx - 1) >> BONSAI_SLAB_SHIFT;
+	offset = (idx - 1) & BONSAI_SLAB_MASK;
 
-	if (seg >= bt->num_segments || !bt->segments[seg])
+	if (slab >= bt->num_node_slabs || !bt->node_slabs[slab])
 		return NULL;
 
-	return (union bonsai_node *)((char *)bt->segments[seg] + offset * BONSAI_NODE_SIZE);
+	return (union bonsai_node *)((char *)bt->node_slabs[slab] + offset * BONSAI_NODE_SIZE);
 }
 
 static inline u16 bonsai_node_idx(const struct bonsai_tree *bt, const union bonsai_node *node)
 {
-	unsigned int seg;
+	unsigned int slab;
 
 	if (!node || !bt)
 		return 0;
 
-	for (seg = 0; seg < bt->num_segments; seg++) {
-		const char *base = (const char *)bt->segments[seg];
+	for (slab = 0; slab < bt->num_node_slabs; slab++) {
+		const char *base = (const char *)bt->node_slabs[slab];
 		const char *ptr = (const char *)node;
-		if (ptr >= base && ptr < base + BONSAI_SEG_SIZE) {
+		if (ptr >= base && ptr < base + BONSAI_SLAB_SIZE) {
 			unsigned int offset = (ptr - base) / BONSAI_NODE_SIZE;
-			return (u16)((seg << BONSAI_SEG_SHIFT) + offset + 1);
+			return (u16)((slab << BONSAI_SLAB_SHIFT) + offset + 1);
 		}
 	}
 	return 0;

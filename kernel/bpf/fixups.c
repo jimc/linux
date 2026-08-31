@@ -1276,7 +1276,7 @@ static int jit_subprogs(struct bpf_verifier_env *env)
 	prog->aux->stack_arg_sp_adjust = func[0]->aux->stack_arg_sp_adjust;
 
 	if (env->subprog_cnt > 1) {
-		bonsai_init(&prog->aux->bonsai_funcs, 0, GFP_KERNEL);
+		bonsai_init(&prog->aux->bonsai_funcs);
 		for (i = 0; i < env->subprog_cnt; i++) {
 			unsigned long start = (unsigned long)func[i]->bpf_func;
 			unsigned long end = start + func[i]->jited_len;

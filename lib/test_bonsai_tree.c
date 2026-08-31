@@ -58,7 +58,7 @@ static void bench_ab_comparison(void)
 	/* --------------------------------------------------------- */
 	/* Pass B: Potted Bonsai Tree (25-way fanout + repotting)    */
 	/* --------------------------------------------------------- */
-	bonsai_init(&bt, 0, GFP_KERNEL);
+	bonsai_init(&bt);
 
 	/* Insertions */
 	t0 = ktime_get();
@@ -118,12 +118,8 @@ static int __init test_bonsai_init(void)
 
 	pr_info("test_bonsai: Starting Bonsai Tree unit tests...\n");
 
-	/* Test 1: Initialize in small 4KB pot (order-0) */
-	ret = bonsai_init(&bt, 0, GFP_KERNEL);
-	if (ret) {
-		pr_err("test_bonsai: bonsai_init failed (%d)\n", ret);
-		return ret;
-	}
+	/* Test 1: Initialize bonsai tree */
+	bonsai_init(&bt);
 
 	/* Test 2: Insert 100 sequential ranges (triggers splits and auto-repotting) */
 	for (i = 0; i < 100; i++) {
