@@ -18,6 +18,7 @@
 #include <linux/moduleparam.h>
 #include <linux/kallsyms.h>
 #include <linux/types.h>
+#include <linux/bonsai_tree.h>
 #include <linux/mutex.h>
 #include <linux/percpu.h>
 #include <linux/proc_fs.h>
@@ -39,11 +40,16 @@
 #include <linux/sched.h>
 #include <linux/device.h>
 #include <linux/netdevice.h>
+#include <linux/zstd.h>
+#include <linux/vmalloc.h>
+#include <linux/firmware.h>
 
 #include <rdma/ib_verbs.h>
 
 extern struct _ddebug __start___dyndbg_descs[];
 extern struct _ddebug __stop___dyndbg_descs[];
+extern const struct _ddebug_site __start___dyndbg_sites[];
+extern const struct _ddebug_site __stop___dyndbg_sites[];
 extern struct ddebug_class_map __start___dyndbg_class_maps[];
 extern struct ddebug_class_map __stop___dyndbg_class_maps[];
 extern struct ddebug_class_user __start___dyndbg_class_users[];
@@ -52,6 +58,9 @@ extern struct ddebug_class_user __stop___dyndbg_class_users[];
 struct ddebug_table {
 	struct list_head link;
 	struct _ddebug_info info;
+	struct bonsai_tree site_map;
+	void *compressed_sites;
+	unsigned long compressed_len;
 };
 
 struct ddebug_query {
@@ -73,7 +82,13 @@ struct flag_settings {
 	unsigned int mask;
 };
 
+struct _dd_prefix_key_range {
+	unsigned long start;
+	unsigned long end;
+};
+
 static DEFINE_PER_CPU(unsigned long, ddebug_call_count);
+
 void ddebug_increment_call_count(void)
 {
 	this_cpu_inc(ddebug_call_count);
@@ -90,6 +105,55 @@ static int verbose;
 module_param(verbose, int, 0644);
 MODULE_PARM_DESC(verbose, " dynamic_debug/control processing "
 		 "( 0 = off (default), 1 = module add/rm, 2 = >control summary, 3 = parsing, 4 = per-site changes)");
+
+/*
+ * during (mod)_init, fill these from __dyndbg_sites data.  They
+ * deduplicate the column values, and remember their (nested,
+ * non-overlapping) ranges intrinsically.  At runtime, they provide
+ * values for use in `cat control` & `echo $cmd >control`
+ */
+static struct bonsai_tree dd_builtin_site_map = BONSAI_TREE_INIT;
+static void *dd_builtin_compressed_sites;
+static unsigned long dd_builtin_compressed_len;
+
+static inline struct bonsai_tree *ddebug_get_site_map(struct ddebug_table *dt)
+{
+	return dt && dt->site_map.num_node_slabs ? &dt->site_map : &dd_builtin_site_map;
+}
+
+#define DD_KEY_ALIGN_MASK   7UL
+
+/* Key offsets from the 8-byte aligned descriptor address */
+#define DD_KEY_FILE_OFFSET  1UL
+#define DD_KEY_MOD_OFFSET   2UL
+
+/* Expected key alignment remainders (addr & DD_KEY_ALIGN_MASK) */
+#define DD_KEY_FUNC_ALIGN   0UL
+#define DD_KEY_FILE_ALIGN   7UL
+#define DD_KEY_MOD_ALIGN    6UL
+
+/* Site tag types for growing/condensing */
+#define DD_TAG_MOD          0UL
+#define DD_TAG_FILE         1UL
+#define DD_TAG_FUNC         2UL
+
+/* cache of composed prefixes for enabled and invoked pr_debugs */
+static DEFINE_MTREE(pr_prefixes);
+static unsigned int pr_prefixes_count;
+
+static unsigned long ddebug_prefix_key(const struct _ddebug *desc);
+
+//static void ddebug_drop_cached_prefix(const struct _ddebug *dp);
+//static void ddebug_prefix_range(const struct _ddebug *desc, struct _dd_prefix_key_range *range);
+
+static void ddebug_add_cached_prefix(struct _ddebug *dp);
+static void __maybe_unused ddebug_drop_all_cached_prefixes(const struct _ddebug_info *di);
+static void ddebug_prefix_range(const struct _ddebug *desc,
+				struct _dd_prefix_key_range *range);
+
+static int ddebug_reconstruct_site_map(struct ddebug_table *dt);
+
+#define prefix_flags(flags)  (flags & _DPRINTK_FLAGS_INCL_LOOKUP)
 
 /* Return the path relative to source root */
 static inline const char *trim_prefix(const char *path)
@@ -142,6 +206,7 @@ do {								\
 #define v2pr_info(fmt, ...)	vnpr_info(2, fmt, ##__VA_ARGS__)
 #define v3pr_info(fmt, ...)	vnpr_info(3, fmt, ##__VA_ARGS__)
 #define v4pr_info(fmt, ...)	vnpr_info(4, fmt, ##__VA_ARGS__)
+#define v5pr_info(fmt, ...)	vnpr_info(5, fmt, ##__VA_ARGS__)
 
 static void v3pr_info_dq(const struct ddebug_query *query, const char *msg)
 {
@@ -254,6 +319,57 @@ static inline bool ddebug_class_has_param(const struct ddebug_class_map *map)
 /* re-framed as a policy choice */
 #define ddebug_class_wants_protection(map) (ddebug_class_has_param(map))
 
+static inline unsigned long ddebug_site_tag_key(unsigned long addr, unsigned long tag)
+{
+	return (tag << 60) | (addr & 0x0fffffffffffffffUL);
+}
+
+static void ddebug_resolve_site(struct bonsai_tree *bt, const struct _ddebug *dp,
+				const char **mod, const char **file, const char **func)
+{
+	unsigned long addr = (unsigned long)dp;
+
+	if (mod)  *mod  = bonsai_lookup(bt, ddebug_site_tag_key(addr, DD_TAG_MOD));
+	if (file) *file = bonsai_lookup(bt, ddebug_site_tag_key(addr, DD_TAG_FILE));
+	if (func) *func = bonsai_lookup(bt, ddebug_site_tag_key(addr, DD_TAG_FUNC));
+
+	if (mod  && !*mod)  *mod  = "unknown";
+	if (file && !*file) *file = "unknown";
+	if (func && !*func) *func = "unknown";
+}
+
+static const char *desc_function(struct _ddebug const *dp)
+{
+	const char *func;
+	struct ddebug_table *dt;
+	struct bonsai_tree *site_map = &dd_builtin_site_map;
+	list_for_each_entry(dt, &ddebug_tables, link) {
+		if (dp >= dt->info.descs.start &&
+		    dp < dt->info.descs.start + dt->info.descs.len) {
+			site_map = ddebug_get_site_map(dt);
+			break;
+		}
+	}
+	ddebug_resolve_site(site_map, dp, NULL, NULL, &func);
+	return func;
+}
+
+static const char *desc_filename(struct _ddebug const *dp)
+{
+	const char *file;
+	struct ddebug_table *dt;
+	struct bonsai_tree *site_map = &dd_builtin_site_map;
+	list_for_each_entry(dt, &ddebug_tables, link) {
+		if (dp >= dt->info.descs.start &&
+		    dp < dt->info.descs.start + dt->info.descs.len) {
+			site_map = ddebug_get_site_map(dt);
+			break;
+		}
+	}
+	ddebug_resolve_site(site_map, dp, NULL, &file, NULL);
+	return file;
+}
+
 /*
  * Search the tables for _ddebug's which match the given `query' and
  * apply the `flags' and `mask' to them.  Returns number of matching
@@ -265,28 +381,43 @@ static bool ddebug_match_desc(const struct ddebug_query *query,
 			      struct _ddebug_info *di,
 			      int selected_class)
 {
-	struct ddebug_class_map *site_map;
+	struct ddebug_class_map *class_map;
+	struct ddebug_table *dt = container_of(di, struct ddebug_table, info);
+	const char *dp_modname = NULL, *dp_filename = NULL, *dp_function = NULL;
+
+	/* get site vals needed to match this query */
+	ddebug_resolve_site(ddebug_get_site_map(dt), dp,
+			    (query->module && !strcmp(di->mod_name, "vmlinux")) ? &dp_modname : NULL,
+			    query->filename ? &dp_filename : NULL,
+			    query->function ? &dp_function : NULL);
+
+	/* match against module for stripped fallback tables */
+	if (query->module && !strcmp(di->mod_name, "vmlinux") &&
+	    (!dp_modname ||
+	     (!match_wildcard_hyphen(query->module, dp_modname) &&
+	      !match_wildcard_hyphen(query->module, kbasename(dp_modname)))))
+		return false;
 
 	/* match against the source filename */
 	if (query->filename &&
-	    !match_wildcard(query->filename, dp->filename) &&
+	    !match_wildcard(query->filename, dp_filename) &&
 	    !match_wildcard(query->filename,
-			    kbasename(dp->filename)) &&
+			    kbasename(dp_filename)) &&
 	    !match_wildcard(query->filename,
-			    trim_prefix(dp->filename)))
+			    trim_prefix(dp_filename)))
 		return false;
 
 	/* match against the function */
 	if (query->function &&
-	    !match_wildcard(query->function, dp->function))
+	    !match_wildcard(query->function, dp_function))
 		return false;
 
 	/* match against the format */
 	if (query->format) {
 		if (!dp->format) {
 			pr_err_ratelimited("ddebug: NULL format string at %s:%s:%u\n",
-					   dp->filename ? dp->filename : "?",
-					   dp->function ? dp->function : "?",
+					   desc_filename(dp) ? desc_filename(dp) : "?",
+					   desc_function(dp) ? desc_function(dp) : "?",
 					   dp->lineno);
 			return false;
 		}
@@ -324,14 +455,14 @@ static bool ddebug_match_desc(const struct ddebug_query *query,
 		return true;
 	}
 	/* site is class'd */
-	site_map = ddebug_find_map_by_class_id(di, dp->class_id);
-	if (!site_map) {
+	class_map = ddebug_find_map_by_class_id(di, dp->class_id);
+	if (!class_map) {
 		pr_warn_ratelimited("unknown class_id %d, check %s's CLASSMAP definitions\n",
 			  dp->class_id, di->mod_name);
 		return false;
 	}
 	/* module(-param) decides protection */
-	return !ddebug_class_wants_protection(site_map);
+	return !ddebug_class_wants_protection(class_map);
 }
 
 static int ddebug_change(const struct ddebug_query *query, struct flag_settings *modifiers)
@@ -345,12 +476,22 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 
 	/* search for matching ddebugs */
 	mutex_lock(&ddebug_lock);
+
+	/* Reconstruct the global built-in site map if it was shrunk */
+	if (ddebug_reconstruct_site_map(NULL))
+		pr_warn("Failed to reconstruct built-in site map\n");
+
 	list_for_each_entry(dt, &ddebug_tables, link) {
 		struct _ddebug_info *di = &dt->info;
 		struct ddebug_class_map *mods_map;
 
+		/* Reconstruct the module's site map if it was shrunk */
+		if (ddebug_reconstruct_site_map(dt))
+			pr_warn("Failed to reconstruct site map for module %s\n", di->mod_name);
+
 		/* match against the module name */
 		if (query->module &&
+		    strcmp(di->mod_name, "vmlinux") != 0 &&
 		    !match_wildcard_hyphen(query->module, di->mod_name) &&
 		    !match_wildcard_hyphen(query->module, kbasename(di->mod_name)))
 			continue;
@@ -374,6 +515,7 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 			newflags = (dp->flags & modifiers->mask) | modifiers->flags;
 			if (newflags == dp->flags)
 				continue;
+
 #ifdef CONFIG_JUMP_LABEL
 			if (dp->flags & _DPRINTK_FLAGS_ENABLED) {
 				if (!(newflags & _DPRINTK_FLAGS_ENABLED))
@@ -383,11 +525,13 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 			}
 #endif
 			v4pr_info("changed %s:%d [%s]%s %s => %s\n",
-				  trim_prefix(dp->filename), dp->lineno,
-				  di->mod_name, dp->function,
+				  trim_prefix(desc_filename(dp)), dp->lineno,
+				  di->mod_name, desc_function(dp),
 				  ddebug_describe_flags(dp->flags, &fbuf),
 				  ddebug_describe_flags(newflags, &nbuf));
 			dp->flags = newflags;
+			if (prefix_flags(newflags))
+				ddebug_add_cached_prefix(dp);
 		}
 	}
 	mutex_unlock(&ddebug_lock);
@@ -664,6 +808,51 @@ static int ddebug_parse_flags(const char *str, struct flag_settings *modifiers)
 	return 0;
 }
 
+static int ddebug_load_zstd_metadata(const void *src, size_t src_len);
+
+static inline bool str_has_suffix(const char *str, const char *suffix)
+{
+	size_t str_len = strlen(str);
+	size_t suffix_len = strlen(suffix);
+
+	return str_len >= suffix_len && !strcmp(str + str_len - suffix_len, suffix);
+}
+
+static char *ddebug_pending_firmware;
+
+static int ddebug_load_firmware_metadata(const char *name)
+{
+	const struct firmware *fw;
+	int ret;
+
+	ret = request_firmware_direct(&fw, name, NULL);
+	if (ret) {
+		if (system_state < SYSTEM_RUNNING && !ddebug_pending_firmware) {
+			ddebug_pending_firmware = kstrdup(name, GFP_KERNEL);
+			vpr_info("deferring site metadata firmware '%s' until filesystems mount\n", name);
+			return 0;
+		}
+		pr_err("failed to load site metadata firmware '%s': %d\n", name, ret);
+		return ret;
+	}
+
+	ret = ddebug_load_zstd_metadata(fw->data, fw->size);
+	release_firmware(fw);
+	return ret;
+}
+
+static int __init dynamic_debug_late_firmware(void)
+{
+	if (ddebug_pending_firmware) {
+		vpr_info("loading deferred site metadata firmware '%s'\n", ddebug_pending_firmware);
+		ddebug_load_firmware_metadata(ddebug_pending_firmware);
+		kfree(ddebug_pending_firmware);
+		ddebug_pending_firmware = NULL;
+	}
+	return 0;
+}
+late_initcall_sync(dynamic_debug_late_firmware);
+
 static int ddebug_exec_query(char *query_string, const char *modname)
 {
 	struct flag_settings modifiers = {};
@@ -677,6 +866,11 @@ static int ddebug_exec_query(char *query_string, const char *modname)
 		pr_err("tokenize failed\n");
 		return -EINVAL;
 	}
+
+	/* Check for standalone metadata load directive: ends in .zst or .dyndbg */
+	if (nwords == 1 && (str_has_suffix(words[0], ".zst") || str_has_suffix(words[0], ".dyndbg")))
+		return ddebug_load_firmware_metadata(words[0]);
+
 	/* check flags 1st (last arg) so query is pairs of spec,val */
 	if (ddebug_parse_flags(words[nwords-1], &modifiers)) {
 		pr_err("flags parse failed\n");
@@ -918,9 +1112,73 @@ static int remaining(int wrote)
 	return 0;
 }
 
+static int __dynamic_emit_lookup(const struct _ddebug *desc, char *buf, int start)
+{
+	char *prefix;
+	int pos = start;
+	unsigned long key;
+
+	if (!(desc->flags & _DPRINTK_FLAGS_INCL_LOOKUP))
+		return pos;
+
+	key = ddebug_prefix_key(desc);
+
+	rcu_read_lock();
+	prefix = (char *) mtree_load(&pr_prefixes, key);
+	rcu_read_unlock();
+
+	if (likely(prefix)) {
+		pos += snprintf(buf + pos, remaining(pos), "%s", prefix);
+		v4pr_info("using cached prefix: %s\n", prefix);
+		return pos;
+	}
+
+	/*
+	 * Cache miss (should only happen under extreme memory
+	 * pressure where eager allocation failed, or during early
+	 * boot if we didn't pre-fill).  Just resolve and format on
+	 * the stack, but DO NOT allocate or write to the cache.
+	 */
+	{
+		const char *mod = NULL, *file = NULL, *func = NULL;
+		struct ddebug_table *dt;
+		struct bonsai_tree *site_map = &dd_builtin_site_map;
+
+		/* Locate the table for this descriptor to find its specific site_map */
+		mutex_lock(&ddebug_lock);
+		list_for_each_entry(dt, &ddebug_tables, link) {
+			if (desc >= dt->info.descs.start &&
+			    desc < dt->info.descs.start + dt->info.descs.len) {
+				site_map = ddebug_get_site_map(dt);
+				break;
+			}
+		}
+		mutex_unlock(&ddebug_lock);
+
+		ddebug_resolve_site(site_map, desc,
+				    (desc->flags & _DPRINTK_FLAGS_INCL_MODNAME) ? &mod : NULL,
+				    (desc->flags & _DPRINTK_FLAGS_INCL_SOURCENAME) ? &file : NULL,
+				    (desc->flags & _DPRINTK_FLAGS_INCL_FUNCNAME) ? &func : NULL);
+
+		if (mod)
+			pos += snprintf(buf + pos, remaining(pos), "%s:", mod);
+		if (func)
+			pos += snprintf(buf + pos, remaining(pos), "%s:", func);
+		if (file)
+			pos += snprintf(buf + pos, remaining(pos), "%s:", trim_prefix(file));
+	}
+	if (desc->flags & _DPRINTK_FLAGS_INCL_LINENO)
+		pos += snprintf(buf + pos, remaining(pos), "%d:",
+				desc->lineno);
+	if (remaining(pos)) {
+		buf[pos++] = ' ';
+		buf[pos] = '\0';
+	}
+	return pos;
+}
+
 static char *__dynamic_emit_prefix(const struct _ddebug *desc, char *buf)
 {
-	int pos_after_tid;
 	int pos = 0;
 
 	if (desc->flags & _DPRINTK_FLAGS_INCL_TID) {
@@ -930,21 +1188,10 @@ static char *__dynamic_emit_prefix(const struct _ddebug *desc, char *buf)
 			pos += snprintf(buf + pos, remaining(pos), "[%d] ",
 					task_pid_vnr(current));
 	}
-	pos_after_tid = pos;
-	if (desc->flags & _DPRINTK_FLAGS_INCL_MODNAME)
-		pos += snprintf(buf + pos, remaining(pos), "%s:",
-				desc->modname);
-	if (desc->flags & _DPRINTK_FLAGS_INCL_FUNCNAME)
-		pos += snprintf(buf + pos, remaining(pos), "%s:",
-				desc->function);
-	if (desc->flags & _DPRINTK_FLAGS_INCL_SOURCENAME)
-		pos += snprintf(buf + pos, remaining(pos), "%s:",
-				trim_prefix(desc->filename));
-	if (desc->flags & _DPRINTK_FLAGS_INCL_LINENO)
-		pos += snprintf(buf + pos, remaining(pos), "%d:",
-				desc->lineno);
-	if (pos - pos_after_tid)
-		pos += snprintf(buf + pos, remaining(pos), " ");
+
+	if (unlikely(desc->flags & _DPRINTK_FLAGS_INCL_LOOKUP))
+		pos += __dynamic_emit_lookup(desc, buf, pos);
+
 	if (pos >= PREFIX_SIZE)
 		buf[PREFIX_SIZE - 1] = '\0';
 
@@ -1106,14 +1353,34 @@ static void reset_ddebug_call_count(void)
  * command text from userspace, parses and executes it.
  */
 #define USER_BUF_PAGE 4096
+static int ddebug_load_zstd_metadata(const void *src, size_t src_len);
+
 static ssize_t ddebug_proc_write(struct file *file, const char __user *ubuf,
 				  size_t len, loff_t *offp)
 {
+	u32 magic;
 	char *tmpbuf;
 	int ret;
 
 	if (len == 0)
 		return 0;
+
+	/* Detect binary ZSTD metadata stream */
+	if (len >= sizeof(magic) &&
+	    !copy_from_user(&magic, ubuf, sizeof(magic)) &&
+	    magic == ZSTD_MAGICNUMBER) {
+		void *zbuf = vmemdup_user(ubuf, len);
+		if (IS_ERR(zbuf))
+			return PTR_ERR(zbuf);
+
+		ret = ddebug_load_zstd_metadata(zbuf, len);
+		kvfree(zbuf);
+		if (ret < 0)
+			return ret;
+		*offp += len;
+		return len;
+	}
+
 	if (len > USER_BUF_PAGE - 1) {
 		pr_warn("expected <%d bytes into control\n", USER_BUF_PAGE);
 		return -E2BIG;
@@ -1281,7 +1548,7 @@ static int ddebug_proc_show(struct seq_file *m, void *p)
 	struct ddebug_iter *iter = m->private;
 	struct _ddebug *dp = p;
 	struct flagsbuf flags;
-	char const *class;
+	char const *class, *filename, *function, *modname;
 
 	if (p == SEQ_START_TOKEN) {
 		seq_puts(m,
@@ -1289,13 +1556,21 @@ static int ddebug_proc_show(struct seq_file *m, void *p)
 		return 0;
 	}
 	if (p == EPILOGUE_TOKEN) {
-		seq_printf(m, "#: total call-counts: %lu\n", get_ddebug_call_count());
+		seq_printf(m, "#: cached_prefixes=%u\n", pr_prefixes_count);
+		seq_printf(m, "#: total call-counts: %lu\n",
+			   get_ddebug_call_count());
 		return 0;
 	}
 
+	ddebug_reconstruct_site_map(iter->table);
+	modname = NULL;
+	ddebug_resolve_site(ddebug_get_site_map(iter->table), dp, &modname, &filename, &function);
+	if (!modname)
+		modname = iter->table->info.mod_name;
+
 	seq_printf(m, "%s:%u [%s]%s =%s \"",
-		   trim_prefix(dp->filename), dp->lineno,
-		   iter->table->info.mod_name, dp->function,
+		   trim_prefix(filename), dp->lineno,
+		   modname, function,
 		   ddebug_describe_flags(dp->flags, &flags));
 	seq_escape_str(m, dp->format, ESCAPE_SPACE, "\t\r\n\"");
 	seq_putc(m, '"');
@@ -1547,6 +1822,421 @@ static int ddebug_class_user_overlap(struct ddebug_class_user *cli,
 	return 0;
 }
 
+
+
+static void *ddebug_zstd_alloc(void *opaque, size_t size)
+{
+	return kvmalloc(size, GFP_KERNEL);
+}
+
+static void ddebug_zstd_free(void *opaque, void *address)
+{
+	kvfree(address);
+}
+
+static const ZSTD_customMem ddebug_zstd_mem = {
+	.customAlloc = ddebug_zstd_alloc,
+	.customFree = ddebug_zstd_free,
+	.opaque = NULL,
+};
+
+#define DDEBUG_META_MAGIC 0x44594E44 /* 'DYND' */
+#define DDEBUG_META_VERSION 2
+#define ZSTD_MAGICNUMBER  0xFD2FB528
+
+struct _ddebug_metadata_header {
+	u32 magic;          /* DDEBUG_META_MAGIC */
+	u16 version;        /* DDEBUG_META_VERSION (2) */
+	u16 flags;          /* reserved / flags */
+	u32 desc_count;     /* Total descriptors represented */
+	u32 interval_count; /* Number of condensed interval records */
+	u32 strings_len;    /* Byte size of string pool */
+	u8  build_id[20];   /* Optional ELF .note.gnu.build-id */
+	u8  reserved[8];    /* Alignment padding to 48 bytes */
+};
+
+struct _ddebug_interval_record {
+	u16 start_idx;      /* 0-indexed descriptor start */
+	u16 end_idx;        /* 0-indexed descriptor end (inclusive) */
+	u8  tag;            /* DD_TAG_MOD (0), DD_TAG_FILE (1), DD_TAG_FUNC (2) */
+	u8  reserved;
+	u32 string_offset;  /* Byte offset into string pool */
+};
+
+struct ddebug_string_pool {
+	char *buf;
+	unsigned int len;
+	unsigned int cap;
+};
+
+static unsigned int ddebug_pool_add_string(struct ddebug_string_pool *pool, const char *str)
+{
+	unsigned int offset, slen;
+
+	if (!str)
+		str = "";
+	slen = strlen(str) + 1;
+
+	/* Simple deduplication scan */
+	for (offset = 0; offset < pool->len; ) {
+		if (strcmp(pool->buf + offset, str) == 0)
+			return offset;
+		offset += strlen(pool->buf + offset) + 1;
+	}
+
+	if (pool->len + slen > pool->cap) {
+		unsigned int new_cap = max(pool->cap * 2, pool->len + slen + 4096);
+		char *new_buf = kvmalloc(new_cap, GFP_KERNEL);
+		if (!new_buf)
+			return 0;
+		if (pool->buf) {
+			memcpy(new_buf, pool->buf, pool->len);
+			kvfree(pool->buf);
+		}
+		pool->buf = new_buf;
+		pool->cap = new_cap;
+	}
+
+	offset = pool->len;
+	memcpy(pool->buf + offset, str, slen);
+	pool->len += slen;
+	return offset;
+}
+
+static int ddebug_hydrate_intervals(const void *src, size_t src_len,
+				    struct _ddebug *descs, unsigned int desc_count,
+				    struct bonsai_tree *bt)
+{
+	unsigned long long uncomp_sz;
+	struct _ddebug_metadata_header *hdr;
+	const struct _ddebug_interval_record *intervals;
+	const char *strings_base;
+	ZSTD_DCtx *dctx;
+	void *uncomp_buf;
+	size_t dlen;
+	unsigned int i;
+
+	if (src_len < 4)
+		return -EINVAL;
+
+	uncomp_sz = ZSTD_getFrameContentSize(src, src_len);
+	if (uncomp_sz == ZSTD_CONTENTSIZE_UNKNOWN || uncomp_sz == ZSTD_CONTENTSIZE_ERROR)
+		return -EINVAL;
+	if (uncomp_sz < sizeof(*hdr))
+		return -EINVAL;
+
+	dctx = ZSTD_createDCtx_advanced(ddebug_zstd_mem);
+	if (!dctx)
+		return -ENOMEM;
+
+	uncomp_buf = kvmalloc(uncomp_sz, GFP_KERNEL);
+	if (!uncomp_buf) {
+		ZSTD_freeDCtx(dctx);
+		return -ENOMEM;
+	}
+
+	dlen = ZSTD_decompressDCtx(dctx, uncomp_buf, uncomp_sz, src, src_len);
+	ZSTD_freeDCtx(dctx);
+
+	if (ZSTD_isError(dlen) || dlen < sizeof(*hdr)) {
+		kvfree(uncomp_buf);
+		return -EINVAL;
+	}
+
+	hdr = (struct _ddebug_metadata_header *)uncomp_buf;
+	if (hdr->magic != DDEBUG_META_MAGIC || hdr->version != DDEBUG_META_VERSION) {
+		kvfree(uncomp_buf);
+		return -EINVAL;
+	}
+
+	if (hdr->desc_count != desc_count) {
+		kvfree(uncomp_buf);
+		return -EINVAL;
+	}
+
+	intervals = (const struct _ddebug_interval_record *)(uncomp_buf + sizeof(*hdr));
+	strings_base = (const char *)uncomp_buf + sizeof(*hdr) +
+		       hdr->interval_count * sizeof(struct _ddebug_interval_record);
+
+	if (!bt->num_node_slabs)
+		bonsai_init(bt);
+
+	if (hdr->strings_len > 0) {
+		strings_base = bonsai_copy_string_pool(bt, strings_base, hdr->strings_len, GFP_KERNEL);
+		if (!strings_base) {
+			kvfree(uncomp_buf);
+			return -ENOMEM;
+		}
+	}
+
+	/* Single linear pass pouring intervals into Bonsai tree */
+	for (i = 0; i < hdr->interval_count; i++) {
+		const struct _ddebug_interval_record *rec = &intervals[i];
+		const char *str;
+		unsigned long start_k, end_k;
+
+		if (rec->start_idx >= desc_count || rec->end_idx >= desc_count)
+			continue;
+		if (rec->string_offset >= hdr->strings_len)
+			continue;
+
+		str = strings_base + rec->string_offset;
+		start_k = ddebug_site_tag_key((unsigned long)&descs[rec->start_idx], rec->tag);
+		end_k   = ddebug_site_tag_key((unsigned long)&descs[rec->end_idx],   rec->tag);
+		bonsai_store_range(bt, start_k, end_k, (void *)str, GFP_KERNEL);
+	}
+
+	bonsai_seal(bt);
+	kvfree(uncomp_buf);
+	return 0;
+}
+
+static int ddebug_reconstruct_site_map(struct ddebug_table *dt)
+{
+	struct _ddebug *descs;
+	unsigned int desc_count;
+	void *compressed_buf;
+	unsigned long compressed_len;
+	struct bonsai_tree *bt;
+	bool is_builtin = !dt || (dt->info.descs.start >= __start___dyndbg_descs &&
+				  dt->info.descs.start < __stop___dyndbg_descs);
+
+	if (is_builtin) {
+		if (dd_builtin_site_map.root_idx)
+			return 0;
+		if (!dd_builtin_compressed_sites)
+			return -ENODATA;
+		bt = &dd_builtin_site_map;
+		descs = __start___dyndbg_descs;
+		desc_count = __stop___dyndbg_descs - __start___dyndbg_descs;
+		compressed_buf = dd_builtin_compressed_sites;
+		compressed_len = dd_builtin_compressed_len;
+	} else {
+		if (dt->site_map.root_idx)
+			return 0;
+		if (!dt->compressed_sites)
+			return 0;
+		bt = &dt->site_map;
+		descs = dt->info.descs.start;
+		desc_count = dt->info.descs.len;
+		compressed_buf = dt->compressed_sites;
+		compressed_len = dt->compressed_len;
+	}
+
+	return ddebug_hydrate_intervals(compressed_buf, compressed_len,
+					descs, desc_count, bt);
+}
+
+static int ddebug_load_zstd_metadata(const void *src, size_t src_len)
+{
+	struct _ddebug *descs = __start___dyndbg_descs;
+	unsigned int desc_count = __stop___dyndbg_descs - __start___dyndbg_descs;
+	int ret;
+
+	mutex_lock(&ddebug_lock);
+	if (dd_builtin_site_map.num_node_slabs > 0) {
+		mutex_unlock(&ddebug_lock);
+		return -EEXIST;
+	}
+
+	ret = ddebug_hydrate_intervals(src, src_len, descs, desc_count,
+				       &dd_builtin_site_map);
+	if (ret) {
+		mutex_unlock(&ddebug_lock);
+		return ret;
+	}
+
+	kvfree(dd_builtin_compressed_sites);
+	dd_builtin_compressed_sites = kvmemdup(src, src_len, GFP_KERNEL);
+	dd_builtin_compressed_len = src_len;
+
+	mutex_unlock(&ddebug_lock);
+
+	vpr_info("ingested external site metadata: %u descs, %zu compressed bytes -> %u nodes, %u slabs (%u KiB)\n",
+		 desc_count, src_len, dd_builtin_site_map.node_count,
+		 dd_builtin_site_map.num_node_slabs,
+		 (unsigned int)(dd_builtin_site_map.num_node_slabs * (BONSAI_SLAB_SIZE >> 10)));
+
+	return 0;
+}
+
+static int ddebug_condense_and_compress_sites(struct _ddebug_info *di, struct bonsai_tree *bt,
+					     void **out_zbuf, unsigned long *out_zlen)
+{
+	struct _ddebug *p = di->descs.start;
+	const struct _ddebug_site *site = di->sites.start;
+	unsigned int len = di->sites.len;
+	struct ddebug_string_pool pool = { 0 };
+	struct _ddebug_interval_record *records;
+	unsigned int max_records = len * 3 + 16;
+	unsigned int rec_count = 0;
+	unsigned int i, start, offset;
+	unsigned long total_raw_sz, max_dst_sz;
+	struct _ddebug_metadata_header *hdr;
+	ZSTD_CCtx *cctx;
+	void *uncomp_payload, *compressed_payload;
+	size_t clen;
+
+	if (!len)
+		return 0;
+
+	records = kvmalloc_array(max_records, sizeof(*records), GFP_KERNEL);
+	if (!records)
+		return -ENOMEM;
+
+	if (!bt->num_node_slabs)
+		bonsai_init(bt);
+
+	/* 1. Consolidate and insert Module ranges */
+	start = 0;
+	for (i = 1; i < len; i++) {
+		if (site[i]._modname != site[start]._modname &&
+		    strcmp(site[i]._modname, site[start]._modname) != 0) {
+			offset = ddebug_pool_add_string(&pool, site[start]._modname);
+			records[rec_count++] = (struct _ddebug_interval_record){
+				.start_idx = start,
+				.end_idx = i - 1,
+				.tag = DD_TAG_MOD,
+				.string_offset = offset,
+			};
+			bonsai_store_range(bt,
+					   ddebug_site_tag_key((unsigned long)&p[start], DD_TAG_MOD),
+					   ddebug_site_tag_key((unsigned long)&p[i - 1], DD_TAG_MOD),
+					   (void *)site[start]._modname, GFP_KERNEL);
+			start = i;
+		}
+	}
+	offset = ddebug_pool_add_string(&pool, site[start]._modname);
+	records[rec_count++] = (struct _ddebug_interval_record){
+		.start_idx = start,
+		.end_idx = len - 1,
+		.tag = DD_TAG_MOD,
+		.string_offset = offset,
+	};
+	bonsai_store_range(bt,
+			   ddebug_site_tag_key((unsigned long)&p[start], DD_TAG_MOD),
+			   ddebug_site_tag_key((unsigned long)&p[len - 1], DD_TAG_MOD),
+			   (void *)site[start]._modname, GFP_KERNEL);
+
+	/* 2. Consolidate and insert File ranges */
+	start = 0;
+	for (i = 1; i < len; i++) {
+		if (site[i]._filename != site[start]._filename &&
+		    strcmp(site[i]._filename, site[start]._filename) != 0) {
+			offset = ddebug_pool_add_string(&pool, site[start]._filename);
+			records[rec_count++] = (struct _ddebug_interval_record){
+				.start_idx = start,
+				.end_idx = i - 1,
+				.tag = DD_TAG_FILE,
+				.string_offset = offset,
+			};
+			bonsai_store_range(bt,
+					   ddebug_site_tag_key((unsigned long)&p[start], DD_TAG_FILE),
+					   ddebug_site_tag_key((unsigned long)&p[i - 1], DD_TAG_FILE),
+					   (void *)site[start]._filename, GFP_KERNEL);
+			start = i;
+		}
+	}
+	offset = ddebug_pool_add_string(&pool, site[start]._filename);
+	records[rec_count++] = (struct _ddebug_interval_record){
+		.start_idx = start,
+		.end_idx = len - 1,
+		.tag = DD_TAG_FILE,
+		.string_offset = offset,
+	};
+	bonsai_store_range(bt,
+			   ddebug_site_tag_key((unsigned long)&p[start], DD_TAG_FILE),
+			   ddebug_site_tag_key((unsigned long)&p[len - 1], DD_TAG_FILE),
+			   (void *)site[start]._filename, GFP_KERNEL);
+
+	/* 3. Consolidate and insert Function ranges */
+	start = 0;
+	for (i = 1; i < len; i++) {
+		if (site[i]._function != site[start]._function &&
+		    strcmp(site[i]._function, site[start]._function) != 0) {
+			offset = ddebug_pool_add_string(&pool, site[start]._function);
+			records[rec_count++] = (struct _ddebug_interval_record){
+				.start_idx = start,
+				.end_idx = i - 1,
+				.tag = DD_TAG_FUNC,
+				.string_offset = offset,
+			};
+			bonsai_store_range(bt,
+					   ddebug_site_tag_key((unsigned long)&p[start], DD_TAG_FUNC),
+					   ddebug_site_tag_key((unsigned long)&p[i - 1], DD_TAG_FUNC),
+					   (void *)site[start]._function, GFP_KERNEL);
+			start = i;
+		}
+	}
+	offset = ddebug_pool_add_string(&pool, site[start]._function);
+	records[rec_count++] = (struct _ddebug_interval_record){
+		.start_idx = start,
+		.end_idx = len - 1,
+		.tag = DD_TAG_FUNC,
+		.string_offset = offset,
+	};
+	bonsai_store_range(bt,
+			   ddebug_site_tag_key((unsigned long)&p[start], DD_TAG_FUNC),
+			   ddebug_site_tag_key((unsigned long)&p[len - 1], DD_TAG_FUNC),
+			   (void *)site[start]._function, GFP_KERNEL);
+
+	bonsai_seal(bt);
+
+	/* Build canonical uncompressed payload */
+	total_raw_sz = sizeof(*hdr) + rec_count * sizeof(*records) + pool.len;
+	uncomp_payload = kvmalloc(total_raw_sz, GFP_KERNEL);
+	if (!uncomp_payload) {
+		kvfree(records);
+		kvfree(pool.buf);
+		return -ENOMEM;
+	}
+
+	hdr = (struct _ddebug_metadata_header *)uncomp_payload;
+	*hdr = (struct _ddebug_metadata_header){
+		.magic = DDEBUG_META_MAGIC,
+		.version = DDEBUG_META_VERSION,
+		.desc_count = len,
+		.interval_count = rec_count,
+		.strings_len = pool.len,
+	};
+
+	memcpy(uncomp_payload + sizeof(*hdr), records, rec_count * sizeof(*records));
+	if (pool.len > 0)
+		memcpy(uncomp_payload + sizeof(*hdr) + rec_count * sizeof(*records), pool.buf, pool.len);
+
+	kvfree(records);
+	kvfree(pool.buf);
+
+	/* Compress payload */
+	max_dst_sz = ZSTD_compressBound(total_raw_sz);
+	cctx = ZSTD_createCCtx_advanced(ddebug_zstd_mem);
+	compressed_payload = kvmalloc(max_dst_sz, GFP_KERNEL);
+	if (!cctx || !compressed_payload) {
+		if (cctx) ZSTD_freeCCtx(cctx);
+		kvfree(compressed_payload);
+		kvfree(uncomp_payload);
+		return -ENOMEM;
+	}
+
+	clen = ZSTD_compressCCtx(cctx, compressed_payload, max_dst_sz, uncomp_payload, total_raw_sz, 3);
+	ZSTD_freeCCtx(cctx);
+	kvfree(uncomp_payload);
+
+	if (ZSTD_isError(clen)) {
+		kvfree(compressed_payload);
+		return -EINVAL;
+	}
+
+	*out_zbuf = kvmemdup(compressed_payload, clen, GFP_KERNEL);
+	*out_zlen = clen;
+	kvfree(compressed_payload);
+
+	v3pr_info("condensed and compressed %s metadata: %u intervals, %lu bytes -> %zu bytes\n",
+		  di->mod_name ? di->mod_name : "builtin", rec_count, total_raw_sz, clen);
+
+	return 0;
+}
+
 /*
  * Allocate a new ddebug_table for the given module
  * and add it to the global list.
@@ -1571,21 +2261,19 @@ static int ddebug_add_module(struct _ddebug_info *di)
 		return -ENOMEM;
 	}
 	INIT_LIST_HEAD(&dt->link);
-	/*
-	 * For built-in modules, di is a partial cursor into the
-	 * builtin dyndbg data; the descriptors are the subrange
-	 * matching the modname, but the classmaps are the full set.
-	 * We find and set the relevant subrange of classmaps here.
-	 *
-	 * The modname string is in .rodata, the descriptors and
-	 * classmaps are in writable .data. All are immortal.
-	 *
-	 * For loaded modules, mod_name points at the name[] member
-	 * of struct module, and the descriptors and classmaps point
-	 * at the module's ELF sections; all have lifetimes matching
-	 * the module's presence.
-	 */
 	dt->info = *di;
+
+	/*
+	 * Built-in modules (which have di->sites.len == 0 here because they
+	 * were condensed globally in dynamic_debug_init) will leave site_map empty.
+	 * Loadable modules get their own dedicated site_map tree.
+	 */
+	if (dt->info.sites.len) {
+		ddebug_condense_and_compress_sites(&dt->info, &dt->site_map,
+						   &dt->compressed_sites, &dt->compressed_len);
+		dt->info.sites.len = 0;
+	}
+
 	dd_set_module_subrange(i, cm, &dt->info, maps);
 	dd_set_module_subrange(i, cli, &dt->info, users);
 
@@ -1689,10 +2377,29 @@ int ddebug_dyndbg_module_param_cb(char *param, char *val, const char *module)
 static void ddebug_table_free(struct ddebug_table *dt)
 {
 	list_del_init(&dt->link);
+	if (dt->site_map.num_node_slabs || dt->site_map.num_val_slabs)
+		bonsai_destroy(&dt->site_map);
+	kvfree(dt->compressed_sites);
 	kfree(dt);
 }
 
 #ifdef CONFIG_MODULES
+
+/*
+ * clear the maple tree containing __dyndbg_sites info of their
+ * contents for a module being rmmod'd.
+ */
+static void ddebug_module_sites_clear(struct ddebug_table *dt)
+{
+	if (!dt->site_map.num_node_slabs)
+		return; /* Built-in modules share the global tree */
+
+	v2pr_info("clearing %3d debugs of removed module %s\n",
+		  dt->info.descs.len, dt->info.mod_name);
+
+	/* Safely destroy the isolated per-module site map and free the pot memory */
+	bonsai_destroy(&dt->site_map);
+}
 
 /*
  * Called in response to a module being unloaded.  Removes
@@ -1705,7 +2412,14 @@ static int ddebug_remove_module(const char *mod_name)
 
 	mutex_lock(&ddebug_lock);
 	list_for_each_entry_safe(dt, nextdt, &ddebug_tables, link) {
+		/*
+		 * NB: with multiple "main" builtins, strcmp would be
+		 * incorrect.  Linker gives us this one.
+		 */
 		if (dt->info.mod_name == mod_name) {
+			ddebug_drop_all_cached_prefixes(&dt->info);
+
+			ddebug_module_sites_clear(dt);
 			ddebug_table_free(dt);
 			ret = 0;
 			break;
@@ -1757,15 +2471,215 @@ static void ddebug_remove_all_tables(void)
 	mutex_unlock(&ddebug_lock);
 }
 
+/*
+ * dynamic prefix cache keys and descriptor ranges.
+ *
+ * ddebug_prefix_key() constructs the maple tree key by combining
+ * prefix flags with the descriptor address, creating separate
+ * key-spaces for different flag combinations.
+ *
+ * ddebug_prefix_range() determines the address range of descriptors
+ * that can share a dynamic prefix based on these flags.
+ */
+#define DDEBUG_PREFIX_KEY_FLAGS_SHIFT (BITS_PER_LONG - 4)
+
+static inline unsigned long ddebug_pack_key(unsigned long addr, uint8_t flags)
+{
+	/*
+	 * Prefix flags are at bits 1-4. Pack them into bits 0-3 then shift
+	 * to the top of the key to partition the key-space by flag-set.
+	 * Shift the address down 4 bits; since descs are 16-byte aligned,
+	 * they remain unique.
+	 */
+	return ((unsigned long)(flags >> 1) & 0xF) << DDEBUG_PREFIX_KEY_FLAGS_SHIFT |
+		(addr >> 4);
+}
+
+static unsigned long ddebug_prefix_key(const struct _ddebug *desc)
+{
+	return ddebug_pack_key((unsigned long)desc, prefix_flags(desc->flags));
+}
+
+static void __maybe_unused ddebug_drop_all_cached_prefixes(const struct _ddebug_info *di)
+{
+	int i, f;
+	struct _ddebug *dp;
+
+	for_subvec(i, dp, di, descs) {
+		for (f = 0; f < 16; f++) {
+			unsigned long key = ((unsigned long)f << DDEBUG_PREFIX_KEY_FLAGS_SHIFT) |
+					    ((unsigned long)dp >> 4);
+			char *prefix = mtree_erase(&pr_prefixes, key);
+			if (prefix) {
+				pr_prefixes_count--;
+				v3pr_info("drop cached prefix: %s\n", prefix);
+				kfree(prefix);
+			}
+		}
+	}
+}
+
+static void ddebug_add_cached_prefix(struct _ddebug *dp)
+{
+	unsigned long key = ddebug_prefix_key(dp);
+	char *prefix;
+	void *old_prefix;
+	char buf[PREFIX_SIZE] = "";
+	int pos = 0;
+	struct _dd_prefix_key_range range;
+
+	prefix = mtree_load(&pr_prefixes, key);
+	if (prefix)
+		return;
+
+	{
+		const char *mod = NULL, *file = NULL, *func = NULL;
+		struct ddebug_table *dt;
+		struct bonsai_tree *site_map = &dd_builtin_site_map;
+
+		list_for_each_entry(dt, &ddebug_tables, link) {
+			if (dp >= dt->info.descs.start &&
+			    dp < dt->info.descs.start + dt->info.descs.len) {
+				site_map = ddebug_get_site_map(dt);
+				break;
+			}
+		}
+
+		ddebug_resolve_site(site_map, dp,
+				    (dp->flags & _DPRINTK_FLAGS_INCL_MODNAME) ? &mod : NULL,
+				    (dp->flags & _DPRINTK_FLAGS_INCL_SOURCENAME) ? &file : NULL,
+				    (dp->flags & _DPRINTK_FLAGS_INCL_FUNCNAME) ? &func : NULL);
+
+		if (mod)
+			pos += snprintf(buf + pos, remaining(pos), "%s:", mod);
+		if (func)
+			pos += snprintf(buf + pos, remaining(pos), "%s:", func);
+		if (file)
+			pos += snprintf(buf + pos, remaining(pos), "%s:", trim_prefix(file));
+	}
+	if (dp->flags & _DPRINTK_FLAGS_INCL_LINENO)
+		pos += snprintf(buf + pos, remaining(pos), "%d:",
+				dp->lineno);
+	if (remaining(pos)) {
+		buf[pos++] = ' ';
+		buf[pos] = '\0';
+	}
+
+	prefix = kstrdup(buf, GFP_KERNEL);
+	if (!prefix)
+		return;
+
+	ddebug_prefix_range(dp, &range);
+
+	old_prefix = mtree_erase(&pr_prefixes, range.start);
+	kfree(old_prefix);
+	if (old_prefix)
+		pr_prefixes_count--;
+
+	if (mtree_store_range(&pr_prefixes, range.start, range.end, prefix, GFP_KERNEL)) {
+		kfree(prefix);
+	} else {
+		pr_prefixes_count++;
+		v3pr_info("eagerly filled prefix cache: %s [%lx-%lx]\n", prefix, range.start, range.end);
+	}
+}
+
+static void ddebug_prefix_range(const struct _ddebug *desc,
+				struct _dd_prefix_key_range *range)
+{
+	range->start = ddebug_prefix_key(desc);
+	range->end = ddebug_prefix_key(desc);
+}
+
+#include <linux/shrinker.h>
+
+static inline unsigned long bonsai_shrinker_cost(const struct bonsai_tree *bt)
+{
+	if (!bt || (!bt->num_node_slabs && !bt->num_val_slabs))
+		return 0;
+	return (bt->num_node_slabs + bt->num_val_slabs) * (BONSAI_SLAB_SIZE / PAGE_SIZE);
+}
+
+static unsigned long ddebug_shrinker_count(struct shrinker *shrinker,
+					   struct shrink_control *sc)
+{
+	unsigned long count = 0;
+	struct ddebug_table *dt;
+
+	mutex_lock(&ddebug_lock);
+	if (dd_builtin_site_map.num_node_slabs || dd_builtin_site_map.num_val_slabs)
+		count += bonsai_shrinker_cost(&dd_builtin_site_map);
+
+	list_for_each_entry(dt, &ddebug_tables, link) {
+		if (dt->site_map.num_node_slabs || dt->site_map.num_val_slabs)
+			count += bonsai_shrinker_cost(&dt->site_map);
+	}
+	if (!mtree_empty(&pr_prefixes))
+		count += pr_prefixes_count;
+	mutex_unlock(&ddebug_lock);
+
+	return count ? count : SHRINK_EMPTY;
+}
+
+static unsigned long ddebug_shrinker_scan(struct shrinker *shrinker,
+					  struct shrink_control *sc)
+{
+	struct ddebug_table *dt;
+	unsigned long freed = 0;
+
+	mutex_lock(&ddebug_lock);
+
+	/* 1. Free built-in site map and all its string slabs */
+	if (dd_builtin_site_map.num_node_slabs || dd_builtin_site_map.num_val_slabs) {
+		freed += bonsai_shrinker_cost(&dd_builtin_site_map);
+		bonsai_destroy(&dd_builtin_site_map);
+	}
+
+	/* 2. Free module site maps and all their string slabs */
+	list_for_each_entry(dt, &ddebug_tables, link) {
+		if (dt->site_map.num_node_slabs || dt->site_map.num_val_slabs) {
+			freed += bonsai_shrinker_cost(&dt->site_map);
+			bonsai_destroy(&dt->site_map);
+		}
+	}
+
+	/* 3. Free prefix cache strings and tree */
+	if (!mtree_empty(&pr_prefixes)) {
+		MA_STATE(mas, &pr_prefixes, 0, ULONG_MAX);
+		void *entry;
+
+		mas_lock(&mas);
+		mas_for_each(&mas, entry, ULONG_MAX)
+			kfree(entry);
+		mas_unlock(&mas);
+
+		__mt_destroy(&pr_prefixes);
+		pr_prefixes_count = 0;
+		freed += 1;
+	}
+
+	mutex_unlock(&ddebug_lock);
+
+	return freed ? freed : SHRINK_STOP;
+}
+
 static __initdata int ddebug_init_success;
 
 static int __init dynamic_debug_init_control(void)
 {
 	struct proc_dir_entry *procfs_dir;
 	struct dentry *debugfs_dir;
+	struct shrinker *shrinker;
 
 	if (!ddebug_init_success)
 		return -ENODEV;
+
+	shrinker = shrinker_alloc(0, "dynamic_debug");
+	if (shrinker) {
+		shrinker->count_objects = ddebug_shrinker_count;
+		shrinker->scan_objects = ddebug_shrinker_scan;
+		shrinker_register(shrinker);
+	}
 
 	/* Create the control file in debugfs if it is enabled */
 	if (debugfs_initialized()) {
@@ -1784,16 +2698,16 @@ static int __init dynamic_debug_init_control(void)
 
 static int __init dynamic_debug_init(void)
 {
-	struct _ddebug *iter, *iter_mod_start;
-	int ret, i, mod_sites, mod_ct;
-	const char *modname;
+	int i = 0, ret = 0, mod_ct = 0;
 	char *cmdline;
 
 	struct _ddebug_info di = {
 		.descs.start = __start___dyndbg_descs,
+		.sites.start = __start___dyndbg_sites,
 		.maps.start  = __start___dyndbg_class_maps,
 		.users.start = __start___dyndbg_class_users,
 		.descs.len = __stop___dyndbg_descs - __start___dyndbg_descs,
+		.sites.len = __stop___dyndbg_sites - __start___dyndbg_sites,
 		.maps.len  = __stop___dyndbg_class_maps - __start___dyndbg_class_maps,
 		.users.len = __stop___dyndbg_class_users - __start___dyndbg_class_users,
 	};
@@ -1815,38 +2729,66 @@ static int __init dynamic_debug_init(void)
 		ddebug_init_success = 1;
 		return 0;
 	}
+	/*
+	 * Walk the builtin sites and add each module's subrange.
+	 */
+	if (di.sites.len) {
+		unsigned int count = di.sites.len;
+		struct _ddebug *range_start = di.descs.start;
+		const char *cur_mod = di.sites.start[0]._modname;
 
-	iter = iter_mod_start = __start___dyndbg_descs;
-	modname = iter->modname;
-	i = mod_sites = mod_ct = 0;
+		ddebug_condense_and_compress_sites(&di, &dd_builtin_site_map,
+						   &dd_builtin_compressed_sites, &dd_builtin_compressed_len);
 
-	for (; iter < __stop___dyndbg_descs; iter++, i++, mod_sites++) {
-
-		if (strcmp(modname, iter->modname)) {
-			mod_ct++;
-			di.descs.len = mod_sites;
-			di.descs.start = iter_mod_start;
-			di.mod_name = modname;
-			ret = ddebug_add_module(&di);
-			if (ret)
-				goto out_err;
-
-			mod_sites = 0;
-			modname = iter->modname;
-			iter_mod_start = iter;
+		for (i = 0; i < count; i++) {
+			const char *p_mod = di.sites.start[i]._modname;
+			if (p_mod != cur_mod && strcmp(p_mod, cur_mod) != 0) {
+				struct _ddebug_info mod_di = di;
+				mod_di.mod_name = cur_mod;
+				mod_di.descs.start = range_start;
+				mod_di.descs.len = &di.descs.start[i] - range_start;
+				mod_di.sites.len = 0; /* Built-in modules share global tree */
+				ret = ddebug_add_module(&mod_di);
+				if (ret)
+					goto out_err;
+				mod_ct++;
+				range_start = &di.descs.start[i];
+				cur_mod = p_mod;
+			}
 		}
+		if (range_start < di.descs.start + count) {
+			struct _ddebug_info mod_di = di;
+			mod_di.mod_name = cur_mod;
+			mod_di.descs.start = range_start;
+			mod_di.descs.len = (di.descs.start + count) - range_start;
+			mod_di.sites.len = 0;
+			ret = ddebug_add_module(&mod_di);
+			mod_ct++;
+		}
+		i = count;
+	} else {
+		/* Built-in metadata is stripped: register single table covering descs */
+		struct _ddebug_info mod_di = di;
+		mod_di.mod_name = "vmlinux";
+		mod_di.descs.start = di.descs.start;
+		mod_di.descs.len = di.descs.len;
+		mod_di.sites.len = 0;
+		ret = ddebug_add_module(&mod_di);
+		if (ret)
+			goto out_err;
+		mod_ct = 1;
+		i = di.descs.len;
 	}
-	di.descs.len = mod_sites;
-	di.descs.start = iter_mod_start;
-	di.mod_name = modname;
-	ret = ddebug_add_module(&di);
-	if (ret)
-		goto out_err;
 
 	ddebug_init_success = 1;
-	vpr_info("%d prdebugs in %d modules, %d KiB in ddebug tables, %d kiB in __dyndbg_descs section\n",
+	vpr_info("%d prdebugs in %d modules, %d KiB in ddebug tables, %d+%d kiB in __dyndbg:_descs+_sites sections\n",
 		 i, mod_ct, (int)((mod_ct * sizeof(struct ddebug_table)) >> 10),
-		 (int)((i * sizeof(struct _ddebug)) >> 10));
+		 (int)((i * sizeof(struct _ddebug)) >> 10),
+		 (int)((i * sizeof(struct _ddebug_site)) >> 10));
+	vpr_info("builtin site map: %lu entries, %u nodes, height %u, slabs %u (%u KiB)\n",
+		 dd_builtin_site_map.entry_count, dd_builtin_site_map.node_count,
+		 dd_builtin_site_map.height, dd_builtin_site_map.num_node_slabs,
+		 (unsigned int)(dd_builtin_site_map.num_node_slabs * (BONSAI_SLAB_SIZE >> 10)));
 
 	if (di.maps.len)
 		v2pr_info("  %d builtin ddebug class-maps\n", di.maps.len);
@@ -1867,7 +2809,7 @@ static int __init dynamic_debug_init(void)
 
 out_err:
 	ddebug_remove_all_tables();
-	return 0;
+	return ret;
 }
 /* Allow early initialization for boot messages via boot param */
 early_initcall(dynamic_debug_init);

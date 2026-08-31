@@ -193,6 +193,8 @@ config DYNAMIC_DEBUG_CORE
 	bool "Enable core function of dynamic debug support"
 	depends on PRINTK
 	depends on (DEBUG_FS || PROC_FS)
+	select ZSTD_COMPRESS
+	select ZSTD_DECOMPRESS
 	help
 	  Enable core functional support of dynamic debug. It is useful
 	  when you want to tie dynamic debug to your kernel modules with
@@ -226,6 +228,16 @@ config DEBUG_BUGVERBOSE_DETAILED
 	  This helps debugging, but costs about 100K of memory.
 
 	  Say N if unsure.
+
+config DYNAMIC_DEBUG_STRIPPED
+	bool "Strip dynamic debug site metadata from kernel image"
+	depends on DYNAMIC_DEBUG_CORE
+	default n
+	help
+	  Say Y here to discard built-in dynamic debug site metadata
+	  (__dyndbg_sites and string sections) from the kernel binary at
+	  link time. The metadata can be packaged into an external .zst file
+	  and ingested at runtime or early boot.
 
 
 endmenu # "printk and dmesg options"

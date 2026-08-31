@@ -92,7 +92,15 @@ static inline struct fw_priv *to_fw_priv(struct kref *ref)
  * guarding for corner cases a global lock should be OK */
 DEFINE_MUTEX(fw_lock);
 
-struct firmware_cache fw_cache;
+struct firmware_cache fw_cache = {
+	.lock = __SPIN_LOCK_UNLOCKED(fw_cache.lock),
+	.head = LIST_HEAD_INIT(fw_cache.head),
+	.state = FW_LOADER_NO_CACHE,
+#ifdef CONFIG_FW_CACHE
+	.name_lock = __SPIN_LOCK_UNLOCKED(fw_cache.name_lock),
+	.fw_names = LIST_HEAD_INIT(fw_cache.fw_names),
+#endif
+};
 bool fw_load_abort_all;
 
 void fw_state_init(struct fw_priv *fw_priv)
