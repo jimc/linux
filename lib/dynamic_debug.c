@@ -61,10 +61,7 @@ struct ddebug_table {
 	struct bonsai_tree site_map;
 	void *compressed_sites;
 	unsigned long compressed_len;
-	void *permanent_strings;
 };
-
-static void *dd_builtin_permanent_strings;
 
 struct ddebug_query {
 	const char *filename;
@@ -121,7 +118,7 @@ static unsigned long dd_builtin_compressed_len;
 
 static inline struct bonsai_tree *ddebug_get_site_map(struct ddebug_table *dt)
 {
-	return dt && dt->site_map.num_segments ? &dt->site_map : &dd_builtin_site_map;
+	return dt && dt->site_map.num_node_slabs ? &dt->site_map : &dd_builtin_site_map;
 }
 
 #define DD_KEY_ALIGN_MASK   7UL
@@ -1908,13 +1905,12 @@ static unsigned int ddebug_pool_add_string(struct ddebug_string_pool *pool, cons
 
 static int ddebug_hydrate_intervals(const void *src, size_t src_len,
 				    struct _ddebug *descs, unsigned int desc_count,
-				    struct bonsai_tree *bt, void **out_strings)
+				    struct bonsai_tree *bt)
 {
 	unsigned long long uncomp_sz;
 	struct _ddebug_metadata_header *hdr;
 	const struct _ddebug_interval_record *intervals;
 	const char *strings_base;
-	char *permanent_strings = NULL;
 	ZSTD_DCtx *dctx;
 	void *uncomp_buf;
 	size_t dlen;
@@ -1962,21 +1958,16 @@ static int ddebug_hydrate_intervals(const void *src, size_t src_len,
 	strings_base = (const char *)uncomp_buf + sizeof(*hdr) +
 		       hdr->interval_count * sizeof(struct _ddebug_interval_record);
 
+	if (!bt->num_node_slabs)
+		bonsai_init(bt);
+
 	if (hdr->strings_len > 0) {
-		permanent_strings = kvmemdup(strings_base, hdr->strings_len, GFP_KERNEL);
-		if (!permanent_strings) {
+		strings_base = bonsai_copy_string_pool(bt, strings_base, hdr->strings_len, GFP_KERNEL);
+		if (!strings_base) {
 			kvfree(uncomp_buf);
 			return -ENOMEM;
 		}
-		if (out_strings) {
-			kvfree(*out_strings);
-			*out_strings = permanent_strings;
-		}
-		strings_base = permanent_strings;
 	}
-
-	if (!bt->num_segments)
-		bonsai_init(bt, 0, GFP_KERNEL);
 
 	/* Single linear pass pouring intervals into Bonsai tree */
 	for (i = 0; i < hdr->interval_count; i++) {
@@ -2007,7 +1998,6 @@ static int ddebug_reconstruct_site_map(struct ddebug_table *dt)
 	void *compressed_buf;
 	unsigned long compressed_len;
 	struct bonsai_tree *bt;
-	void **out_strings;
 	bool is_builtin = !dt || (dt->info.descs.start >= __start___dyndbg_descs &&
 				  dt->info.descs.start < __stop___dyndbg_descs);
 
@@ -2021,7 +2011,6 @@ static int ddebug_reconstruct_site_map(struct ddebug_table *dt)
 		desc_count = __stop___dyndbg_descs - __start___dyndbg_descs;
 		compressed_buf = dd_builtin_compressed_sites;
 		compressed_len = dd_builtin_compressed_len;
-		out_strings = &dd_builtin_permanent_strings;
 	} else {
 		if (dt->site_map.root_idx)
 			return 0;
@@ -2032,11 +2021,10 @@ static int ddebug_reconstruct_site_map(struct ddebug_table *dt)
 		desc_count = dt->info.descs.len;
 		compressed_buf = dt->compressed_sites;
 		compressed_len = dt->compressed_len;
-		out_strings = &dt->permanent_strings;
 	}
 
 	return ddebug_hydrate_intervals(compressed_buf, compressed_len,
-					descs, desc_count, bt, out_strings);
+					descs, desc_count, bt);
 }
 
 static int ddebug_load_zstd_metadata(const void *src, size_t src_len)
@@ -2046,14 +2034,13 @@ static int ddebug_load_zstd_metadata(const void *src, size_t src_len)
 	int ret;
 
 	mutex_lock(&ddebug_lock);
-	if (dd_builtin_site_map.num_segments > 0) {
+	if (dd_builtin_site_map.num_node_slabs > 0) {
 		mutex_unlock(&ddebug_lock);
 		return -EEXIST;
 	}
 
 	ret = ddebug_hydrate_intervals(src, src_len, descs, desc_count,
-				       &dd_builtin_site_map,
-				       &dd_builtin_permanent_strings);
+				       &dd_builtin_site_map);
 	if (ret) {
 		mutex_unlock(&ddebug_lock);
 		return ret;
@@ -2065,10 +2052,10 @@ static int ddebug_load_zstd_metadata(const void *src, size_t src_len)
 
 	mutex_unlock(&ddebug_lock);
 
-	vpr_info("ingested external site metadata: %u descs, %zu compressed bytes -> %u nodes, %u segments (%u KiB)\n",
+	vpr_info("ingested external site metadata: %u descs, %zu compressed bytes -> %u nodes, %u slabs (%u KiB)\n",
 		 desc_count, src_len, dd_builtin_site_map.node_count,
-		 dd_builtin_site_map.num_segments,
-		 (unsigned int)(dd_builtin_site_map.num_segments * (BONSAI_SEG_SIZE >> 10)));
+		 dd_builtin_site_map.num_node_slabs,
+		 (unsigned int)(dd_builtin_site_map.num_node_slabs * (BONSAI_SLAB_SIZE >> 10)));
 
 	return 0;
 }
@@ -2097,8 +2084,8 @@ static int ddebug_condense_and_compress_sites(struct _ddebug_info *di, struct bo
 	if (!records)
 		return -ENOMEM;
 
-	if (!bt->num_segments)
-		bonsai_init(bt, 0, GFP_KERNEL);
+	if (!bt->num_node_slabs)
+		bonsai_init(bt);
 
 	/* 1. Consolidate and insert Module ranges */
 	start = 0;
@@ -2390,10 +2377,9 @@ int ddebug_dyndbg_module_param_cb(char *param, char *val, const char *module)
 static void ddebug_table_free(struct ddebug_table *dt)
 {
 	list_del_init(&dt->link);
-	if (dt->site_map.num_segments)
+	if (dt->site_map.num_node_slabs || dt->site_map.num_val_slabs)
 		bonsai_destroy(&dt->site_map);
 	kvfree(dt->compressed_sites);
-	kvfree(dt->permanent_strings);
 	kfree(dt);
 }
 
@@ -2405,7 +2391,7 @@ static void ddebug_table_free(struct ddebug_table *dt)
  */
 static void ddebug_module_sites_clear(struct ddebug_table *dt)
 {
-	if (!dt->site_map.num_segments)
+	if (!dt->site_map.num_node_slabs)
 		return; /* Built-in modules share the global tree */
 
 	v2pr_info("clearing %3d debugs of removed module %s\n",
@@ -2537,6 +2523,7 @@ static void ddebug_add_cached_prefix(struct _ddebug *dp)
 {
 	unsigned long key = ddebug_prefix_key(dp);
 	char *prefix;
+	void *old_prefix;
 	char buf[PREFIX_SIZE] = "";
 	int pos = 0;
 	struct _dd_prefix_key_range range;
@@ -2584,6 +2571,11 @@ static void ddebug_add_cached_prefix(struct _ddebug *dp)
 
 	ddebug_prefix_range(dp, &range);
 
+	old_prefix = mtree_erase(&pr_prefixes, range.start);
+	kfree(old_prefix);
+	if (old_prefix)
+		pr_prefixes_count--;
+
 	if (mtree_store_range(&pr_prefixes, range.start, range.end, prefix, GFP_KERNEL)) {
 		kfree(prefix);
 	} else {
@@ -2603,9 +2595,9 @@ static void ddebug_prefix_range(const struct _ddebug *desc,
 
 static inline unsigned long bonsai_shrinker_cost(const struct bonsai_tree *bt)
 {
-	if (!bt || !bt->num_segments)
+	if (!bt || (!bt->num_node_slabs && !bt->num_val_slabs))
 		return 0;
-	return bt->num_segments * (BONSAI_SEG_SIZE / PAGE_SIZE);
+	return (bt->num_node_slabs + bt->num_val_slabs) * (BONSAI_SLAB_SIZE / PAGE_SIZE);
 }
 
 static unsigned long ddebug_shrinker_count(struct shrinker *shrinker,
@@ -2615,11 +2607,11 @@ static unsigned long ddebug_shrinker_count(struct shrinker *shrinker,
 	struct ddebug_table *dt;
 
 	mutex_lock(&ddebug_lock);
-	if (dd_builtin_site_map.num_segments)
+	if (dd_builtin_site_map.num_node_slabs || dd_builtin_site_map.num_val_slabs)
 		count += bonsai_shrinker_cost(&dd_builtin_site_map);
 
 	list_for_each_entry(dt, &ddebug_tables, link) {
-		if (dt->site_map.num_segments)
+		if (dt->site_map.num_node_slabs || dt->site_map.num_val_slabs)
 			count += bonsai_shrinker_cost(&dt->site_map);
 	}
 	if (!mtree_empty(&pr_prefixes))
@@ -2637,26 +2629,30 @@ static unsigned long ddebug_shrinker_scan(struct shrinker *shrinker,
 
 	mutex_lock(&ddebug_lock);
 
-	/* 1. Free built-in site map and hydrated strings */
-	if (dd_builtin_site_map.num_segments) {
+	/* 1. Free built-in site map and all its string slabs */
+	if (dd_builtin_site_map.num_node_slabs || dd_builtin_site_map.num_val_slabs) {
 		freed += bonsai_shrinker_cost(&dd_builtin_site_map);
 		bonsai_destroy(&dd_builtin_site_map);
-		kvfree(dd_builtin_permanent_strings);
-		dd_builtin_permanent_strings = NULL;
 	}
 
-	/* 2. Free module site maps and hydrated strings */
+	/* 2. Free module site maps and all their string slabs */
 	list_for_each_entry(dt, &ddebug_tables, link) {
-		if (dt->site_map.num_segments) {
+		if (dt->site_map.num_node_slabs || dt->site_map.num_val_slabs) {
 			freed += bonsai_shrinker_cost(&dt->site_map);
 			bonsai_destroy(&dt->site_map);
-			kvfree(dt->permanent_strings);
-			dt->permanent_strings = NULL;
 		}
 	}
 
-	/* 3. Free prefix cache */
+	/* 3. Free prefix cache strings and tree */
 	if (!mtree_empty(&pr_prefixes)) {
+		MA_STATE(mas, &pr_prefixes, 0, ULONG_MAX);
+		void *entry;
+
+		mas_lock(&mas);
+		mas_for_each(&mas, entry, ULONG_MAX)
+			kfree(entry);
+		mas_unlock(&mas);
+
 		__mt_destroy(&pr_prefixes);
 		pr_prefixes_count = 0;
 		freed += 1;
@@ -2789,10 +2785,10 @@ static int __init dynamic_debug_init(void)
 		 i, mod_ct, (int)((mod_ct * sizeof(struct ddebug_table)) >> 10),
 		 (int)((i * sizeof(struct _ddebug)) >> 10),
 		 (int)((i * sizeof(struct _ddebug_site)) >> 10));
-	vpr_info("builtin site map: %lu entries, %u nodes, height %u, segments %u (%u KiB)\n",
+	vpr_info("builtin site map: %lu entries, %u nodes, height %u, slabs %u (%u KiB)\n",
 		 dd_builtin_site_map.entry_count, dd_builtin_site_map.node_count,
-		 dd_builtin_site_map.height, dd_builtin_site_map.num_segments,
-		 (unsigned int)(dd_builtin_site_map.num_segments * (BONSAI_SEG_SIZE >> 10)));
+		 dd_builtin_site_map.height, dd_builtin_site_map.num_node_slabs,
+		 (unsigned int)(dd_builtin_site_map.num_node_slabs * (BONSAI_SLAB_SIZE >> 10)));
 
 	if (di.maps.len)
 		v2pr_info("  %d builtin ddebug class-maps\n", di.maps.len);
