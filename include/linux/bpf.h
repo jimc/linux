@@ -35,6 +35,7 @@
 #include <linux/xattr.h>
 #include <linux/key.h>
 #include <linux/ftrace.h>
+#include <linux/bonsai_tree.h>
 #include <asm/rqspinlock.h>
 
 struct bpf_verifier_env;
@@ -1795,6 +1796,8 @@ struct bpf_prog_aux {
 	/* function name for valid attach_btf_id */
 	const char *attach_func_name;
 	struct bpf_prog **func;
+	struct bonsai_tree bonsai_funcs;
+	struct scratchpad *jit_scratch;
 	struct bpf_prog_aux *main_prog_aux;
 	void *jit_data; /* JIT specific data. arch dependent */
 	struct bpf_jit_poke_descriptor *poke_tab;
@@ -1901,6 +1904,18 @@ struct bpf_prog {
 		DECLARE_FLEX_ARRAY(struct bpf_insn, insnsi);
 	};
 };
+
+static inline struct bpf_prog *bpf_prog_find_subprog(const struct bpf_prog *prog, unsigned long addr)
+{
+	if (!prog || !prog->aux)
+		return NULL;
+	if (prog->aux->bonsai_funcs.root_idx)
+		return (struct bpf_prog *)bonsai_lookup(&prog->aux->bonsai_funcs, addr);
+	if (addr >= (unsigned long)prog->bpf_func &&
+	    addr < (unsigned long)prog->bpf_func + prog->jited_len)
+		return (struct bpf_prog *)prog;
+	return NULL;
+}
 
 struct bpf_array_aux {
 	/* Programs with direct jumps into programs part of this array. */

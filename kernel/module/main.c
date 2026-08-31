@@ -66,6 +66,11 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/module.h>
 
+#undef MODULE_PARAM_PREFIX
+#define MODULE_PARAM_PREFIX "module."
+
+DEFINE_SCRATCHPAD_PARAM(modload, "Toggle module loader scratchpad");
+
 /*
  * Mutex protects:
  * 1) List of modules (also safely readable within RCU read section),
@@ -2522,6 +2527,7 @@ out:
 
 static void free_copy(struct load_info *info, int flags)
 {
+	scratchpad_free(&info->sp);
 	if (flags & MODULE_INIT_COMPRESSED_FILE)
 		module_decompress_cleanup(info);
 	else
@@ -3640,6 +3646,8 @@ SYSCALL_DEFINE3(init_module, void __user *, umod,
 	int err;
 	struct load_info info = { };
 
+	scratchpad_init_order(&info.sp, modload, SCRATCH_64K_ORDER, GFP_KERNEL);
+
 	err = may_init_module();
 	if (err)
 		return err;
@@ -3748,6 +3756,8 @@ static int init_module_from_file(struct file *f, const char __user * uargs, int 
 	void *buf = NULL;
 	int len;
 	int err;
+
+	scratchpad_init_order(&info.sp, modload, SCRATCH_64K_ORDER, GFP_KERNEL);
 
 	len = kernel_read_file(f, 0, &buf, INT_MAX, NULL,
 			       compressed ? READING_MODULE_COMPRESSED :

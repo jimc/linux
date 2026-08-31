@@ -218,6 +218,7 @@ struct maple_copy {
 #define MT_FLAGS_LOCK_BH	0x200
 #define MT_FLAGS_LOCK_EXTERN	0x300
 #define MT_FLAGS_ALLOC_WRAPPED	0x0800
+#define MT_FLAGS_DEDICATED_SLAB	0x1000
 
 #define MAPLE_HEIGHT_MAX	31
 
@@ -226,6 +227,8 @@ struct maple_copy {
 #define MAPLE_NODE_TYPE_SHIFT	0x03
 
 #define MAPLE_RESERVED_RANGE	4096
+
+struct scratchpad;
 
 #ifdef CONFIG_LOCKDEP
 #define mt_lock_is_held(mt)                                             \
@@ -269,6 +272,7 @@ struct maple_tree {
 	};
 	unsigned int	ma_flags;
 	void __rcu      *ma_root;
+	struct scratchpad *ma_scratch;
 };
 
 /**
@@ -281,6 +285,7 @@ struct maple_tree {
 	.ma_lock = __SPIN_LOCK_UNLOCKED((name).ma_lock),		\
 	.ma_flags = __flags,						\
 	.ma_root = NULL,						\
+	.ma_scratch = NULL,						\
 }
 
 /**
@@ -294,6 +299,7 @@ struct maple_tree {
 	.ma_external_lock = &(__lock).dep_map,				\
 	.ma_flags = (__flags),						\
 	.ma_root = NULL,						\
+	.ma_scratch = NULL,						\
 }
 #else
 #define MTREE_INIT_EXT(name, __flags, __lock)	MTREE_INIT(name, __flags)
@@ -847,6 +853,7 @@ static inline void mt_init_flags(struct maple_tree *mt, unsigned int flags)
 	if (!mt_external_lock(mt))
 		spin_lock_init(&mt->ma_lock);
 	rcu_assign_pointer(mt->ma_root, NULL);
+	mt->ma_scratch = NULL;
 }
 
 /**

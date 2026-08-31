@@ -173,14 +173,19 @@ static void nft_ctx_init(struct nft_ctx *ctx,
 	bitmap_zero(ctx->reg_inited, NFT_REG32_NUM);
 }
 
+DEFINE_SCRATCHPAD_PARAM(trans,
+			"Toggle nf_tables transaction scratchpad allocator");
+
 static struct nft_trans *nft_trans_alloc(const struct nft_ctx *ctx,
 					 int msg_type, u32 size)
 {
+	struct nftables_pernet *nft_net = nft_pernet(ctx->net);
 	struct nft_trans *trans;
 
-	trans = kzalloc(size, GFP_KERNEL);
+	trans = scratchpad_alloc_bytes(nft_net, trans_scratchpad, size);
 	if (trans == NULL)
 		return NULL;
+	memset(trans, 0, size);
 
 	INIT_LIST_HEAD(&trans->list);
 	trans->msg_type = msg_type;
@@ -192,6 +197,18 @@ static struct nft_trans *nft_trans_alloc(const struct nft_ctx *ctx,
 	trans->report = ctx->report;
 
 	return trans;
+}
+
+/*
+ * nft_trans_free - release a transaction object.
+ *
+ * Scratchpad-backed objects are not individually freed; they are reclaimed in
+ * bulk by scratchpad_free() at batch commit/abort boundary.  Kzalloc'd
+ * objects reside on slab pages and are released immediately via kfree().
+ */
+static inline void nft_trans_free(struct nft_trans *trans)
+{
+	scratchpad_free_key(trans, trans);
 }
 
 static struct nft_trans_binding *nft_trans_get_binding(struct nft_trans *trans)
@@ -219,7 +236,7 @@ static void nft_trans_list_del(struct nft_trans *trans)
 static void nft_trans_destroy(struct nft_trans *trans)
 {
 	nft_trans_list_del(trans);
-	kfree(trans);
+	nft_trans_free(trans);
 }
 
 static void __nft_set_trans_bind(const struct nft_ctx *ctx, struct nft_set *set,
@@ -519,8 +536,10 @@ static bool nft_trans_collapse_set_elem(struct nftables_pernet *nft_net,
 	/* krealloc might free tail which invalidates list pointers */
 	list_del_init(&tail->nft_trans.list);
 
-	new_trans = krealloc(tail, struct_size(tail, elems, nelems),
-			     GFP_KERNEL);
+	new_trans = scratchpad_realloc_bytes(tail,
+					     struct_size(tail, elems, old_nelems),
+					     struct_size(tail, elems, nelems),
+					     GFP_KERNEL);
 	if (!new_trans) {
 		list_add_tail(&tail->nft_trans.list,
 			      &nft_net->commit_list);
@@ -600,7 +619,7 @@ static void nft_trans_commit_list_add_elem(struct net *net, struct nft_trans *tr
 		     trans->msg_type != NFT_MSG_DELSETELEM);
 
 	if (nft_trans_try_collapse(nft_net, trans)) {
-		kfree(trans);
+		nft_trans_free(trans);
 		return;
 	}
 
@@ -3068,7 +3087,7 @@ static int nf_tables_updchain(struct nft_ctx *ctx, u8 genmask, u8 policy,
 
 err_trans:
 	free_percpu(stats);
-	kfree(trans);
+	nft_trans_free(trans);
 err_hooks:
 	if (nla[NFTA_CHAIN_HOOK]) {
 		list_for_each_entry_safe(h, next, &hook.list, list) {
@@ -7636,7 +7655,7 @@ static int nft_add_set_elem(struct nft_ctx *ctx, struct nft_set *set,
 	return set_full ? -ENFILE : 0;
 
 err_element_clash:
-	kfree(trans);
+	nft_trans_free(trans);
 err_set_size:
 	if (!(flags & NFT_SET_ELEM_CATCHALL))
 		atomic_dec(&set->nelems);
@@ -7904,7 +7923,7 @@ static int nft_del_setelem(struct nft_ctx *ctx, struct nft_set *set,
 	return 0;
 
 fail_ops:
-	kfree(trans);
+	nft_trans_free(trans);
 fail_trans:
 	kfree(elem.priv);
 fail_elem_key_end:
@@ -8287,7 +8306,7 @@ static int nf_tables_updobj(const struct nft_ctx *ctx,
 	return 0;
 
 err_free_trans:
-	kfree(trans);
+	nft_trans_free(trans);
 err_trans:
 	module_put(type->owner);
 	return err;
@@ -10253,7 +10272,7 @@ static void nft_commit_release(struct nft_trans *trans)
 	if (trans->put_net)
 		put_net(trans->net);
 
-	kfree(trans);
+	nft_trans_free(trans);
 }
 
 static void nf_tables_trans_destroy_work(struct work_struct *w)
@@ -10894,6 +10913,7 @@ static int nf_tables_commit(struct net *net, struct sk_buff *skb)
 	int err;
 
 	if (list_empty(&nft_net->commit_list)) {
+		scratchpad_reset(&nft_net->trans_scratchpad);
 		mutex_unlock(&nft_net->commit_mutex);
 		return 0;
 	}
@@ -11244,7 +11264,7 @@ static void nf_tables_abort_release(struct nft_trans *trans)
 			nf_tables_flowtable_destroy(nft_trans_flowtable(trans));
 		break;
 	}
-	kfree(trans);
+	nft_trans_free(trans);
 }
 
 static void nft_set_abort_update(struct list_head *set_update_list)
@@ -11468,6 +11488,8 @@ static int __nf_tables_abort(struct net *net, enum nfnl_abort_action action)
 		nf_tables_abort_release(trans);
 	}
 
+	scratchpad_reset(&nft_net->trans_scratchpad);
+
 	return err;
 }
 
@@ -11508,6 +11530,10 @@ static bool nf_tables_valid_genid(struct net *net, u32 genid)
 {
 	struct nftables_pernet *nft_net = nft_pernet(net);
 	bool genid_ok;
+
+	nf_tables_trans_destroy_flush_work(net);
+	if (list_empty(&nft_net->commit_list))
+		scratchpad_reset(&nft_net->trans_scratchpad);
 
 	mutex_lock(&nft_net->commit_mutex);
 	nft_net->tstamp = get_jiffies_64();
@@ -12142,6 +12168,7 @@ static int __net_init nf_tables_init_net(struct net *net)
 	INIT_LIST_HEAD(&nft_net->binding_list);
 	INIT_LIST_HEAD(&nft_net->module_list);
 	INIT_LIST_HEAD(&nft_net->notify_list);
+	scratchpad_init(&nft_net->trans_scratchpad, trans, GFP_KERNEL);
 	mutex_init(&nft_net->commit_mutex);
 	net->nft.base_seq = 1;
 	nft_net->gc_seq = 0;
@@ -12186,6 +12213,7 @@ static void __net_exit nf_tables_exit_net(struct net *net)
 	WARN_ON_ONCE(!list_empty(&nft_net->module_list));
 	WARN_ON_ONCE(!list_empty(&nft_net->notify_list));
 	WARN_ON_ONCE(!list_empty(&nft_net->destroy_list));
+	scratchpad_free(&nft_net->trans_scratchpad);
 }
 
 static void nf_tables_exit_batch(struct list_head *net_exit_list)

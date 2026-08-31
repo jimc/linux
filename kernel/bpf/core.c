@@ -783,12 +783,17 @@ bool bpf_has_frame_pointer(unsigned long ip)
 const struct exception_table_entry *search_bpf_extables(unsigned long addr)
 {
 	const struct exception_table_entry *e = NULL;
-	struct bpf_prog *prog;
+	struct bpf_prog *prog, *subprog;
 
 	rcu_read_lock();
 	prog = bpf_prog_ksym_find(addr);
 	if (!prog)
 		goto out;
+
+	subprog = bpf_prog_find_subprog(prog, addr);
+	if (subprog)
+		prog = subprog;
+
 	if (!prog->aux->num_exentries)
 		goto out;
 
@@ -3099,6 +3104,7 @@ static void bpf_prog_free_deferred(struct work_struct *work)
 		aux->func[i]->aux->poke_tab = NULL;
 		bpf_jit_free(aux->func[i]);
 	}
+	bonsai_destroy(&aux->bonsai_funcs);
 	if (aux->real_func_cnt) {
 		kfree(aux->func);
 		bpf_prog_unlock_free(aux->prog);
@@ -3523,11 +3529,16 @@ const struct bpf_line_info *bpf_find_linfo(const struct bpf_prog *prog, u32 insn
 int bpf_prog_get_file_line(struct bpf_prog *prog, unsigned long ip, const char **filep,
 			   const char **linep, int *nump)
 {
+	struct bpf_prog *subprog;
 	int idx = -1, insn_start, insn_end, len;
 	struct bpf_line_info *linfo;
 	void **jited_linfo;
 	struct btf *btf;
 	int nr_linfo;
+
+	subprog = bpf_prog_find_subprog(prog, ip);
+	if (subprog)
+		prog = subprog;
 
 	btf = prog->aux->btf;
 	linfo = prog->aux->linfo;

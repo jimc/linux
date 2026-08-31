@@ -19,11 +19,19 @@ static int module_extend_max_pages(struct load_info *info, unsigned int extent)
 	struct page **new_pages;
 	unsigned int new_max = info->max_pages + extent;
 
-	new_pages = kvrealloc(info->pages,
-			      size_mul(new_max, sizeof(*info->pages)),
-			      GFP_KERNEL);
-	if (!new_pages)
-		return -ENOMEM;
+	if (static_branch_likely(&modload_ENABLE_KEY)) {
+		new_pages = scratchpad_alloc_objs(struct page *, &info->sp, new_max);
+		if (!new_pages)
+			return -ENOMEM;
+		if (info->pages && info->used_pages)
+			memcpy(new_pages, info->pages, sizeof(*new_pages) * info->used_pages);
+	} else {
+		new_pages = kvrealloc(info->pages,
+				      size_mul(new_max, sizeof(*info->pages)),
+				      GFP_KERNEL);
+		if (!new_pages)
+			return -ENOMEM;
+	}
 
 	info->pages = new_pages;
 	info->max_pages = new_max;
@@ -100,7 +108,10 @@ static ssize_t module_gzip_decompress(struct load_info *info,
 	s.next_in = buf + gzip_hdr_len;
 	s.avail_in = size - gzip_hdr_len;
 
-	s.workspace = kvmalloc(zlib_inflate_workspacesize(), GFP_KERNEL);
+	if (static_branch_likely(&modload_ENABLE_KEY))
+		s.workspace = scratchpad_alloc(&info->sp, zlib_inflate_workspacesize(), GFP_KERNEL);
+	else
+		s.workspace = kvmalloc(zlib_inflate_workspacesize(), GFP_KERNEL);
 	if (!s.workspace)
 		return -ENOMEM;
 
@@ -138,7 +149,8 @@ static ssize_t module_gzip_decompress(struct load_info *info,
 out_inflate_end:
 	zlib_inflateEnd(&s);
 out:
-	kvfree(s.workspace);
+	if (!static_branch_likely(&modload_ENABLE_KEY))
+		kvfree(s.workspace);
 	return retval;
 }
 #elif defined(CONFIG_MODULE_COMPRESS_XZ)
@@ -241,7 +253,10 @@ static ssize_t module_zstd_decompress(struct load_info *info,
 	}
 
 	wksp_size = zstd_dstream_workspace_bound(header.windowSize);
-	wksp = kvmalloc(wksp_size, GFP_KERNEL);
+	if (static_branch_likely(&modload_ENABLE_KEY))
+		wksp = scratchpad_alloc(&info->sp, wksp_size, GFP_KERNEL);
+	else
+		wksp = kvmalloc(wksp_size, GFP_KERNEL);
 	if (!wksp) {
 		retval = -ENOMEM;
 		goto out;
@@ -284,7 +299,8 @@ static ssize_t module_zstd_decompress(struct load_info *info,
 	retval = new_size;
 
  out:
-	kvfree(wksp);
+	if (!static_branch_likely(&modload_ENABLE_KEY))
+		kvfree(wksp);
 	return retval;
 }
 #else
@@ -340,7 +356,8 @@ void module_decompress_cleanup(struct load_info *info)
 	for (i = 0; i < info->used_pages; i++)
 		__free_page(info->pages[i]);
 
-	kvfree(info->pages);
+	if (!static_branch_likely(&modload_ENABLE_KEY))
+		kvfree(info->pages);
 
 	info->pages = NULL;
 	info->max_pages = info->used_pages = 0;

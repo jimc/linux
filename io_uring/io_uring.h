@@ -378,7 +378,8 @@ static inline void io_req_async_data_clear(struct io_kiocb *req,
 
 static inline void io_req_async_data_free(struct io_kiocb *req)
 {
-	kfree(req->async_data);
+	if (!static_branch_likely(&cache_ENABLE_KEY))
+		kfree(req->async_data);
 	io_req_async_data_clear(req, 0);
 }
 
