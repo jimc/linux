@@ -61,7 +61,10 @@ struct ddebug_table {
 	struct bonsai_tree site_map;
 	void *compressed_sites;
 	unsigned long compressed_len;
+	void *permanent_strings;
 };
+
+static void *dd_builtin_permanent_strings;
 
 struct ddebug_query {
 	const char *filename;
@@ -1905,7 +1908,7 @@ static unsigned int ddebug_pool_add_string(struct ddebug_string_pool *pool, cons
 
 static int ddebug_hydrate_intervals(const void *src, size_t src_len,
 				    struct _ddebug *descs, unsigned int desc_count,
-				    struct bonsai_tree *bt)
+				    struct bonsai_tree *bt, void **out_strings)
 {
 	unsigned long long uncomp_sz;
 	struct _ddebug_metadata_header *hdr;
@@ -1965,6 +1968,10 @@ static int ddebug_hydrate_intervals(const void *src, size_t src_len,
 			kvfree(uncomp_buf);
 			return -ENOMEM;
 		}
+		if (out_strings) {
+			kvfree(*out_strings);
+			*out_strings = permanent_strings;
+		}
 		strings_base = permanent_strings;
 	}
 
@@ -2000,6 +2007,7 @@ static int ddebug_reconstruct_site_map(struct ddebug_table *dt)
 	void *compressed_buf;
 	unsigned long compressed_len;
 	struct bonsai_tree *bt;
+	void **out_strings;
 	bool is_builtin = !dt || (dt->info.descs.start >= __start___dyndbg_descs &&
 				  dt->info.descs.start < __stop___dyndbg_descs);
 
@@ -2013,6 +2021,7 @@ static int ddebug_reconstruct_site_map(struct ddebug_table *dt)
 		desc_count = __stop___dyndbg_descs - __start___dyndbg_descs;
 		compressed_buf = dd_builtin_compressed_sites;
 		compressed_len = dd_builtin_compressed_len;
+		out_strings = &dd_builtin_permanent_strings;
 	} else {
 		if (dt->site_map.root_idx)
 			return 0;
@@ -2023,10 +2032,11 @@ static int ddebug_reconstruct_site_map(struct ddebug_table *dt)
 		desc_count = dt->info.descs.len;
 		compressed_buf = dt->compressed_sites;
 		compressed_len = dt->compressed_len;
+		out_strings = &dt->permanent_strings;
 	}
 
 	return ddebug_hydrate_intervals(compressed_buf, compressed_len,
-					descs, desc_count, bt);
+					descs, desc_count, bt, out_strings);
 }
 
 static int ddebug_load_zstd_metadata(const void *src, size_t src_len)
@@ -2042,7 +2052,8 @@ static int ddebug_load_zstd_metadata(const void *src, size_t src_len)
 	}
 
 	ret = ddebug_hydrate_intervals(src, src_len, descs, desc_count,
-				       &dd_builtin_site_map);
+				       &dd_builtin_site_map,
+				       &dd_builtin_permanent_strings);
 	if (ret) {
 		mutex_unlock(&ddebug_lock);
 		return ret;
@@ -2382,6 +2393,7 @@ static void ddebug_table_free(struct ddebug_table *dt)
 	if (dt->site_map.num_segments)
 		bonsai_destroy(&dt->site_map);
 	kvfree(dt->compressed_sites);
+	kvfree(dt->permanent_strings);
 	kfree(dt);
 }
 
@@ -2625,17 +2637,21 @@ static unsigned long ddebug_shrinker_scan(struct shrinker *shrinker,
 
 	mutex_lock(&ddebug_lock);
 
-	/* 1. Free built-in site map */
+	/* 1. Free built-in site map and hydrated strings */
 	if (dd_builtin_site_map.num_segments) {
 		freed += bonsai_shrinker_cost(&dd_builtin_site_map);
 		bonsai_destroy(&dd_builtin_site_map);
+		kvfree(dd_builtin_permanent_strings);
+		dd_builtin_permanent_strings = NULL;
 	}
 
-	/* 2. Free module site maps */
+	/* 2. Free module site maps and hydrated strings */
 	list_for_each_entry(dt, &ddebug_tables, link) {
 		if (dt->site_map.num_segments) {
 			freed += bonsai_shrinker_cost(&dt->site_map);
 			bonsai_destroy(&dt->site_map);
+			kvfree(dt->permanent_strings);
+			dt->permanent_strings = NULL;
 		}
 	}
 
