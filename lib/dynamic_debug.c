@@ -1562,6 +1562,7 @@ static int ddebug_proc_show(struct seq_file *m, void *p)
 		return 0;
 	}
 
+	ddebug_reconstruct_site_map(iter->table);
 	modname = NULL;
 	ddebug_resolve_site(ddebug_get_site_map(iter->table), dp, &modname, &filename, &function);
 	if (!modname)
@@ -1999,7 +2000,8 @@ static int ddebug_reconstruct_site_map(struct ddebug_table *dt)
 	void *compressed_buf;
 	unsigned long compressed_len;
 	struct bonsai_tree *bt;
-	bool is_builtin = !dt;
+	bool is_builtin = !dt || (dt->info.descs.start >= __start___dyndbg_descs &&
+				  dt->info.descs.start < __stop___dyndbg_descs);
 
 	if (is_builtin) {
 		if (dd_builtin_site_map.root_idx)
