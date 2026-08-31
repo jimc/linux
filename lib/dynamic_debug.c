@@ -473,14 +473,13 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 	unsigned int nfound = 0;
 	struct flagsbuf fbuf, nbuf;
 	int selected_class;
-
-	/* search for matching ddebugs */
-	mutex_lock(&ddebug_lock);
+	lockdep_assert_held(&ddebug_lock);
 
 	/* Reconstruct the global built-in site map if it was shrunk */
 	if (ddebug_reconstruct_site_map(NULL))
 		pr_warn("Failed to reconstruct built-in site map\n");
 
+	/* search for matching ddebugs */
 	list_for_each_entry(dt, &ddebug_tables, link) {
 		struct _ddebug_info *di = &dt->info;
 		struct ddebug_class_map *mods_map;
@@ -519,9 +518,9 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 #ifdef CONFIG_JUMP_LABEL
 			if (dp->flags & _DPRINTK_FLAGS_ENABLED) {
 				if (!(newflags & _DPRINTK_FLAGS_ENABLED))
-					static_branch_disable(&dp->key.dd_key_true);
+					static_branch_disable_queued(&dp->key.dd_key_true);
 			} else if (newflags & _DPRINTK_FLAGS_ENABLED) {
-				static_branch_enable(&dp->key.dd_key_true);
+				static_branch_enable_queued(&dp->key.dd_key_true);
 			}
 #endif
 			v4pr_info("changed %s:%d [%s]%s %s => %s\n",
@@ -534,7 +533,7 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 				ddebug_add_cached_prefix(dp);
 		}
 	}
-	mutex_unlock(&ddebug_lock);
+	v2pr_info("applied %d queued updates to sites in total\n", nfound);
 
 	return nfound;
 }
@@ -897,6 +896,7 @@ static int ddebug_exec_queries(char *query, const char *modname)
 	char *split;
 	int i, errs = 0, exitcode = 0, rc, nfound = 0;
 
+	mutex_lock(&ddebug_lock);
 	for (i = 0; query; query = split) {
 		split = strpbrk(query, "@;\n");
 		if (split)
@@ -921,6 +921,10 @@ static int ddebug_exec_queries(char *query, const char *modname)
 		}
 		i++;
 	}
+	if (nfound > 0)
+		static_branch_apply_queued();
+	mutex_unlock(&ddebug_lock);
+
 	if (i)
 		v2pr_info("processed %d queries, with %d matches, %d errs\n",
 			 i, nfound, errs);
@@ -935,15 +939,20 @@ static int ddebug_apply_class_bitmap(const struct ddebug_class_param *dcp,
 				     const u32 *new_bits, const u32 old_bits,
 				     const char *query_modname)
 {
-#define QUERY_SIZE 128
-	char query[QUERY_SIZE];
 	const struct ddebug_class_map *map = dcp->map;
 	int matches = 0;
-	int bi, ct;
+	int bi, pos = 0;
+	char *buf;
 
-	if (*new_bits != old_bits)
-		v2pr_info("apply bitmap: 0x%x to: 0x%x for %s\n", *new_bits,
-			  old_bits, query_modname ?: "'*'");
+	if (*new_bits == old_bits)
+		return 0;
+
+	v2pr_info("apply bitmap: 0x%x to: 0x%x for %s\n", *new_bits,
+		  old_bits, query_modname ?: "'*'");
+
+	buf = kmalloc(4096, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
 
 	for (bi = 0; bi < map->length && bi < 32; bi++) {
 		bool new_b = !!(*new_bits & BIT(bi));
@@ -952,18 +961,20 @@ static int ddebug_apply_class_bitmap(const struct ddebug_class_param *dcp,
 		if (new_b == old_b)
 			continue;
 
-		snprintf(query, QUERY_SIZE, "class %s %c%s", map->class_names[bi],
-			 new_b ? '+' : '-', dcp->flags);
-
-		ct = ddebug_exec_queries(query, query_modname);
-		matches += ct;
-
-		v2pr_info("bit_%d: %d matches on class: %s -> 0x%x\n", bi,
-			  ct, map->class_names[bi], *new_bits);
+		pos += scnprintf(buf + pos, 4096 - pos, "class %s %c%s%c",
+				 map->class_names[bi],
+				 new_b ? '+' : '-', dcp->flags, ';');
 	}
-	if (*new_bits != old_bits)
-		v2pr_info("applied bitmap: 0x%x to: 0x%x for %s\n", *new_bits,
-			  old_bits, query_modname ?: "'*'");
+
+	if (pos) {
+		buf[pos - 1] = '\0'; /* trim last ';' */
+		matches = ddebug_exec_queries(buf, query_modname);
+	}
+
+	kfree(buf);
+
+	v2pr_info("applied bitmap: 0x%x to: 0x%x for %s\n", *new_bits,
+		  old_bits, query_modname ?: "'*'");
 
 	return matches;
 }
