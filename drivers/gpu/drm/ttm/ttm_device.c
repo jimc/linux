@@ -36,9 +36,12 @@
 #include <drm/ttm/ttm_device.h>
 #include <drm/ttm/ttm_tt.h>
 #include <drm/ttm/ttm_placement.h>
+#include <drm/drm_print.h>
 
 #include "ttm_module.h"
 #include "ttm_bo_internal.h"
+
+DRM_CLASSMAP_USE(drm_debug_classes);
 
 /*
  * ttm_global_mutex - protecting the global state

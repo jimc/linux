@@ -34,6 +34,8 @@
 
 #include <sound/hdmi-codec.h>
 
+DRM_CLASSMAP_USE(drm_debug_classes);
+
 #define REG_IC_VER 0x04
 
 #define REG_RESET_CTRL 0x05

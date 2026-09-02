@@ -31,6 +31,8 @@
 #include "logicvc_of.h"
 #include "logicvc_regs.h"
 
+DRM_CLASSMAP_USE(drm_debug_classes);
+
 DEFINE_DRM_GEM_DMA_FOPS(logicvc_drm_fops);
 
 static int logicvc_drm_gem_dma_dumb_create(struct drm_file *file_priv,

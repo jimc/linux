@@ -24,6 +24,7 @@
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_managed.h>
 #include <drm/drm_of.h>
+#include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_vblank.h>
 
@@ -35,6 +36,7 @@
 static int legacyfb_depth = 16;
 module_param(legacyfb_depth, int, 0444);
 
+DRM_CLASSMAP_USE(drm_debug_classes);
 DEFINE_DRM_GEM_DMA_FOPS(imx_drm_driver_fops);
 
 static int imx_drm_atomic_check(struct drm_device *dev,

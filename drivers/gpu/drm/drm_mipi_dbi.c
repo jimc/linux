@@ -28,6 +28,8 @@
 #include <drm/drm_rect.h>
 #include <video/mipi_display.h>
 
+DRM_CLASSMAP_USE(drm_debug_classes);
+
 #define MIPI_DBI_MAX_SPI_READ_SPEED 2000000 /* 2MHz */
 
 #define DCS_POWER_MODE_DISPLAY			BIT(2)
