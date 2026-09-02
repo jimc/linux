@@ -310,6 +310,19 @@ DEFINE_DYNDBG_SITE_ACCESSOR(function, DD_TAG_FUNC)
 DEFINE_DYNDBG_SITE_ACCESSOR(filename, DD_TAG_FILE)
 DEFINE_DYNDBG_SITE_ACCESSOR(modname, DD_TAG_MOD)
 
+static void ddebug_resolve_site(struct maple_tree *mt, const struct _ddebug *dp,
+				const char **mod, const char **file, const char **func)
+{
+	unsigned long addr = (unsigned long)dp;
+
+	if (mod)
+		*mod = mtree_load(mt, ddebug_site_tag_key(addr, DD_TAG_MOD)) ?: "unknown";
+	if (file)
+		*file = mtree_load(mt, ddebug_site_tag_key(addr, DD_TAG_FILE)) ?: "unknown";
+	if (func)
+		*func = mtree_load(mt, ddebug_site_tag_key(addr, DD_TAG_FUNC)) ?: "unknown";
+}
+
 /*
  * Search the tables for _ddebug's which match the given `query' and
  * apply the `flags' and `mask' to them.  Returns number of matching
@@ -322,19 +335,25 @@ static bool ddebug_match_desc(const struct ddebug_query *query,
 			      int selected_class)
 {
 	struct ddebug_class_map *site_map;
+	const char *dp_filename = NULL, *dp_function = NULL;
+
+	/* get site vals needed to match this query */
+	ddebug_resolve_site(&dd_site_map, dp, NULL,
+			    query->filename ? &dp_filename : NULL,
+			    query->function ? &dp_function : NULL);
 
 	/* match against the source filename */
 	if (query->filename &&
-	    !match_wildcard(query->filename, desc_filename(dp)) &&
+	    !match_wildcard(query->filename, dp_filename) &&
 	    !match_wildcard(query->filename,
-			    kbasename(desc_filename(dp))) &&
+			    kbasename(dp_filename)) &&
 	    !match_wildcard(query->filename,
-			    trim_prefix(desc_filename(dp))))
+			    trim_prefix(dp_filename)))
 		return false;
 
 	/* match against the function */
 	if (query->function &&
-	    !match_wildcard(query->function, desc_function(dp)))
+	    !match_wildcard(query->function, dp_function))
 		return false;
 
 	/* match against the format */
@@ -1377,6 +1396,8 @@ static int ddebug_proc_show(struct seq_file *m, void *p)
 	struct flagsbuf flags;
 	char const *class;
 
+	const char *filename = NULL, *function = NULL;
+
 	if (p == SEQ_START_TOKEN) {
 		seq_puts(m,
 			 "# filename:lineno [module]function flags format\n");
@@ -1389,9 +1410,11 @@ static int ddebug_proc_show(struct seq_file *m, void *p)
 		return 0;
 	}
 
+	ddebug_resolve_site(&dd_site_map, dp, NULL, &filename, &function);
+
 	seq_printf(m, "%s:%u [%s]%s =%s \"",
-		   trim_prefix(desc_filename(dp)), dp->lineno,
-		   iter->table->info.mod_name, desc_function(dp),
+		   trim_prefix(filename), dp->lineno,
+		   iter->table->info.mod_name, function,
 		   ddebug_describe_flags(dp->flags, &flags));
 	seq_escape_str(m, dp->format, ESCAPE_SPACE, "\t\r\n\"");
 	seq_putc(m, '"');
