@@ -17,10 +17,42 @@
 #include <linux/jump_label_ratelimit.h>
 #include <linux/bug.h>
 #include <linux/cpu.h>
+#include <linux/bonsai_tree.h>
 #include <asm/sections.h>
 
 /* mutex to protect coming/going of the jump_label table */
 static DEFINE_MUTEX(jump_label_mutex);
+static struct bonsai_tree jl_text_tree;
+
+DEFINE_STATIC_KEY_TRUE(jump_label_use_bonsai);
+EXPORT_SYMBOL_GPL(jump_label_use_bonsai);
+
+static int param_set_jl_bonsai(const char *val, const struct kernel_param *kp)
+{
+	bool enable;
+	int ret = kstrtobool(val, &enable);
+
+	if (ret)
+		return ret;
+
+	if (enable)
+		static_branch_enable(&jump_label_use_bonsai);
+	else
+		static_branch_disable(&jump_label_use_bonsai);
+
+	return 0;
+}
+
+static int param_get_jl_bonsai(char *buffer, const struct kernel_param *kp)
+{
+	return sprintf(buffer, "%d\n", static_key_enabled(&jump_label_use_bonsai));
+}
+
+static const struct kernel_param_ops jl_bonsai_param_ops = {
+	.set = param_set_jl_bonsai,
+	.get = param_get_jl_bonsai,
+};
+module_param_cb(use_bonsai, &jl_bonsai_param_ops, NULL, 0644);
 
 void jump_label_lock(void)
 {
@@ -386,6 +418,19 @@ static int __jump_label_text_reserved(struct jump_entry *iter_start,
 {
 	struct jump_entry *iter;
 
+	if (static_branch_likely(&jump_label_use_bonsai) &&
+	    iter_start == __start___jump_table && jl_text_tree.root_idx) {
+		iter = bonsai_lookup(&jl_text_tree, (unsigned long)start);
+		if (iter && (init || !jump_entry_is_init(iter)) &&
+		    addr_conflict(iter, start, end))
+			return 1;
+		iter = bonsai_lookup(&jl_text_tree, (unsigned long)end);
+		if (iter && (init || !jump_entry_is_init(iter)) &&
+		    addr_conflict(iter, start, end))
+			return 1;
+		return 0;
+	}
+
 	iter = iter_start;
 	while (iter < iter_stop) {
 		if (init || !jump_entry_is_init(iter)) {
@@ -582,8 +627,21 @@ void jump_label_init_ro(void)
 	cpus_read_lock();
 	jump_label_lock();
 
+	bonsai_init_hint(&jl_text_tree, iter_stop - iter_start, GFP_KERNEL);
+
 	for (iter = iter_start; iter < iter_stop; iter++) {
 		struct static_key *iterk = jump_entry_key(iter);
+		unsigned long code = jump_entry_code(iter);
+
+		if (!jump_entry_is_init(iter)) {
+			unsigned long size = jump_entry_size(iter);
+
+			if (size)
+				bonsai_store_range(&jl_text_tree, code, code + size - 1,
+						   iter, GFP_KERNEL);
+			else
+				bonsai_store(&jl_text_tree, code, iter, GFP_KERNEL);
+		}
 
 		if (!is_kernel_ro_after_init((unsigned long)iterk))
 			continue;
@@ -593,6 +651,8 @@ void jump_label_init_ro(void)
 
 		static_key_seal(iterk);
 	}
+
+	bonsai_seal(&jl_text_tree);
 
 	jump_label_unlock();
 	cpus_read_unlock();
@@ -653,6 +713,26 @@ static int __jump_label_mod_text_reserved(void *start, void *end)
 	if (!mod)
 		return 0;
 
+	if (static_branch_likely(&jump_label_use_bonsai) && mod->jl_tree.root_idx) {
+		struct jump_entry *iter;
+		bool init = mod->state == MODULE_STATE_COMING;
+
+		iter = bonsai_lookup(&mod->jl_tree, (unsigned long)start);
+		if (iter && (init || !jump_entry_is_init(iter)) &&
+		    addr_conflict(iter, start, end)) {
+			module_put(mod);
+			return 1;
+		}
+		iter = bonsai_lookup(&mod->jl_tree, (unsigned long)end);
+		if (iter && (init || !jump_entry_is_init(iter)) &&
+		    addr_conflict(iter, start, end)) {
+			module_put(mod);
+			return 1;
+		}
+		module_put(mod);
+		return 0;
+	}
+
 	ret = __jump_label_text_reserved(mod->jump_entries,
 				mod->jump_entries + mod->num_jump_entries,
 				start, end, mod->state == MODULE_STATE_COMING);
@@ -701,12 +781,21 @@ static int jump_label_add_module(struct module *mod)
 
 	jump_label_sort_entries(iter_start, iter_stop);
 
+	bonsai_init_hint(&mod->jl_tree, mod->num_jump_entries, GFP_KERNEL);
+
 	for (iter = iter_start; iter < iter_stop; iter++) {
 		struct static_key *iterk;
 		bool in_init;
+		unsigned long code = jump_entry_code(iter);
+		unsigned long size = jump_entry_size(iter);
 
-		in_init = within_module_init(jump_entry_code(iter), mod);
+		in_init = within_module_init(code, mod);
 		jump_entry_set_init(iter, in_init);
+
+		if (size)
+			bonsai_store_range(&mod->jl_tree, code, code + size - 1, iter, GFP_KERNEL);
+		else
+			bonsai_store(&mod->jl_tree, code, iter, GFP_KERNEL);
 
 		iterk = jump_entry_key(iter);
 		if (iterk == key)
@@ -755,6 +844,7 @@ do_poke:
 		if (jump_label_type(iter) != jump_label_init_type(iter))
 			__jump_label_update(key, iter, iter_stop, true);
 	}
+	bonsai_seal(&mod->jl_tree);
 
 	return 0;
 }
@@ -766,6 +856,8 @@ static void jump_label_del_module(struct module *mod)
 	struct jump_entry *iter;
 	struct static_key *key = NULL;
 	struct static_key_mod *jlm, **prev;
+
+	bonsai_destroy(&mod->jl_tree);
 
 	for (iter = iter_start; iter < iter_stop; iter++) {
 		if (jump_entry_key(iter) == key)
