@@ -2431,20 +2431,10 @@ static int __init dynamic_debug_init_control(void)
 	return 0;
 }
 
-struct ddebug_mod_info {
-	struct list_head link;
-	const char *mod_name;
-	unsigned long start_addr;
-	unsigned long end_addr;
-};
-
 static int __init dynamic_debug_init(void)
 {
-	int i, ret = 0, mod_ct = 0;
-	void *mod_name;
+	int i = 0, ret = 0, mod_ct = 0;
 	char *cmdline;
-	LIST_HEAD(mod_list);
-	struct ddebug_mod_info *mod_info, *tmp;
 
 	struct _ddebug_info di = {
 		.descs.start = __start___dyndbg_descs,
@@ -2475,61 +2465,45 @@ static int __init dynamic_debug_init(void)
 		return 0;
 	}
 	/*
-	 * fill the function, file, module intervals into dd_builtin_site_map,
-	 * then walk the module intervals and call add_module for each.
+	 * Walk the builtin sites and add each module's subrange.
 	 */
-	{
+	if (di.sites.len) {
 		unsigned int count = di.sites.len;
+		struct _ddebug *range_start = di.descs.start;
+		const char *cur_mod = di.sites.start[0]._modname;
 
 		ddebug_condense_sites(&di, &dd_builtin_site_map);
 		ddebug_compress_sites("builtin", di.sites.start, count,
 				      &dd_builtin_compressed_sites, &dd_builtin_compressed_len);
-	}
 
-	/*
-	 * under rcu-lock, gather the modules' descriptor intervals
-	 * into an atomically alloc'd list
-	 */
-	rcu_read_lock();
-	{
-		unsigned long mod_start_key = ddebug_site_tag_key(0, DD_TAG_MOD);
-		unsigned long mod_end_key = ddebug_site_tag_key(ULONG_MAX, DD_TAG_MOD);
-		MA_STATE(mas, &dd_builtin_site_map, mod_start_key, mod_end_key);
-
-		mas_for_each(&mas, mod_name, mod_end_key) {
-			mod_info = kmalloc(sizeof(*mod_info), GFP_ATOMIC);
-			if (!mod_info) {
-				pr_warn("kmalloc failed, some modules may not be processed\n");
-				break;
+		for (i = 0; i < count; i++) {
+			const char *p_mod = di.sites.start[i]._modname;
+			if (p_mod != cur_mod && strcmp(p_mod, cur_mod) != 0) {
+				struct _ddebug_info mod_di = di;
+				mod_di.mod_name = cur_mod;
+				mod_di.descs.start = range_start;
+				mod_di.descs.len = &di.descs.start[i] - range_start;
+				mod_di.sites.len = 0; /* Built-in modules share global tree */
+				ret = ddebug_add_module(&mod_di);
+				if (ret)
+					goto out_err;
+				mod_ct++;
+				range_start = &di.descs.start[i];
+				cur_mod = p_mod;
 			}
-			mod_info->mod_name = (const char *)mod_name;
-			mod_info->start_addr = mas.index & DD_KEY_ADDR_MASK;
-			mod_info->end_addr = mas.last & DD_KEY_ADDR_MASK;
-			list_add_tail(&mod_info->link, &mod_list);
 		}
-	}
-	rcu_read_unlock();
-
-	/*
-	 * walk the list, call ddebug_add_module for each, which may sleep
-	 */
-	list_for_each_entry_safe(mod_info, tmp, &mod_list, link) {
-		struct _ddebug_info mod_di = di;
-
-		mod_di.mod_name = mod_info->mod_name;
-		mod_di.descs.start = (struct _ddebug *)mod_info->start_addr;
-		mod_di.descs.len = (mod_info->end_addr - mod_info->start_addr) / sizeof(struct _ddebug) + 1;
-
-		ret = ddebug_add_module(&mod_di);
-		if (ret) {
-			pr_err("Failed to add module %s, error %d\n",
-			       mod_di.mod_name, ret);
-			goto out_err;
+		if (range_start < di.descs.start + count) {
+			struct _ddebug_info mod_di = di;
+			mod_di.mod_name = cur_mod;
+			mod_di.descs.start = range_start;
+			mod_di.descs.len = (di.descs.start + count) - range_start;
+			mod_di.sites.len = 0;
+			ret = ddebug_add_module(&mod_di);
+			if (ret)
+				goto out_err;
+			mod_ct++;
 		}
-		mod_ct++;
-		i += mod_di.descs.len;
-		list_del(&mod_info->link);
-		kfree(mod_info);
+		i = count;
 	}
 
 	ddebug_init_success = 1;
@@ -2556,11 +2530,6 @@ static int __init dynamic_debug_init(void)
 	return 0;
 
 out_err:
-	/* Clean up any remaining items in mod_list on error */
-	list_for_each_entry_safe(mod_info, tmp, &mod_list, link) {
-		list_del(&mod_info->link);
-		kfree(mod_info);
-	}
 	ddebug_remove_all_tables();
 	return ret;
 }
