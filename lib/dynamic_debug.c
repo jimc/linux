@@ -19,6 +19,7 @@
 #include <linux/kallsyms.h>
 #include <linux/types.h>
 #include <linux/maple_tree.h>
+#include <linux/bonsai_tree.h>
 #include <linux/mutex.h>
 #include <linux/percpu.h>
 #include <linux/proc_fs.h>
@@ -57,7 +58,7 @@ extern struct ddebug_class_user __stop___dyndbg_class_users[];
 struct ddebug_table {
 	struct list_head link;
 	struct _ddebug_info info;
-	struct maple_tree *site_map;
+	struct bonsai_tree site_map;
 	void *compressed_sites;
 	unsigned long compressed_len;
 };
@@ -111,13 +112,13 @@ MODULE_PARM_DESC(verbose, " dynamic_debug/control processing "
  * non-overlapping) ranges intrinsically.  At runtime, they provide
  * values for use in `cat control` & `echo $cmd >control`
  */
-static DEFINE_MTREE(dd_builtin_site_map);
+static struct bonsai_tree dd_builtin_site_map = BONSAI_TREE_INIT;
 static void *dd_builtin_compressed_sites;
 static unsigned long dd_builtin_compressed_len;
 
-static inline struct maple_tree *ddebug_get_site_map(struct ddebug_table *dt)
+static inline struct bonsai_tree *ddebug_get_site_map(struct ddebug_table *dt)
 {
-	return (dt && dt->site_map) ? dt->site_map : &dd_builtin_site_map;
+	return (dt && dt->site_map.root_idx) ? &dt->site_map : &dd_builtin_site_map;
 }
 
 #define DD_KEY_TAG_SHIFT	60
@@ -142,7 +143,7 @@ static void ddebug_drop_cached_prefix(const struct _ddebug *dp);
 
 static int ddebug_reconstruct_site_map(struct ddebug_table *dt);
 static void ddebug_condense_sites(struct _ddebug_info *di,
-				  struct maple_tree *mt);
+				  struct bonsai_tree *bt);
 
 #define prefix_flags(flags)  (flags & _DPRINTK_FLAGS_INCL_LOOKUP)
 
@@ -315,7 +316,7 @@ static const char *desc_##column(struct _ddebug const *dp)	\
 {								\
 	const char *ret = NULL;					\
 	struct ddebug_table *dt;				\
-	struct maple_tree *site_map = &dd_builtin_site_map;	\
+	struct bonsai_tree *site_map = &dd_builtin_site_map;	\
 	list_for_each_entry(dt, &ddebug_tables, link) {		\
 		if (dp >= dt->info.descs.start &&		\
 		    dp < dt->info.descs.start + dt->info.descs.len) { \
@@ -323,7 +324,7 @@ static const char *desc_##column(struct _ddebug const *dp)	\
 			break;					\
 		}						\
 	}							\
-	ret = mtree_load(site_map, ddebug_site_tag_key((unsigned long)dp, tag)); \
+	ret = bonsai_lookup(site_map, ddebug_site_tag_key((unsigned long)dp, tag)); \
 	return ret ?: "unknown";				\
 }
 
@@ -331,17 +332,17 @@ DEFINE_DYNDBG_SITE_ACCESSOR(function, DD_TAG_FUNC)
 DEFINE_DYNDBG_SITE_ACCESSOR(filename, DD_TAG_FILE)
 DEFINE_DYNDBG_SITE_ACCESSOR(modname, DD_TAG_MOD)
 
-static void ddebug_resolve_site(struct maple_tree *mt, const struct _ddebug *dp,
+static void ddebug_resolve_site(struct bonsai_tree *bt, const struct _ddebug *dp,
 				const char **mod, const char **file, const char **func)
 {
 	unsigned long addr = (unsigned long)dp;
 
 	if (mod)
-		*mod = mtree_load(mt, ddebug_site_tag_key(addr, DD_TAG_MOD)) ?: "unknown";
+		*mod = bonsai_lookup(bt, ddebug_site_tag_key(addr, DD_TAG_MOD)) ?: "unknown";
 	if (file)
-		*file = mtree_load(mt, ddebug_site_tag_key(addr, DD_TAG_FILE)) ?: "unknown";
+		*file = bonsai_lookup(bt, ddebug_site_tag_key(addr, DD_TAG_FILE)) ?: "unknown";
 	if (func)
-		*func = mtree_load(mt, ddebug_site_tag_key(addr, DD_TAG_FUNC)) ?: "unknown";
+		*func = bonsai_lookup(bt, ddebug_site_tag_key(addr, DD_TAG_FUNC)) ?: "unknown";
 }
 
 /*
@@ -358,7 +359,7 @@ static bool ddebug_match_desc(const struct ddebug_query *query,
 	struct ddebug_class_map *class_map;
 	const char *dp_filename = NULL, *dp_function = NULL;
 	struct ddebug_table *dt;
-	struct maple_tree *site_map = &dd_builtin_site_map;
+	struct bonsai_tree *site_map = &dd_builtin_site_map;
 
 	list_for_each_entry(dt, &ddebug_tables, link) {
 		if (dp >= dt->info.descs.start &&
@@ -1707,7 +1708,7 @@ static int ddebug_class_user_overlap(struct ddebug_class_user *cli,
 	return 0;
 }
 
-static void ddebug_store_tagged_range(struct maple_tree *mt, const struct _ddebug *start,
+static void ddebug_store_tagged_range(struct bonsai_tree *bt, const struct _ddebug *start,
 				      const struct _ddebug *next, const char *kind,
 				      const char *name, unsigned long tag)
 {
@@ -1716,7 +1717,7 @@ static void ddebug_store_tagged_range(struct maple_tree *mt, const struct _ddebu
 	int rc, reps = next - start;
 
 	v3pr_info("%3d debugs in %s: %s\n", reps, kind, name);
-	rc = mtree_store_range(mt, first, last, (void *)name, GFP_KERNEL);
+	rc = bonsai_store_range(bt, first, last, (void *)name, GFP_KERNEL);
 	if (rc)
 		pr_err("%s:%s range store failed: %d\n", kind, name, rc);
 }
@@ -1754,7 +1755,7 @@ static void ddebug_log_compression_stats(int ct_sites, int mods,
 }
 
 static int ddebug_grow_tree(struct _ddebug_info *di,
-			    struct maple_tree *mt,
+			    struct bonsai_tree *bt,
 			    const char *kind,
 			    const char *(*key_fn)(const struct _ddebug_site *),
 			    unsigned long tag)
@@ -1781,7 +1782,7 @@ static int ddebug_grow_tree(struct _ddebug_info *di,
 		if (key_fn(site_range_start) != key_fn(site_p) &&
 		    !!strcmp(key_fn(site_range_start), key_fn(site_p))) {
 
-			ddebug_store_tagged_range(mt, range_start, p, kind,
+			ddebug_store_tagged_range(bt, range_start, p, kind,
 						  key_fn(site_range_start), tag);
 			count++;
 			range_start = p;
@@ -1789,7 +1790,7 @@ static int ddebug_grow_tree(struct _ddebug_info *di,
 	}
 	site_range_start = &di->sites.start[range_start -
 					    di->descs.start];
-	ddebug_store_tagged_range(mt, range_start, p, kind,
+	ddebug_store_tagged_range(bt, range_start, p, kind,
 				  key_fn(site_range_start), tag);
 	count++;
 
@@ -1900,27 +1901,26 @@ static int ddebug_reconstruct_site_map(struct ddebug_table *dt)
 {
 	struct _ddebug_info di;
 	struct _ddebug_site *decompressed_sites = NULL;
-	struct maple_tree *mt;
+	struct bonsai_tree *bt;
 	int ret;
 	bool is_builtin = !dt || (dt->info.descs.start >= __start___dyndbg_descs &&
 				  dt->info.descs.start < __stop___dyndbg_descs);
 
 	if (is_builtin) {
-		if (!mtree_empty(&dd_builtin_site_map))
+		if (dd_builtin_site_map.root_idx)
 			return 0;
 		if (!dd_builtin_compressed_sites)
 			return -ENODATA;
+		bt = &dd_builtin_site_map;
 	} else {
-		if (dt->site_map)
+		if (dt->site_map.root_idx)
 			return 0;
 		if (!dt->compressed_sites)
 			return -ENODATA;
+		bt = &dt->site_map;
 	}
 
-	mt = kzalloc(sizeof(*mt), GFP_KERNEL);
-	if (!mt)
-		return -ENOMEM;
-	mt_init_flags(mt, MT_FLAGS_USE_RCU);
+	bonsai_init(bt);
 
 	/* Prepare temporary di for condensing */
 	if (is_builtin) {
@@ -1939,27 +1939,17 @@ static int ddebug_reconstruct_site_map(struct ddebug_table *dt)
 					      &decompressed_sites, di.sites.len);
 	}
 
-	if (ret) {
-		kfree(mt);
+	if (ret)
 		return ret;
-	}
 
 	di.sites.start = decompressed_sites;
-	ddebug_condense_sites(&di, mt);
+	ddebug_condense_sites(&di, bt);
 	kvfree(decompressed_sites);
-
-	if (is_builtin) {
-		/* Since we allocated mt locally, swap it into the global */
-		dd_builtin_site_map = *mt;
-		kfree(mt);
-	} else {
-		dt->site_map = mt;
-	}
 
 	return 0;
 }
 
-static void ddebug_condense_sites(struct _ddebug_info *di, struct maple_tree *mt)
+static void ddebug_condense_sites(struct _ddebug_info *di, struct bonsai_tree *bt)
 {
 	int funcs = 0, files = 0, mods = 0;
 
@@ -1969,13 +1959,14 @@ static void ddebug_condense_sites(struct _ddebug_info *di, struct maple_tree *mt
 	if (WARN_ON(di->descs.len != di->sites.len))
 		return;
 
-	funcs = ddebug_grow_tree(di, mt,
+	funcs = ddebug_grow_tree(di, bt,
 				 "func", ddebug_get_function, DD_TAG_FUNC);
-	files = ddebug_grow_tree(di, mt,
+	files = ddebug_grow_tree(di, bt,
 				 "file", ddebug_get_filename, DD_TAG_FILE);
-	mods = ddebug_grow_tree(di, mt,
+	mods = ddebug_grow_tree(di, bt,
 				"mod", ddebug_get_modname, DD_TAG_MOD);
 
+	bonsai_seal(bt);
 	ddebug_log_compression_stats(di->descs.len, mods, files, funcs);
 	di->sites.len = 0;
 }
@@ -2023,13 +2014,8 @@ static int ddebug_add_module(struct _ddebug_info *di)
 	if (dt->info.sites.len) {
 		unsigned int count = dt->info.sites.len;
 
-		dt->site_map = kzalloc(sizeof(*dt->site_map), GFP_KERNEL);
-		if (!dt->site_map) {
-			err = -ENOMEM;
-			goto cleanup;
-		}
-		mt_init_flags(dt->site_map, MT_FLAGS_USE_RCU);
-		ddebug_condense_sites(&dt->info, dt->site_map);
+		bonsai_init(&dt->site_map);
+		ddebug_condense_sites(&dt->info, &dt->site_map);
 
 		/* Compress the sites data so we can shrink the tree later */
 		ddebug_compress_sites(dt->info.mod_name, dt->info.sites.start, count,
@@ -2139,10 +2125,7 @@ int ddebug_dyndbg_module_param_cb(char *param, char *val, const char *module)
 static void ddebug_table_free(struct ddebug_table *dt)
 {
 	list_del_init(&dt->link);
-	if (dt->site_map) {
-		mtree_destroy(dt->site_map);
-		kfree(dt->site_map);
-	}
+	bonsai_destroy(&dt->site_map);
 	kvfree(dt->compressed_sites);
 	kfree(dt);
 }
@@ -2150,21 +2133,19 @@ static void ddebug_table_free(struct ddebug_table *dt)
 #ifdef CONFIG_MODULES
 
 /*
- * clear the maple tree containing __dyndbg_sites info of their
+ * clear the bonsai tree containing __dyndbg_sites info of their
  * contents for a module being rmmod'd.
  */
 static void ddebug_module_sites_clear(struct ddebug_table *dt)
 {
-	if (!dt->site_map)
+	if (!dt->site_map.root_idx)
 		return; /* Built-in modules share the global tree */
 
 	v2pr_info("clearing %3d debugs of removed module %s\n",
 		  dt->info.descs.len, dt->info.mod_name);
 
-	/* Safely destroy the isolated per-module site map and free the tree allocation */
-	mtree_destroy(dt->site_map);
-	kfree(dt->site_map);
-	dt->site_map = NULL;
+	/* Safely destroy the isolated per-module site map */
+	bonsai_destroy(&dt->site_map);
 }
 
 /*
@@ -2348,11 +2329,11 @@ static unsigned long ddebug_shrinker_count(struct shrinker *shrinker,
 	struct ddebug_table *dt;
 
 	mutex_lock(&ddebug_lock);
-	if (!mtree_empty(&dd_builtin_site_map))
+	if (dd_builtin_site_map.root_idx)
 		count += 1000; /* Arbitrary high cost for built-in tree */
 
 	list_for_each_entry(dt, &ddebug_tables, link) {
-		if (dt->site_map)
+		if (dt->site_map.root_idx)
 			count += 500;
 	}
 	if (!mtree_empty(&pr_prefixes))
@@ -2371,17 +2352,15 @@ static unsigned long ddebug_shrinker_scan(struct shrinker *shrinker,
 	mutex_lock(&ddebug_lock);
 
 	/* 1. Free built-in site map */
-	if (!mtree_empty(&dd_builtin_site_map)) {
-		__mt_destroy(&dd_builtin_site_map);
+	if (dd_builtin_site_map.root_idx) {
+		bonsai_destroy(&dd_builtin_site_map);
 		freed += 1000;
 	}
 
 	/* 2. Free module site maps */
 	list_for_each_entry(dt, &ddebug_tables, link) {
-		if (dt->site_map) {
-			mtree_destroy(dt->site_map);
-			kfree(dt->site_map);
-			dt->site_map = NULL;
+		if (dt->site_map.root_idx) {
+			bonsai_destroy(&dt->site_map);
 			freed += 500;
 		}
 	}
