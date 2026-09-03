@@ -80,14 +80,15 @@ static_assert(offsetof(struct bonsai_leaf, meta) == 0);
 
 /*
  * Segmented Scratchpad Slab Configuration:
- * 16 nodes per slab = 4 KiB (1 page)
- * Up to 64 slabs = 1024 nodes (256 KiB capacity)
+ * 64 nodes per slab = 16 KiB
+ * Up to 256 slabs = 16,384 nodes (4 MiB capacity, supports >240,000 items)
  */
-#define BONSAI_NODES_PER_SLAB	16
-#define BONSAI_SLAB_SHIFT	4
-#define BONSAI_SLAB_MASK	0x0F
+#define BONSAI_NODES_PER_SLAB	64
+#define BONSAI_SLAB_SHIFT	6
+#define BONSAI_SLAB_MASK	0x3F
 #define BONSAI_SLAB_SIZE	(BONSAI_NODES_PER_SLAB * sizeof(union bonsai_node))
-#define BONSAI_MAX_NODE_SLABS	64
+#define BONSAI_MAX_NODE_SLABS	256
+#define BONSAI_MAX_HEIGHT	16
 
 struct bonsai_val_slab {
 	struct bonsai_val_slab *next;
@@ -100,11 +101,11 @@ struct bonsai_val_slab {
  * Potted Bonsai Tree Root
  */
 struct bonsai_tree {
-	void *node_slabs[BONSAI_MAX_NODE_SLABS];/* Array of B-Tree node slabs (slab0 dynamically doubles up to 4 KiB) */
+	void *node_slabs[BONSAI_MAX_NODE_SLABS];/* Array of B-Tree node slabs (slab0 dynamically doubles up to 16 KiB) */
 	struct bonsai_val_slab *val_slabs;      /* Linked value/string slabs */
-	u8 num_node_slabs;                      /* Number of active node slabs allocated */
+	u16 num_node_slabs;                     /* Number of active node slabs allocated */
 	u8 num_val_slabs;                       /* Number of active value slabs allocated */
-	u8 slab0_cap_nodes;                     /* Geometric capacity of slab0 (1, 2, 4, 8, 16) */
+	u8 slab0_cap_nodes;                     /* Geometric capacity of slab0 (1, 2, 4, 8, 16, 32, 64) */
 	u8 height;                              /* 0 = empty, 1 = root leaf, 2 = root branch + leaves */
 	u16 root_idx;                           /* 1-based index to root node (0 = empty) */
 	bool is_u16;                            /* False = u8 seedling (28-way), True = u16 expanded (25-way) */
