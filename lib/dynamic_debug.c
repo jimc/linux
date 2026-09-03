@@ -1959,6 +1959,8 @@ static void ddebug_condense_sites(struct _ddebug_info *di, struct bonsai_tree *b
 	if (WARN_ON(di->descs.len != di->sites.len))
 		return;
 
+	bonsai_init_hint(bt, di->descs.len, GFP_KERNEL);
+
 	funcs = ddebug_grow_tree(di, bt,
 				 "func", ddebug_get_function, DD_TAG_FUNC);
 	files = ddebug_grow_tree(di, bt,

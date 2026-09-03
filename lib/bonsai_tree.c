@@ -102,6 +102,31 @@ void bonsai_init(struct bonsai_tree *bt)
 }
 EXPORT_SYMBOL_GPL(bonsai_init);
 
+void bonsai_init_hint(struct bonsai_tree *bt, unsigned int item_count_hint, gfp_t gfp)
+{
+	unsigned int approx_nodes, cap;
+
+	if (!bt)
+		return;
+	bonsai_init(bt);
+
+	if (!item_count_hint)
+		return;
+
+	/* Rough bound: ~10 items per node */
+	approx_nodes = (item_count_hint + 9) / 10;
+	if (approx_nodes == 0)
+		approx_nodes = 1;
+	cap = min_t(unsigned int, BONSAI_NODES_PER_SLAB, roundup_pow_of_two(approx_nodes));
+
+	bt->node_slabs[0] = kmalloc(cap * BONSAI_NODE_SIZE, gfp);
+	if (bt->node_slabs[0]) {
+		bt->slab0_cap_nodes = cap;
+		bt->num_node_slabs = 1;
+	}
+}
+EXPORT_SYMBOL_GPL(bonsai_init_hint);
+
 void bonsai_destroy(struct bonsai_tree *bt)
 {
 	bonsai_init(bt);
@@ -155,8 +180,20 @@ EXPORT_SYMBOL_GPL(bonsai_copy_string_pool);
 
 void bonsai_seal(struct bonsai_tree *bt)
 {
-	if (bt)
-		bt->is_sealed = true;
+	if (!bt)
+		return;
+
+	bt->is_sealed = true;
+
+	/* Shrink-to-fit: trim over-allocated slab0 tail back to exact node bytes */
+	if (bt->num_node_slabs == 1 && bt->node_count < bt->slab0_cap_nodes && bt->node_count > 0) {
+		void *tight = krealloc(bt->node_slabs[0], bt->node_count * BONSAI_NODE_SIZE, GFP_KERNEL);
+
+		if (tight) {
+			bt->node_slabs[0] = tight;
+			bt->slab0_cap_nodes = bt->node_count;
+		}
+	}
 }
 EXPORT_SYMBOL_GPL(bonsai_seal);
 
