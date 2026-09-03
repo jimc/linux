@@ -35,6 +35,7 @@
 #include <linux/xattr.h>
 #include <linux/key.h>
 #include <linux/ftrace.h>
+#include <linux/bonsai_tree.h>
 #include <asm/rqspinlock.h>
 
 struct bpf_verifier_env;
@@ -1834,6 +1835,7 @@ struct bpf_prog_aux {
 	 * using the linfo_idx.
 	 */
 	struct bpf_line_info *linfo;
+	struct bonsai_tree linfo_tree;
 	/* jited_linfo is the jited addr of the linfo.  It has a
 	 * one to one mapping to linfo:
 	 * jited_linfo[i] is the jited addr for the linfo[i]->insn_off.

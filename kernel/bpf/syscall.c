@@ -2450,6 +2450,7 @@ static void __bpf_prog_put_noref(struct bpf_prog *prog, bool deferred)
 	bpf_prog_kallsyms_del_all(prog);
 	btf_put(prog->aux->btf);
 	module_put(prog->aux->mod);
+	bonsai_destroy(&prog->aux->linfo_tree);
 	kvfree(prog->aux->jited_linfo);
 	kvfree(prog->aux->linfo);
 	kfree(prog->aux->kfunc_tab);

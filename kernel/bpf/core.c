@@ -3493,6 +3493,12 @@ const struct bpf_line_info *bpf_find_linfo(const struct bpf_prog *prog, u32 insn
 	if (!nr_linfo || insn_off >= prog->len)
 		return NULL;
 
+	if (prog->aux->linfo_tree.root_idx) {
+		linfo = bonsai_lookup(&prog->aux->linfo_tree, insn_off);
+		if (linfo)
+			return linfo;
+	}
+
 	linfo = prog->aux->linfo;
 	/* Loop invariant: linfo[l].insn_off <= insns_off.
 	 * linfo[0].insn_off == 0 which always satisfies above condition.
@@ -3503,13 +3509,6 @@ const struct bpf_line_info *bpf_find_linfo(const struct bpf_prog *prog, u32 insn
 	l = 0;
 	r = nr_linfo - 1;
 	while (l < r) {
-		/* (r - l + 1) / 2 means we break a tie to the right, so if:
-		 * l=1, r=2, linfo[l].insn_off <= insn_off, linfo[r].insn_off > insn_off,
-		 * then m=2, we see that linfo[m].insn_off > insn_off, and so
-		 * r becomes 1 and we exit the loop with correct l==1.
-		 * If the tie was broken to the left, m=1 would end us up in
-		 * an endless loop where l and m stay at 1 and r stays at 2.
-		 */
 		m = l + (r - l + 1) / 2;
 		if (linfo[m].insn_off <= insn_off)
 			l = m;

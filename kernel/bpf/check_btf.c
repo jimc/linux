@@ -328,6 +328,22 @@ static int check_btf_line(struct bpf_verifier_env *env,
 	prog->aux->linfo = linfo;
 	prog->aux->nr_linfo = nr_linfo;
 
+	/* Ingest line intervals into compact Bonsai Tree */
+	bonsai_init_hint(&prog->aux->linfo_tree, nr_linfo, GFP_KERNEL);
+	for (i = 0; i < nr_linfo; i++) {
+		u32 next_insn = (i + 1 < nr_linfo) ? linfo[i + 1].insn_off - 1 :
+			(prog->len ? prog->len - 1 : linfo[i].insn_off);
+
+		if (next_insn >= linfo[i].insn_off)
+			bonsai_store_range(&prog->aux->linfo_tree,
+					   linfo[i].insn_off, next_insn,
+					   &linfo[i], GFP_KERNEL);
+		else
+			bonsai_store(&prog->aux->linfo_tree, linfo[i].insn_off,
+				     &linfo[i], GFP_KERNEL);
+	}
+	bonsai_seal(&prog->aux->linfo_tree);
+
 	return 0;
 
 err_free:
