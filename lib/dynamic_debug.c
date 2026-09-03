@@ -1450,6 +1450,7 @@ static int ddebug_proc_show(struct seq_file *m, void *p)
 		return 0;
 	}
 
+	ddebug_reconstruct_site_map(iter->table);
 	ddebug_resolve_site(ddebug_get_site_map(iter->table), dp, NULL, &filename, &function);
 
 	seq_printf(m, "%s:%u [%s]%s =%s \"",
@@ -1901,7 +1902,8 @@ static int ddebug_reconstruct_site_map(struct ddebug_table *dt)
 	struct _ddebug_site *decompressed_sites = NULL;
 	struct maple_tree *mt;
 	int ret;
-	bool is_builtin = !dt;
+	bool is_builtin = !dt || (dt->info.descs.start >= __start___dyndbg_descs &&
+				  dt->info.descs.start < __stop___dyndbg_descs);
 
 	if (is_builtin) {
 		if (!mtree_empty(&dd_builtin_site_map))
@@ -2137,6 +2139,11 @@ int ddebug_dyndbg_module_param_cb(char *param, char *val, const char *module)
 static void ddebug_table_free(struct ddebug_table *dt)
 {
 	list_del_init(&dt->link);
+	if (dt->site_map) {
+		mtree_destroy(dt->site_map);
+		kfree(dt->site_map);
+	}
+	kvfree(dt->compressed_sites);
 	kfree(dt);
 }
 
