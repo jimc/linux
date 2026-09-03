@@ -16,9 +16,35 @@ static union bonsai_node *bonsai_alloc_node(struct bonsai_tree *bt,
 					    enum bonsai_node_type type,
 					    gfp_t gfp)
 {
+	union bonsai_node *node;
+
+	if (bt->node_count == 0) {
+		/* Allocate a single 256-byte node from kmalloc-256 */
+		node = kmalloc(sizeof(*node), gfp);
+		if (!node)
+			return NULL;
+		memset(node, 0, sizeof(*node));
+		node->m.node_type = type;
+		bt->node_slabs[0] = node;
+		bt->is_single = true;
+		bt->num_node_slabs = 1;
+		bt->node_count = 1;
+		return node;
+	}
+
+	if (bt->is_single) {
+		/* Promote from single 256-byte node to full 16 KiB slab */
+		void *slab_mem = kmalloc(BONSAI_SLAB_SIZE, gfp);
+		if (!slab_mem)
+			return NULL;
+		memcpy(slab_mem, bt->node_slabs[0], sizeof(union bonsai_node));
+		kfree(bt->node_slabs[0]);
+		bt->node_slabs[0] = slab_mem;
+		bt->is_single = false;
+	}
+
 	unsigned int slab = bt->node_count >> BONSAI_SLAB_SHIFT;
 	unsigned int offset = bt->node_count & BONSAI_SLAB_MASK;
-	union bonsai_node *node;
 
 	if (slab >= bt->num_node_slabs) {
 		if (slab >= BONSAI_MAX_NODE_SLABS)
@@ -46,9 +72,14 @@ void bonsai_init(struct bonsai_tree *bt)
 	if (!bt)
 		return;
 
-	for (i = 0; i < bt->num_node_slabs; i++) {
-		kfree(bt->node_slabs[i]);
-		bt->node_slabs[i] = NULL;
+	if (bt->is_single && bt->node_slabs[0]) {
+		kfree(bt->node_slabs[0]);
+		bt->node_slabs[0] = NULL;
+	} else {
+		for (i = 0; i < bt->num_node_slabs; i++) {
+			kfree(bt->node_slabs[i]);
+			bt->node_slabs[i] = NULL;
+		}
 	}
 
 	vslab = bt->val_slabs;
@@ -68,39 +99,13 @@ void bonsai_init(struct bonsai_tree *bt)
 	bt->entry_count = 0;
 	bt->is_u16 = false;
 	bt->is_sealed = false;
+	bt->is_single = false;
 }
 EXPORT_SYMBOL_GPL(bonsai_init);
 
 void bonsai_destroy(struct bonsai_tree *bt)
 {
-	struct bonsai_val_slab *vslab;
-	int i;
-
-	if (!bt)
-		return;
-
-	for (i = 0; i < bt->num_node_slabs; i++) {
-		kfree(bt->node_slabs[i]);
-		bt->node_slabs[i] = NULL;
-	}
-
-	vslab = bt->val_slabs;
-	while (vslab) {
-		struct bonsai_val_slab *next = vslab->next;
-		kfree(vslab);
-		vslab = next;
-	}
-
-	bt->val_slabs = NULL;
-	bt->num_node_slabs = 0;
-	bt->num_val_slabs = 0;
-	bt->val_bytes_used = 0;
-	bt->root_idx = 0;
-	bt->height = 0;
-	bt->node_count = 0;
-	bt->entry_count = 0;
-	bt->is_u16 = false;
-	bt->is_sealed = false;
+	bonsai_init(bt);
 }
 EXPORT_SYMBOL_GPL(bonsai_destroy);
 
@@ -216,6 +221,17 @@ void *bonsai_lookup(const struct bonsai_tree *bt, unsigned long index)
 
 	if (!bt || !bt->root_idx)
 		return NULL;
+
+	if (likely(bt->height == 1)) {
+		curr = (union bonsai_node *)bt->node_slabs[0];
+		if (likely(curr && curr->m.node_type == BONSAI_TYPE_LEAF)) {
+			int slot = leaf_find_slot(&curr->l, index);
+
+			if (slot < curr->l.meta.num_pivots && index <= curr->l.pivot[slot])
+				return curr->l.slot[slot];
+			return NULL;
+		}
+	}
 
 	curr_idx = bt->root_idx;
 	curr = bonsai_node_at(bt, curr_idx);

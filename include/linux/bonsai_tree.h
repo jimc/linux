@@ -100,7 +100,7 @@ struct bonsai_val_slab {
  * Potted Bonsai Tree Root
  */
 struct bonsai_tree {
-	void *node_slabs[BONSAI_MAX_NODE_SLABS];/* Array of 16 KiB B-Tree node slabs */
+	void *node_slabs[BONSAI_MAX_NODE_SLABS];/* Array of 16 KiB B-Tree node slabs (or single 256B node) */
 	struct bonsai_val_slab *val_slabs;      /* Linked value/string slabs */
 	u8 num_node_slabs;                      /* Number of active node slabs allocated */
 	u8 num_val_slabs;                       /* Number of active value slabs allocated */
@@ -108,12 +108,13 @@ struct bonsai_tree {
 	u16 root_idx;                           /* 1-based index to root node (0 = empty) */
 	bool is_u16;                            /* False = u8 seedling (28-way), True = u16 expanded (25-way) */
 	bool is_sealed;                         /* True = frozen/read-only table */
+	bool is_single;                         /* True = single 256-byte node in node_slabs[0] */
 	u32 val_bytes_used;                     /* Total bytes consumed in value slabs */
 	unsigned int node_count;                /* Total active nodes allocated */
 	unsigned long entry_count;              /* Total range entries stored */
 };
 
-#define BONSAI_TREE_INIT { { NULL }, NULL, 0, 0, 0, 0, false, false, 0, 0, 0 }
+#define BONSAI_TREE_INIT { { NULL }, NULL, 0, 0, 0, 0, false, false, false, 0, 0, 0 }
 
 /* Core Lifecycle API */
 void bonsai_init(struct bonsai_tree *bt);
@@ -143,6 +144,9 @@ static inline union bonsai_node *bonsai_node_at(const struct bonsai_tree *bt, u1
 	if (!idx || !bt)
 		return NULL;
 
+	if (bt->is_single)
+		return (idx == 1) ? (union bonsai_node *)bt->node_slabs[0] : NULL;
+
 	slab = (idx - 1) >> BONSAI_SLAB_SHIFT;
 	offset = (idx - 1) & BONSAI_SLAB_MASK;
 
@@ -158,6 +162,9 @@ static inline u16 bonsai_node_idx(const struct bonsai_tree *bt, const union bons
 
 	if (!node || !bt)
 		return 0;
+
+	if (bt->is_single)
+		return (node == (const union bonsai_node *)bt->node_slabs[0]) ? 1 : 0;
 
 	for (slab = 0; slab < bt->num_node_slabs; slab++) {
 		const char *base = (const char *)bt->node_slabs[slab];
