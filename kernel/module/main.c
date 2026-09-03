@@ -1460,6 +1460,7 @@ static void free_module(struct module *mod)
 	module_arch_freeing_init(mod);
 	kfree(mod->args);
 	percpu_modfree(mod);
+	bonsai_destroy(&mod->core_kallsyms.sym_tree);
 
 	free_mod_mem(mod);
 }

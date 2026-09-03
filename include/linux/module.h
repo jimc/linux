@@ -29,6 +29,7 @@
 #include <linux/srcu.h>
 #include <linux/static_call_types.h>
 #include <linux/dynamic_debug.h>
+#include <linux/bonsai_tree.h>
 
 #include <linux/percpu.h>
 #include <asm/module.h>
@@ -375,6 +376,7 @@ struct mod_kallsyms {
 	unsigned int num_symtab;
 	char *strtab;
 	char *typetab;
+	struct bonsai_tree sym_tree;
 };
 
 #ifdef CONFIG_LIVEPATCH
