@@ -711,23 +711,22 @@ function GOLDEN_RECORDS {
 #K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.18
 #K= 10464b2c3e3972f05e93c609700f8fb2 FT_modprobe_w_param.19
 #K= 10464b2c3e3972f05e93c609700f8fb2 FT_modprobe_w_param.20
-#K= 69502938a4be4936847568d8aad027f6 FT_modprobe_w_param.21
+#K= f77e85ce42b73a3c238457ba437f1062 FT_modprobe_w_param.21
 #K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.22
-#K= 51fe322a7f368d936d2292c951247b33 FT_modprobe_w_param.23
+#K= 4bf5a7af191a5a919206b2777791c76a FT_modprobe_w_param.23
 #K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.24
-#K= 91391932971be1d599d19ba04d6f6a34 FT_modprobe_w_param.25
+#K= 08847933683ed471644f8aea13b479f5 FT_modprobe_w_param.25
 #K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.26
 #K= 7b91db8e9f160aebb1ee87fab2232404 FT_modprobe_w_param.27
 #K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.28
-#K= 82bddad95d7ac6ecae367c7b63f1778b FT_modprobe_w_param.29
+#K= f62a24de091cc24a51bec035c592c166 FT_modprobe_w_param.29
 #K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.30
-#K= 6686e8b91736913b0047202ca8f0f20e FT_modprobe_w_param.31
+#K= 3fcfdf65a121640e833e98e7a5588f2c FT_modprobe_w_param.31
 #K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.32
-#K= 8d71e5a7ec153e0be606ca80c6125342 FT_modprobe_w_param.33
+#K= b93c2b62081b68e74d4301feb095053f FT_modprobe_w_param.33
 #K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.34
 #K= ff5bf6afec9642da83d3dcdb5e732ab9 FT_modprobe_w_param.35
 #K= ef22493a8baadddc5dd0291577e413c8 FT_modprobe_w_param.36
->>>>>>> 367d17015634 (dyndbg-test: add do_bulk testpoint, rename do_prints to do_classes)
 EOF
         # Read the K-recs and skip those for tests that can't run
         while read -r line; do
