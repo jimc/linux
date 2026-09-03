@@ -100,21 +100,21 @@ struct bonsai_val_slab {
  * Potted Bonsai Tree Root
  */
 struct bonsai_tree {
-	void *node_slabs[BONSAI_MAX_NODE_SLABS];/* Array of 16 KiB B-Tree node slabs (or single 256B node) */
+	void *node_slabs[BONSAI_MAX_NODE_SLABS];/* Array of B-Tree node slabs (slab0 dynamically doubles) */
 	struct bonsai_val_slab *val_slabs;      /* Linked value/string slabs */
 	u8 num_node_slabs;                      /* Number of active node slabs allocated */
 	u8 num_val_slabs;                       /* Number of active value slabs allocated */
+	u8 slab0_cap_nodes;                     /* Geometric capacity of slab0 (1, 2, 4, 8, 16, 32, 64) */
 	u8 height;                              /* 0 = empty, 1 = root leaf, 2 = root branch + leaves */
 	u16 root_idx;                           /* 1-based index to root node (0 = empty) */
 	bool is_u16;                            /* False = u8 seedling (28-way), True = u16 expanded (25-way) */
 	bool is_sealed;                         /* True = frozen/read-only table */
-	bool is_single;                         /* True = single 256-byte node in node_slabs[0] */
 	u32 val_bytes_used;                     /* Total bytes consumed in value slabs */
 	unsigned int node_count;                /* Total active nodes allocated */
 	unsigned long entry_count;              /* Total range entries stored */
 };
 
-#define BONSAI_TREE_INIT { { NULL }, NULL, 0, 0, 0, 0, false, false, false, 0, 0, 0 }
+#define BONSAI_TREE_INIT { { NULL }, NULL, 0, 0, 0, 0, 0, false, false, 0, 0, 0 }
 
 /* Core Lifecycle API */
 void bonsai_init(struct bonsai_tree *bt);
@@ -144,13 +144,13 @@ static inline union bonsai_node *bonsai_node_at(const struct bonsai_tree *bt, u1
 	if (!idx || !bt)
 		return NULL;
 
-	if (bt->is_single)
-		return (idx == 1) ? (union bonsai_node *)bt->node_slabs[0] : NULL;
-
 	slab = (idx - 1) >> BONSAI_SLAB_SHIFT;
 	offset = (idx - 1) & BONSAI_SLAB_MASK;
 
 	if (slab >= bt->num_node_slabs || !bt->node_slabs[slab])
+		return NULL;
+
+	if (slab == 0 && offset >= bt->slab0_cap_nodes)
 		return NULL;
 
 	return (union bonsai_node *)((char *)bt->node_slabs[slab] + offset * BONSAI_NODE_SIZE);
@@ -163,13 +163,12 @@ static inline u16 bonsai_node_idx(const struct bonsai_tree *bt, const union bons
 	if (!node || !bt)
 		return 0;
 
-	if (bt->is_single)
-		return (node == (const union bonsai_node *)bt->node_slabs[0]) ? 1 : 0;
-
 	for (slab = 0; slab < bt->num_node_slabs; slab++) {
 		const char *base = (const char *)bt->node_slabs[slab];
 		const char *ptr = (const char *)node;
-		if (ptr >= base && ptr < base + BONSAI_SLAB_SIZE) {
+		size_t slab_size = (slab == 0) ? ((size_t)bt->slab0_cap_nodes * BONSAI_NODE_SIZE) : BONSAI_SLAB_SIZE;
+
+		if (ptr >= base && ptr < base + slab_size) {
 			unsigned int offset = (ptr - base) / BONSAI_NODE_SIZE;
 			return (u16)((slab << BONSAI_SLAB_SHIFT) + offset + 1);
 		}

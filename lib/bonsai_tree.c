@@ -17,34 +17,38 @@ static union bonsai_node *bonsai_alloc_node(struct bonsai_tree *bt,
 					    gfp_t gfp)
 {
 	union bonsai_node *node;
+	unsigned int slab, offset;
 
-	if (bt->node_count == 0) {
-		/* Allocate a single 256-byte node from kmalloc-256 */
-		node = kmalloc(sizeof(*node), gfp);
-		if (!node)
-			return NULL;
+	/* Slab 0 dynamic geometric doubling (1 -> 2 -> 4 -> 8 -> 16 -> 32 -> 64 nodes) */
+	if (bt->node_count < BONSAI_NODES_PER_SLAB) {
+		if (bt->node_count == 0) {
+			bt->node_slabs[0] = kmalloc(BONSAI_NODE_SIZE, gfp);
+			if (!bt->node_slabs[0])
+				return NULL;
+			bt->slab0_cap_nodes = 1;
+			bt->num_node_slabs = 1;
+		} else if (bt->node_count >= bt->slab0_cap_nodes) {
+			u8 new_cap = min_t(unsigned int, BONSAI_NODES_PER_SLAB, bt->slab0_cap_nodes * 2);
+			void *new_slab = kmalloc(new_cap * BONSAI_NODE_SIZE, gfp);
+
+			if (!new_slab)
+				return NULL;
+			memcpy(new_slab, bt->node_slabs[0], bt->node_count * BONSAI_NODE_SIZE);
+			kfree(bt->node_slabs[0]);
+			bt->node_slabs[0] = new_slab;
+			bt->slab0_cap_nodes = new_cap;
+		}
+
+		node = (union bonsai_node *)((char *)bt->node_slabs[0] + bt->node_count * BONSAI_NODE_SIZE);
 		memset(node, 0, sizeof(*node));
 		node->m.node_type = type;
-		bt->node_slabs[0] = node;
-		bt->is_single = true;
-		bt->num_node_slabs = 1;
-		bt->node_count = 1;
+		bt->node_count++;
 		return node;
 	}
 
-	if (bt->is_single) {
-		/* Promote from single 256-byte node to full 16 KiB slab */
-		void *slab_mem = kmalloc(BONSAI_SLAB_SIZE, gfp);
-		if (!slab_mem)
-			return NULL;
-		memcpy(slab_mem, bt->node_slabs[0], sizeof(union bonsai_node));
-		kfree(bt->node_slabs[0]);
-		bt->node_slabs[0] = slab_mem;
-		bt->is_single = false;
-	}
-
-	unsigned int slab = bt->node_count >> BONSAI_SLAB_SHIFT;
-	unsigned int offset = bt->node_count & BONSAI_SLAB_MASK;
+	/* Beyond Slab 0: Fixed 16 KiB slabs (for large whole-kernel trees) */
+	slab = bt->node_count >> BONSAI_SLAB_SHIFT;
+	offset = bt->node_count & BONSAI_SLAB_MASK;
 
 	if (slab >= bt->num_node_slabs) {
 		if (slab >= BONSAI_MAX_NODE_SLABS)
@@ -72,14 +76,9 @@ void bonsai_init(struct bonsai_tree *bt)
 	if (!bt)
 		return;
 
-	if (bt->is_single && bt->node_slabs[0]) {
-		kfree(bt->node_slabs[0]);
-		bt->node_slabs[0] = NULL;
-	} else {
-		for (i = 0; i < bt->num_node_slabs; i++) {
-			kfree(bt->node_slabs[i]);
-			bt->node_slabs[i] = NULL;
-		}
+	for (i = 0; i < bt->num_node_slabs; i++) {
+		kfree(bt->node_slabs[i]);
+		bt->node_slabs[i] = NULL;
 	}
 
 	vslab = bt->val_slabs;
@@ -92,6 +91,7 @@ void bonsai_init(struct bonsai_tree *bt)
 	bt->val_slabs = NULL;
 	bt->num_node_slabs = 0;
 	bt->num_val_slabs = 0;
+	bt->slab0_cap_nodes = 0;
 	bt->val_bytes_used = 0;
 	bt->root_idx = 0;
 	bt->height = 0;
@@ -99,7 +99,6 @@ void bonsai_init(struct bonsai_tree *bt)
 	bt->entry_count = 0;
 	bt->is_u16 = false;
 	bt->is_sealed = false;
-	bt->is_single = false;
 }
 EXPORT_SYMBOL_GPL(bonsai_init);
 
