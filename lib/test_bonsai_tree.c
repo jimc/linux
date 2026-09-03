@@ -17,6 +17,8 @@
 #include <linux/slab.h>
 #include <linux/random.h>
 #include <linux/bsearch.h>
+#include <linux/jump_label.h>
+#include <linux/kallsyms.h>
 #include <linux/bonsai_tree.h>
 #include <linux/maple_tree.h>
 
@@ -169,6 +171,112 @@ static void benchmark_scale(unsigned int num_intervals)
 	(void)sink;
 }
 
+DECLARE_STATIC_KEY_TRUE(jump_label_use_bonsai);
+DECLARE_STATIC_KEY_TRUE(mod_kallsyms_use_bonsai);
+
+static void benchmark_jump_label_subsystem_ab(unsigned int iterations)
+{
+	ktime_t t0, t1;
+	u64 baseline_ns, bonsai_ns;
+	unsigned long *test_addrs;
+	unsigned int i;
+	volatile int sink = 0;
+
+	test_addrs = kmalloc_array(1024, sizeof(*test_addrs), GFP_KERNEL);
+	if (!test_addrs)
+		return;
+
+	for (i = 0; i < 1024; i++)
+		test_addrs[i] = (unsigned long)&benchmark_scale + (i * 8);
+
+	/* Pass A: Baseline Linear Scan */
+	static_branch_disable(&jump_label_use_bonsai);
+	jump_label_lock();
+	t0 = ktime_get();
+	for (i = 0; i < iterations; i++) {
+		unsigned long addr = test_addrs[i & 1023];
+		sink += jump_label_text_reserved((void *)addr, (void *)(addr + 5));
+	}
+	t1 = ktime_get();
+	jump_label_unlock();
+	baseline_ns = ktime_to_ns(ktime_sub(t1, t0));
+
+	/* Pass B: Bonsai Tree Fastpath */
+	static_branch_enable(&jump_label_use_bonsai);
+	jump_label_lock();
+	t0 = ktime_get();
+	for (i = 0; i < iterations; i++) {
+		unsigned long addr = test_addrs[i & 1023];
+		sink += jump_label_text_reserved((void *)addr, (void *)(addr + 5));
+	}
+	t1 = ktime_get();
+	jump_label_unlock();
+	bonsai_ns = ktime_to_ns(ktime_sub(t1, t0));
+
+	pr_info("=== Subsystem A/B: jump_label_text_reserved (%u queries) ===\n", iterations);
+	pr_info("  Pass A (Linear Scan) : %llu ns/op (%llu ms total)\n",
+		baseline_ns / iterations, baseline_ns / 1000000);
+	pr_info("  Pass B (Bonsai Tree) : %llu ns/op (%llu ms total)\n",
+		bonsai_ns / iterations, bonsai_ns / 1000000);
+	if (bonsai_ns > 0)
+		pr_info("  Speedup Advantage    : %llu.%1llux faster\n",
+			baseline_ns / bonsai_ns,
+			((baseline_ns * 10) / bonsai_ns) % 10);
+
+	kfree(test_addrs);
+	(void)sink;
+}
+
+static void benchmark_module_kallsyms_subsystem_ab(unsigned int iterations)
+{
+	ktime_t t0, t1;
+	u64 baseline_ns, bonsai_ns;
+	unsigned long *test_addrs;
+	unsigned int i;
+	char sym_buf[KSYM_NAME_LEN];
+	volatile int sink = 0;
+
+	test_addrs = kmalloc_array(1024, sizeof(*test_addrs), GFP_KERNEL);
+	if (!test_addrs)
+		return;
+
+	for (i = 0; i < 1024; i++)
+		test_addrs[i] = (unsigned long)&benchmark_scale + (i % 64);
+
+	/* Pass A: Baseline Linear Scan */
+	static_branch_disable(&mod_kallsyms_use_bonsai);
+	t0 = ktime_get();
+	for (i = 0; i < iterations; i++) {
+		unsigned long addr = test_addrs[i & 1023];
+		sink += sprint_symbol(sym_buf, addr);
+	}
+	t1 = ktime_get();
+	baseline_ns = ktime_to_ns(ktime_sub(t1, t0));
+
+	/* Pass B: Bonsai Tree Fastpath */
+	static_branch_enable(&mod_kallsyms_use_bonsai);
+	t0 = ktime_get();
+	for (i = 0; i < iterations; i++) {
+		unsigned long addr = test_addrs[i & 1023];
+		sink += sprint_symbol(sym_buf, addr);
+	}
+	t1 = ktime_get();
+	bonsai_ns = ktime_to_ns(ktime_sub(t1, t0));
+
+	pr_info("=== Subsystem A/B: sprint_symbol modular kallsyms (%u queries) ===\n", iterations);
+	pr_info("  Pass A (Linear Scan) : %llu ns/op (%llu ms total)\n",
+		baseline_ns / iterations, baseline_ns / 1000000);
+	pr_info("  Pass B (Bonsai Tree) : %llu ns/op (%llu ms total)\n",
+		bonsai_ns / iterations, bonsai_ns / 1000000);
+	if (bonsai_ns > 0)
+		pr_info("  Speedup Advantage    : %llu.%1llux faster\n",
+			baseline_ns / bonsai_ns,
+			((baseline_ns * 10) / bonsai_ns) % 10);
+
+	kfree(test_addrs);
+	(void)sink;
+}
+
 static int __init test_bonsai_init(void)
 {
 	pr_info("Starting Bonsai Tree vs Maple Tree vs Binary Search Benchmark\n");
@@ -177,6 +285,11 @@ static int __init test_bonsai_init(void)
 	benchmark_scale(250);  /* Medium driver */
 	benchmark_scale(1000); /* Large subsystem */
 	benchmark_scale(4000); /* Whole-kernel builtin dyndbg size */
+
+	/* Direct in-kernel subsystem A/B benchmarks */
+	benchmark_jump_label_subsystem_ab(100000);
+	benchmark_module_kallsyms_subsystem_ab(100000);
+
 	pr_info("Benchmark complete.\n");
 	return 0;
 }

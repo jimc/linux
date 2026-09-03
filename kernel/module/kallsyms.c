@@ -10,7 +10,38 @@
 #include <linux/kallsyms.h>
 #include <linux/buildid.h>
 #include <linux/bsearch.h>
+#include <linux/jump_label.h>
 #include "internal.h"
+
+DEFINE_STATIC_KEY_TRUE(mod_kallsyms_use_bonsai);
+EXPORT_SYMBOL_GPL(mod_kallsyms_use_bonsai);
+
+static int param_set_kallsyms_bonsai(const char *val, const struct kernel_param *kp)
+{
+	bool enable;
+	int ret = kstrtobool(val, &enable);
+
+	if (ret)
+		return ret;
+
+	if (enable)
+		static_branch_enable(&mod_kallsyms_use_bonsai);
+	else
+		static_branch_disable(&mod_kallsyms_use_bonsai);
+
+	return 0;
+}
+
+static int param_get_kallsyms_bonsai(char *buffer, const struct kernel_param *kp)
+{
+	return sprintf(buffer, "%d\n", static_key_enabled(&mod_kallsyms_use_bonsai));
+}
+
+static const struct kernel_param_ops kallsyms_bonsai_param_ops = {
+	.set = param_set_kallsyms_bonsai,
+	.get = param_get_kallsyms_bonsai,
+};
+module_param_cb(kallsyms_use_bonsai, &kallsyms_bonsai_param_ops, NULL, 0644);
 
 /* Lookup exported symbol in given range of kernel_symbols */
 static const struct kernel_symbol *lookup_exported_symbol(const char *name,
@@ -288,7 +319,8 @@ static const char *find_kallsyms_symbol(struct module *mod,
 	struct module_memory *mod_mem;
 	const Elf_Sym *sym;
 
-	if (kallsyms && kallsyms->sym_tree.root_idx) {
+	if (static_branch_likely(&mod_kallsyms_use_bonsai) &&
+	    kallsyms && kallsyms->sym_tree.root_idx) {
 		sym = bonsai_lookup(&kallsyms->sym_tree, addr);
 		if (sym) {
 			bestval = kallsyms_symbol_value(sym);

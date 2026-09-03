@@ -58,11 +58,13 @@ void jump_label_lock(void)
 {
 	mutex_lock(&jump_label_mutex);
 }
+EXPORT_SYMBOL_GPL(jump_label_lock);
 
 void jump_label_unlock(void)
 {
 	mutex_unlock(&jump_label_mutex);
 }
+EXPORT_SYMBOL_GPL(jump_label_unlock);
 
 static int jump_label_cmp(const void *a, const void *b)
 {
@@ -974,6 +976,7 @@ int jump_label_text_reserved(void *start, void *end)
 #endif
 	return ret;
 }
+EXPORT_SYMBOL_GPL(jump_label_text_reserved);
 
 static void jump_label_update(struct static_key *key)
 {
