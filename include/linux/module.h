@@ -29,6 +29,7 @@
 #include <linux/srcu.h>
 #include <linux/static_call_types.h>
 #include <linux/dynamic_debug.h>
+#include <linux/bonsai_tree.h>
 
 #include <linux/percpu.h>
 #include <asm/module.h>
@@ -375,6 +376,7 @@ struct mod_kallsyms {
 	unsigned int num_symtab;
 	char *strtab;
 	char *typetab;
+	struct bonsai_tree sym_tree;
 };
 
 #ifdef CONFIG_LIVEPATCH
@@ -510,6 +512,7 @@ struct module {
 #ifdef CONFIG_JUMP_LABEL
 	struct jump_entry *jump_entries;
 	unsigned int num_jump_entries;
+	struct bonsai_tree jl_tree;
 #endif
 #ifdef CONFIG_TRACING
 	unsigned int num_trace_bprintk_fmt;

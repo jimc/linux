@@ -1460,6 +1460,7 @@ static void free_module(struct module *mod)
 	module_arch_freeing_init(mod);
 	kfree(mod->args);
 	percpu_modfree(mod);
+	bonsai_destroy(&mod->core_kallsyms.sym_tree);
 
 	free_mod_mem(mod);
 }
@@ -2777,6 +2778,9 @@ static int find_module_sections(struct module *mod, struct load_info *info)
 	mod->dyndbg_info.descs.start = section_objs(info, "__dyndbg_descs",
 						    sizeof(*mod->dyndbg_info.descs.start),
 						    &mod->dyndbg_info.descs.len);
+	mod->dyndbg_info.sites.start = section_objs(info, ".init.__dyndbg_sites",
+						    sizeof(*mod->dyndbg_info.sites.start),
+						    &mod->dyndbg_info.sites.len);
 	mod->dyndbg_info.maps.start = section_objs(info, "__dyndbg_class_maps",
 						   sizeof(*mod->dyndbg_info.maps.start),
 						   &mod->dyndbg_info.maps.len);

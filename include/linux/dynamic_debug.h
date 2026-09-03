@@ -24,18 +24,24 @@
 #endif
 
 /*
- * An instance of this structure is created in a special
- * ELF section at every dynamic debug callsite.  At runtime,
- * the special section is treated as an array of these.
+ * A pair of these structs are created into 2 special ELF sections for
+ * each pr_debug callsite.  At runtime, the special sections are
+ * treated as arrays.
  */
-struct _ddebug {
+struct _ddebug;
+struct _ddebug_site {
 	/*
-	 * These fields are used to drive the user interface
-	 * for selecting and displaying debug callsites.
+	 * These fields are used to:
+	 * - display callsites in the control file
+	 * - query/select callsites by the code's organization
+	 * - prefix/decorate pr_debug messages per user choices
 	 */
-	const char *modname;
-	const char *function;
-	const char *filename;
+	const char *_modname;
+	const char *_function;
+	const char *_filename;
+};
+
+struct _ddebug {
 	const char *format;
 	unsigned int lineno:18;
 #define CLS_BITS 6
@@ -51,18 +57,20 @@ struct _ddebug {
 #define _DPRINTK_FLAGS_INCL_MODNAME	(1<<1)
 #define _DPRINTK_FLAGS_INCL_FUNCNAME	(1<<2)
 #define _DPRINTK_FLAGS_INCL_LINENO	(1<<3)
-#define _DPRINTK_FLAGS_INCL_TID		(1<<4)
-#define _DPRINTK_FLAGS_INCL_SOURCENAME	(1<<5)
+#define _DPRINTK_FLAGS_INCL_SOURCENAME	(1<<4)
+#define _DPRINTK_FLAGS_INCL_TID		(1<<5)
 #define _DPRINTK_FLAGS_INCL_STACK	(1<<6)
 #define _DPRINTK_FLAGS_COUNT		(1<<7)
 
 #define _DPRINTK_FLAGS_ENABLED (_DPRINTK_FLAGS_PRINT | _DPRINTK_FLAGS_COUNT)
 #define _DPRINTK_FLAGS_ACTIVE  (_DPRINTK_FLAGS_PRINT)
 
-#define _DPRINTK_FLAGS_INCL_ANY		\
-	(_DPRINTK_FLAGS_INCL_MODNAME | _DPRINTK_FLAGS_INCL_FUNCNAME |\
-	 _DPRINTK_FLAGS_INCL_LINENO  | _DPRINTK_FLAGS_INCL_TID |\
-	 _DPRINTK_FLAGS_INCL_SOURCENAME | _DPRINTK_FLAGS_INCL_STACK)
+#define _DPRINTK_FLAGS_INCL_LOOKUP					\
+	(_DPRINTK_FLAGS_INCL_MODNAME | _DPRINTK_FLAGS_INCL_FUNCNAME |	\
+	 _DPRINTK_FLAGS_INCL_SOURCENAME | _DPRINTK_FLAGS_INCL_LINENO)
+#define _DPRINTK_FLAGS_INCL_ANY						\
+	(_DPRINTK_FLAGS_INCL_TID | _DPRINTK_FLAGS_INCL_LOOKUP |		\
+	 _DPRINTK_FLAGS_INCL_STACK)
 
 #if defined DEBUG
 #define _DPRINTK_FLAGS_DEFAULT _DPRINTK_FLAGS_PRINT
@@ -104,7 +112,6 @@ struct ddebug_class_map {
 	const int base;		/* index of 1st .class_id, allows split/shared space */
 	enum ddebug_class_map_type map_type;
 } __aligned(8);
-
 struct ddebug_class_user {
 	char *mod_name;
 	struct ddebug_class_map *map;
@@ -116,29 +123,36 @@ struct ddebug_class_user {
  * together, each is a vec_<T>: a struct { struct T start[], int len }.
  *
  * For builtins, it is used as a cursor, with the inner structs
- * marking sub-vectors of the builtin __sections in DATA_DATA
+ * marking sub-vectors of the builtin __sections in DATA_DATA.
  */
 struct _ddebug_descs {
 	struct _ddebug *start;
 	unsigned int len;
-};
+} __packed;
+
+struct _ddebug_sites {
+	unsigned int len;
+	const struct _ddebug_site *start;
+} __packed;
 
 struct _ddebug_class_maps {
 	struct ddebug_class_map *start;
 	unsigned int len;
-};
+} __packed;
 
 struct _ddebug_class_users {
-	struct ddebug_class_user *start;
 	int len;
-};
+	struct ddebug_class_user *start;
+} __packed;
 
 struct _ddebug_info {
 	const char *mod_name;
+	/* tetris packing */
 	struct _ddebug_descs descs;
+	struct _ddebug_sites sites;
 	struct _ddebug_class_maps maps;
 	struct _ddebug_class_users users;
-};
+} __aligned(8);
 
 struct ddebug_class_param {
 	union {
@@ -367,11 +381,14 @@ void __dynamic_ibdev_dbg(struct _ddebug *descriptor,
 }
 
 #define DEFINE_DYNAMIC_DEBUG_METADATA_CLS(name, cls, fmt, ...)	\
-	static struct _ddebug  __aligned(8)			\
+	static const struct _ddebug_site  __aligned(8) __used	\
+	__section("__dyndbg_sites") name ##_site = {		\
+		._modname = DDEBUG_MODNAME,			\
+		._function = __func__,				\
+		._filename = __FILE__,				\
+	};							\
+	static struct _ddebug  __aligned(8) __used		\
 	__section("__dyndbg_descs") name = {			\
-		.modname = DDEBUG_MODNAME,			\
-		.function = __func__,				\
-		.filename = __FILE__,				\
 		.format = (fmt),				\
 		.lineno = __LINE__,				\
 		.flags = _DPRINTK_FLAGS_DEFAULT,		\

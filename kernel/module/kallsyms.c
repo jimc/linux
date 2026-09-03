@@ -10,7 +10,38 @@
 #include <linux/kallsyms.h>
 #include <linux/buildid.h>
 #include <linux/bsearch.h>
+#include <linux/jump_label.h>
 #include "internal.h"
+
+DEFINE_STATIC_KEY_TRUE(mod_kallsyms_use_bonsai);
+EXPORT_SYMBOL_GPL(mod_kallsyms_use_bonsai);
+
+static int param_set_kallsyms_bonsai(const char *val, const struct kernel_param *kp)
+{
+	bool enable;
+	int ret = kstrtobool(val, &enable);
+
+	if (ret)
+		return ret;
+
+	if (enable)
+		static_branch_enable(&mod_kallsyms_use_bonsai);
+	else
+		static_branch_disable(&mod_kallsyms_use_bonsai);
+
+	return 0;
+}
+
+static int param_get_kallsyms_bonsai(char *buffer, const struct kernel_param *kp)
+{
+	return sprintf(buffer, "%d\n", static_key_enabled(&mod_kallsyms_use_bonsai));
+}
+
+static const struct kernel_param_ops kallsyms_bonsai_param_ops = {
+	.set = param_set_kallsyms_bonsai,
+	.get = param_get_kallsyms_bonsai,
+};
+module_param_cb(kallsyms_use_bonsai, &kallsyms_bonsai_param_ops, NULL, 0644);
 
 /* Lookup exported symbol in given range of kernel_symbols */
 static const struct kernel_symbol *lookup_exported_symbol(const char *name,
@@ -162,6 +193,11 @@ void layout_symtab(struct module *mod, struct load_info *info)
 	mod_mem_init_data->size += nsrc * sizeof(char);
 }
 
+static const char *kallsyms_symbol_name(struct mod_kallsyms *kallsyms, unsigned int symnum)
+{
+	return kallsyms->strtab + kallsyms->symtab[symnum].st_name;
+}
+
 /*
  * We use the full symtab and strtab which layout_symtab arranged to
  * be appended to the init section.  Later we switch to the cut-down
@@ -219,6 +255,33 @@ void add_kallsyms(struct module *mod, const struct load_info *info)
 	/* Set up to point into init section. */
 	rcu_assign_pointer(mod->kallsyms, kallsyms);
 	mod->core_kallsyms.num_symtab = ndst;
+
+	/* Build compact Bonsai range tree for core kallsyms */
+	bonsai_init_hint(&mod->core_kallsyms.sym_tree, ndst, GFP_KERNEL);
+	for (i = 1; i < ndst; i++) {
+		const Elf_Sym *s_curr = &mod->core_kallsyms.symtab[i];
+		unsigned long val = kallsyms_symbol_value(s_curr);
+		unsigned long end;
+
+		if (s_curr->st_shndx == SHN_UNDEF)
+			continue;
+		if (*kallsyms_symbol_name(&mod->core_kallsyms, i) == '\0' ||
+		    is_mapping_symbol(kallsyms_symbol_name(&mod->core_kallsyms, i)))
+			continue;
+
+		if (s_curr->st_size)
+			end = val + s_curr->st_size - 1;
+		else
+			end = val;
+
+		if (end >= val)
+			bonsai_store_range(&mod->core_kallsyms.sym_tree, val, end,
+					   (void *)s_curr, GFP_KERNEL);
+		else
+			bonsai_store(&mod->core_kallsyms.sym_tree, val,
+				     (void *)s_curr, GFP_KERNEL);
+	}
+	bonsai_seal(&mod->core_kallsyms.sym_tree);
 }
 
 #if IS_ENABLED(CONFIG_STACKTRACE_BUILD_ID)
@@ -241,11 +304,6 @@ void init_build_id(struct module *mod, const struct load_info *info)
 }
 #endif
 
-static const char *kallsyms_symbol_name(struct mod_kallsyms *kallsyms, unsigned int symnum)
-{
-	return kallsyms->strtab + kallsyms->symtab[symnum].st_name;
-}
-
 /*
  * Given a module and address, find the corresponding symbol and return its name
  * while providing its size and offset if needed.
@@ -259,6 +317,20 @@ static const char *find_kallsyms_symbol(struct module *mod,
 	unsigned long nextval, bestval;
 	struct mod_kallsyms *kallsyms = rcu_dereference(mod->kallsyms);
 	struct module_memory *mod_mem;
+	const Elf_Sym *sym;
+
+	if (static_branch_likely(&mod_kallsyms_use_bonsai) &&
+	    kallsyms && kallsyms->sym_tree.root_idx) {
+		sym = bonsai_lookup(&kallsyms->sym_tree, addr);
+		if (sym) {
+			bestval = kallsyms_symbol_value(sym);
+			if (size)
+				*size = sym->st_size;
+			if (offset)
+				*offset = addr - bestval;
+			return kallsyms_symbol_name(kallsyms, sym - kallsyms->symtab);
+		}
+	}
 
 	/* At worse, next value is at end of module */
 	if (within_module_init(addr, mod))
