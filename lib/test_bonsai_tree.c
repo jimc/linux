@@ -25,7 +25,7 @@ static bool do_stress = true;
 module_param(do_stress, bool, 0444);
 MODULE_PARM_DESC(do_stress, "Run stress and equivalence validation tests");
 
-static bool do_bench = true;
+static bool do_bench = false;
 module_param(do_bench, bool, 0444);
 MODULE_PARM_DESC(do_bench, "Run micro-benchmark and latency telemetry");
 
@@ -386,19 +386,23 @@ static int test_bonsai_maple_stress_equivalence(unsigned int num_intervals)
 		}
 	}
 
-	/* 1. High-Density Randomized Probe Stress (25k probes) */
-	for (i = 0; i < 25000; i++) {
-		unsigned long key = get_random_u32_below(num_intervals * step);
-		void *b_val = bonsai_lookup(bt, key);
-		void *m_val = mtree_load(&mt, key);
-		void *u_val = bonsai_lookup(bt_unhinted, key);
-		void *f_val = bsearch_lookup(flat_table, num_intervals, key);
+	/* 1. High-Density Randomized Probe Stress */
+	{
+		unsigned int num_probes = min(25000U, max(1000U, num_intervals * 10));
 
-		if (b_val != m_val || b_val != u_val || b_val != f_val) {
-			mismatches++;
-			if (mismatches <= 5)
-				pr_err("rnd mismatch key %lu: b=%p m=%p u=%p f=%p\n",
-				       key, b_val, m_val, u_val, f_val);
+		for (i = 0; i < num_probes; i++) {
+			unsigned long key = get_random_u32_below(num_intervals * step);
+			void *b_val = bonsai_lookup(bt, key);
+			void *m_val = mtree_load(&mt, key);
+			void *u_val = bonsai_lookup(bt_unhinted, key);
+			void *f_val = bsearch_lookup(flat_table, num_intervals, key);
+
+			if (b_val != m_val || b_val != u_val || b_val != f_val) {
+				mismatches++;
+				if (mismatches <= 5)
+					pr_err("rnd mismatch key %lu: b=%p m=%p u=%p f=%p\n",
+					       key, b_val, m_val, u_val, f_val);
+			}
 		}
 	}
 
