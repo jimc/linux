@@ -36,6 +36,8 @@
 #define STI_MAX_FB_HEIGHT	4096
 #define STI_MAX_FB_WIDTH	4096
 
+DRM_CLASSMAP_USE(drm_debug_classes);
+
 static int sti_drm_fps_get(void *data, u64 *val)
 {
 	struct drm_device *drm_dev = data;

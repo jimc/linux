@@ -30,6 +30,8 @@
 
 #include "kirin_drm_drv.h"
 
+DRM_CLASSMAP_USE(drm_debug_classes);
+
 #define KIRIN_MAX_PLANE	2
 
 struct kirin_drm_private {

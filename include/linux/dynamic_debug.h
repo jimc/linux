@@ -112,7 +112,6 @@ struct ddebug_class_map {
 	const int base;		/* index of 1st .class_id, allows split/shared space */
 	enum ddebug_class_map_type map_type;
 } __aligned(8);
-
 struct ddebug_class_user {
 	char *mod_name;
 	struct ddebug_class_map *map;
