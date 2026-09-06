@@ -593,6 +593,81 @@ function FT_modprobe_w_param {
     ddcmd =_
 }
 
+function FT_bonsai_tree {
+    v_echo "${GREEN}# TEST_BONSAI_TREE - Bonsai stress & micro-benchmark ${NC}"
+    ifrmmod test_bonsai_tree
+
+    if ! modprobe -q -n test_bonsai_tree 2>/dev/null; then
+        v_echo "${YELLOW}# test_bonsai_tree.ko not available, skipping${NC}"
+        return 0
+    fi
+
+    # 1. Run stress and equivalence validation across all scales (do_bench=0)
+    log_start
+    my_modprobe test_bonsai_tree do_bench=0 max_scale=16384
+    local ret=$?
+    log_stop
+
+    if [ $ret -ne 0 ]; then
+        echo -e "${RED}: test_bonsai_tree failed stress/equivalence validation${NC}"
+        ifrmmod test_bonsai_tree
+        exit $ksft_fail
+    fi
+
+    [ "$V" -ge 1 ] && \
+        echo -e "${GREEN}✔ test_bonsai_tree: 16k stress equivalence passed${NC}"
+    ifrmmod test_bonsai_tree
+
+    # 2. If V >= 2, run full micro-benchmark and latency telemetry
+    if [ "$V" -ge 2 ]; then
+        v_echo "${GREEN}# Running full Bonsai benchmark telemetry...${NC}"
+        my_modprobe test_bonsai_tree do_stress=0 do_bench=1 \
+            max_scale=16384 num_lookups=1000000
+        ifrmmod test_bonsai_tree
+    fi
+}
+
+function FT_site_map_lifecycle {
+    v_echo "${GREEN}# TEST_SITE_MAP_LIFECYCLE - Bonsai indexing and O(1) invalidation ${NC}"
+    ifrmmod test_dynamic_debug_submod
+    ifrmmod test_dynamic_debug
+
+    local base_count=$(grep -c "=" /proc/dynamic_debug/control)
+
+    # 1. Load module and verify site map indexing in dd_loadable_site_maps
+    my_modprobe test_dynamic_debug
+    local mod_sites=$(grep -c "test_dynamic_debug" /proc/dynamic_debug/control)
+    local loaded_count=$(grep -c "=" /proc/dynamic_debug/control)
+
+    if [ "$mod_sites" -le 0 ] || [ "$loaded_count" -le "$base_count" ]; then
+        echo -e "${RED}: test_dynamic_debug site map load failed (mod_sites=$mod_sites)${NC}"
+        ifrmmod test_dynamic_debug
+        exit $ksft_fail
+    fi
+
+    # 2. Test selective query enablement and descriptor column resolution
+    ddcmd "module test_dynamic_debug +p"
+    local enabled_sites=$(grep "test_dynamic_debug" /proc/dynamic_debug/control | grep -c "=p")
+    if [ "$enabled_sites" -ne "$mod_sites" ]; then
+        echo -e "${RED}: descriptor enablement mismatch ($enabled_sites != $mod_sites)${NC}"
+        ifrmmod test_dynamic_debug
+        exit $ksft_fail
+    fi
+
+    # 3. Unload module and verify O(1) invalidation in dd_loadable_site_maps
+    ifrmmod test_dynamic_debug
+    local final_count=$(grep -c "=" /proc/dynamic_debug/control)
+    if [ "$final_count" -ne "$base_count" ]; then
+        echo -e "${RED}: site map invalidation failed: count=$final_count != base=$base_count${NC}"
+        exit $ksft_fail
+    fi
+
+    [ "$V" -ge 1 ] && \
+        echo -e "${GREEN}✔ Site map lifecycle & O(1) invalidation verified" \
+                "(${mod_sites} sites)${NC}"
+    ddcmd =_
+}
+
 # Built-in Feature Tests (Can run on any CONFIG_DYNAMIC_DEBUG kernel, modular or monolithic)
 builtin_tests=(
     FT_grammar_ok
@@ -609,6 +684,8 @@ modular_tests=(
     FT_test_classes
     FT_classmap_inheritance
     FT_modprobe_w_param
+    FT_bonsai_tree
+    FT_site_map_lifecycle
 )
 
 # ==============================================================================
