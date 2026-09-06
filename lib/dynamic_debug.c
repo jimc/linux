@@ -44,6 +44,8 @@
 
 extern struct _ddebug __start___dyndbg_descs[];
 extern struct _ddebug __stop___dyndbg_descs[];
+extern const struct _ddebug_site __start___dyndbg_sites[];
+extern const struct _ddebug_site __stop___dyndbg_sites[];
 extern struct ddebug_class_map __start___dyndbg_class_maps[];
 extern struct ddebug_class_map __stop___dyndbg_class_maps[];
 extern struct ddebug_class_user __start___dyndbg_class_users[];
@@ -254,6 +256,10 @@ static inline bool ddebug_class_has_param(const struct ddebug_class_map *map)
 /* re-framed as a policy choice */
 #define ddebug_class_wants_protection(map) (ddebug_class_has_param(map))
 
+#define desc_modname(d)  ((d)->site->_modname)
+#define desc_filename(d) ((d)->site->_filename)
+#define desc_function(d) ((d)->site->_function)
+
 /*
  * Search the tables for _ddebug's which match the given `query' and
  * apply the `flags' and `mask' to them.  Returns number of matching
@@ -269,24 +275,24 @@ static bool ddebug_match_desc(const struct ddebug_query *query,
 
 	/* match against the source filename */
 	if (query->filename &&
-	    !match_wildcard(query->filename, dp->filename) &&
+	    !match_wildcard(query->filename, desc_filename(dp)) &&
 	    !match_wildcard(query->filename,
-			    kbasename(dp->filename)) &&
+			    kbasename(desc_filename(dp))) &&
 	    !match_wildcard(query->filename,
-			    trim_prefix(dp->filename)))
+			    trim_prefix(desc_filename(dp))))
 		return false;
 
 	/* match against the function */
 	if (query->function &&
-	    !match_wildcard(query->function, dp->function))
+	    !match_wildcard(query->function, desc_function(dp)))
 		return false;
 
 	/* match against the format */
 	if (query->format) {
 		if (!dp->format) {
 			pr_err_ratelimited("ddebug: NULL format string at %s:%s:%u\n",
-					   dp->filename ? dp->filename : "?",
-					   dp->function ? dp->function : "?",
+					   desc_filename(dp) ? desc_filename(dp) : "?",
+					   desc_function(dp) ? desc_function(dp) : "?",
 					   dp->lineno);
 			return false;
 		}
@@ -383,8 +389,8 @@ static int ddebug_change(const struct ddebug_query *query, struct flag_settings 
 			}
 #endif
 			v4pr_info("changed %s:%d [%s]%s %s => %s\n",
-				  trim_prefix(dp->filename), dp->lineno,
-				  di->mod_name, dp->function,
+				  trim_prefix(desc_filename(dp)), dp->lineno,
+				  di->mod_name, desc_function(dp),
 				  ddebug_describe_flags(dp->flags, &fbuf),
 				  ddebug_describe_flags(newflags, &nbuf));
 			dp->flags = newflags;
@@ -933,13 +939,13 @@ static char *__dynamic_emit_prefix(const struct _ddebug *desc, char *buf)
 	pos_after_tid = pos;
 	if (desc->flags & _DPRINTK_FLAGS_INCL_MODNAME)
 		pos += snprintf(buf + pos, remaining(pos), "%s:",
-				desc->modname);
+				desc_modname(desc));
 	if (desc->flags & _DPRINTK_FLAGS_INCL_FUNCNAME)
 		pos += snprintf(buf + pos, remaining(pos), "%s:",
-				desc->function);
+				desc_function(desc));
 	if (desc->flags & _DPRINTK_FLAGS_INCL_SOURCENAME)
 		pos += snprintf(buf + pos, remaining(pos), "%s:",
-				trim_prefix(desc->filename));
+				trim_prefix(desc_filename(desc)));
 	if (desc->flags & _DPRINTK_FLAGS_INCL_LINENO)
 		pos += snprintf(buf + pos, remaining(pos), "%d:",
 				desc->lineno);
@@ -1294,8 +1300,8 @@ static int ddebug_proc_show(struct seq_file *m, void *p)
 	}
 
 	seq_printf(m, "%s:%u [%s]%s =%s \"",
-		   trim_prefix(dp->filename), dp->lineno,
-		   iter->table->info.mod_name, dp->function,
+		   trim_prefix(desc_filename(dp)), dp->lineno,
+		   iter->table->info.mod_name, desc_function(dp),
 		   ddebug_describe_flags(dp->flags, &flags));
 	seq_escape_str(m, dp->format, ESCAPE_SPACE, "\t\r\n\"");
 	seq_putc(m, '"');
@@ -1792,9 +1798,11 @@ static int __init dynamic_debug_init(void)
 
 	struct _ddebug_info di = {
 		.descs.start = __start___dyndbg_descs,
+		.sites.start = __start___dyndbg_sites,
 		.maps.start  = __start___dyndbg_class_maps,
 		.users.start = __start___dyndbg_class_users,
 		.descs.len = __stop___dyndbg_descs - __start___dyndbg_descs,
+		.sites.len = __stop___dyndbg_sites - __start___dyndbg_sites,
 		.maps.len  = __stop___dyndbg_class_maps - __start___dyndbg_class_maps,
 		.users.len = __stop___dyndbg_class_users - __start___dyndbg_class_users,
 	};
@@ -1818,12 +1826,12 @@ static int __init dynamic_debug_init(void)
 	}
 
 	iter = iter_mod_start = __start___dyndbg_descs;
-	modname = iter->modname;
+	modname = desc_modname(iter);
 	i = mod_sites = mod_ct = 0;
 
 	for (; iter < __stop___dyndbg_descs; iter++, i++, mod_sites++) {
 
-		if (strcmp(modname, iter->modname)) {
+		if (strcmp(modname, desc_modname(iter))) {
 			mod_ct++;
 			di.descs.len = mod_sites;
 			di.descs.start = iter_mod_start;
@@ -1833,7 +1841,7 @@ static int __init dynamic_debug_init(void)
 				goto out_err;
 
 			mod_sites = 0;
-			modname = iter->modname;
+			modname = desc_modname(iter);
 			iter_mod_start = iter;
 		}
 	}
@@ -1845,9 +1853,10 @@ static int __init dynamic_debug_init(void)
 		goto out_err;
 
 	ddebug_init_success = 1;
-	vpr_info("%d prdebugs in %d modules, %d KiB in ddebug tables, %d kiB in __dyndbg_descs section\n",
+	vpr_info("%d prdebugs in %d modules, %d KiB in ddebug tables, %d+%d kiB in __dyndbg:_descs+_sites sections\n",
 		 i, mod_ct, (int)((mod_ct * sizeof(struct ddebug_table)) >> 10),
-		 (int)((i * sizeof(struct _ddebug)) >> 10));
+		 (int)((i * sizeof(struct _ddebug)) >> 10),
+		 (int)((i * sizeof(struct _ddebug_site)) >> 10));
 
 	if (di.maps.len)
 		v2pr_info("  %d builtin ddebug class-maps\n", di.maps.len);
