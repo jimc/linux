@@ -19,8 +19,10 @@ NC="${ESC}[0;0m"
 #   K=0     : Strict mode (fails with exit 1 on checksum drift or stale records)
 #   K=1     : Soft-pass mode (prints DRIFT/STALE diffs, exits 0 with 'fake success')
 #   K=2     : Silent soft-pass mode (suppresses DRIFT/STALE diffs, exits 0 with 'fake success')
+#   RECORD=1: Snapshot captured baseline text to $RECORD_DIR/<label>.rec
 V=${V:=0}
 K=${K:=0}
+RECORD=${RECORD:=0}
 
 # Sanitize V to ensure it is a valid integer
 if [[ ! "$V" =~ ^[0-9]+$ ]]; then

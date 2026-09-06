@@ -18,6 +18,28 @@
 APP="${APP:-DYNDBG}"
 APP_LOWER=$(echo "$APP" | tr '[:upper:]' '[:lower:]')
 
+# Recording controls for baseline text caching (out-of-tree by default):
+#   RECORD=1    : Snapshot captured text slices to RECORD_DIR/<label>.rec
+#   RECORD_DIR  : Destination directory for baseline text
+RECORD="${RECORD:-0}"
+SCRIPT_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+
+# Order of precedence for RECORD_DIR (out-of-tree for check-in safety):
+# 1. Explicit $RECORD_DIR from caller
+# 2. $OUTPUT/records (kselftest runner / Makefile build directory)
+# 3. ~/.cache/kselftest/dyndbg_records (persistent user cache outside git tree)
+# 4. /tmp/dyndbg_records (fallback if HOME is unset)
+if [ -z "${RECORD_DIR:-}" ]; then
+    if [ -n "${OUTPUT:-}" ]; then
+        RECORD_DIR="$OUTPUT/records"
+    elif [ -n "${HOME:-}" ]; then
+        RECORD_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/kselftest/${APP_LOWER}_records"
+    else
+        RECORD_DIR="/tmp/${APP_LOWER}_records"
+    fi
+fi
+RECORDED_COUNT=0
+
 # Global files for tracking seen, unregistered, and drifted hashes securely via mktemp
 SEEN_HASHES_FILE=$(mktemp -t "${APP_LOWER}_seen_hashes.XXXXXX")
 UNREG_HASHES_FILE=$(mktemp -t "${APP_LOWER}_unreg_hashes.XXXXXX")
@@ -131,6 +153,13 @@ function verify_fingerprint {
     done
     IFS="$OLD_IFS"
 
+    # Snapshot captured text to baseline file when RECORD=1 is active
+    if [ "${RECORD:-0}" -eq 1 ]; then
+        mkdir -p "$RECORD_DIR"
+        echo "$raw_capture" > "$RECORD_DIR/${label}.rec"
+        ((RECORDED_COUNT++))
+    fi
+
     # Strictly verify that the computed fingerprint matches any
     # expected hash for this label
     if [ -n "$expected_hash_field" ] && [ $matched -eq 1 ]; then
@@ -169,14 +198,28 @@ function verify_fingerprint {
         if [ "${K:-0}" -ne 2 ]; then
             echo -e "\nAdd or replace this line in GOLDEN_RECORDS():"
             printf "#K= %-32s %-24s\n" "${fingerprint}" "${label}"
-            echo -e "\n--- Captured Invariant ${capture_desc} Output ---"
-            if [ "$capture_desc" = "File Slice" ]; then
-                echo "$raw_capture" | \
-                    sed -E "s/ =([_a-z]*[a-z][_a-z]*) / ${YELLOW}=\1${NC} /g"
-            else
-                echo "$raw_capture"
+            local rec_path=""
+            if [ -f "$RECORD_DIR/${label}.rec" ]; then
+                rec_path="$RECORD_DIR/${label}.rec"
+            elif [ -f "$SCRIPT_DIR/records/${label}.rec" ]; then
+                rec_path="$SCRIPT_DIR/records/${label}.rec"
             fi
-            echo -e "-----------------------------------${NC}"
+
+            if [ -n "$rec_path" ]; then
+                echo -e "\n--- Baseline Diff vs ${rec_path} ---"
+                diff -u --label "baseline ($label)" "$rec_path" \
+                        --label "captured ($label)" <(echo "$raw_capture") || true
+                echo -e "-----------------------------------${NC}"
+            else
+                echo -e "\n--- Captured Invariant ${capture_desc} Output ---"
+                if [ "$capture_desc" = "File Slice" ]; then
+                    echo "$raw_capture" | \
+                        sed -E "s/ =([_a-z]*[a-z][_a-z]*) / ${YELLOW}=\1${NC} /g"
+                else
+                    echo "$raw_capture"
+                fi
+                echo -e "-----------------------------------${NC}"
+            fi
         fi
 
         if [ "$status_str" = "DRIFTED" ]; then
@@ -386,6 +429,10 @@ function audit_golden_records {
     if [ -n "$dupes" ]; then
         echo -e "\n${RED}# WARNING: Duplicate labels detected in GOLDEN_RECORDS():${NC}"
         echo "$dupes" | sed 's/^/#   /'
+    fi
+
+    if [ "${RECORD:-0}" -eq 1 ]; then
+        echo -e "${GREEN}# RECORD=1: Wrote $RECORDED_COUNT baseline records to $RECORD_DIR/${NC}"
     fi
 
     # Clean up
