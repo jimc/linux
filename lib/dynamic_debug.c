@@ -18,6 +18,7 @@
 #include <linux/moduleparam.h>
 #include <linux/kallsyms.h>
 #include <linux/types.h>
+#include <linux/maple_tree.h>
 #include <linux/mutex.h>
 #include <linux/percpu.h>
 #include <linux/proc_fs.h>
@@ -93,6 +94,16 @@ module_param(verbose, int, 0644);
 MODULE_PARM_DESC(verbose, " dynamic_debug/control processing "
 		 "( 0 = off (default), 1 = module add/rm, 2 = >control summary, 3 = parsing, 4 = per-site changes)");
 
+/*
+ * during (mod)_init, fill these from __dyndbg_sites data.  They
+ * deduplicate the column values, and remember their (nested,
+ * non-overlapping) ranges intrinsically.  At runtime, they provide
+ * values for use in `cat control` & `echo $cmd >control`
+ */
+static DEFINE_MTREE(dd_func_map);
+static DEFINE_MTREE(dd_file_map);
+static DEFINE_MTREE(dd_mod_map);
+
 /* Return the path relative to source root */
 static inline const char *trim_prefix(const char *path)
 {
@@ -144,6 +155,7 @@ do {								\
 #define v2pr_info(fmt, ...)	vnpr_info(2, fmt, ##__VA_ARGS__)
 #define v3pr_info(fmt, ...)	vnpr_info(3, fmt, ##__VA_ARGS__)
 #define v4pr_info(fmt, ...)	vnpr_info(4, fmt, ##__VA_ARGS__)
+#define v5pr_info(fmt, ...)	vnpr_info(5, fmt, ##__VA_ARGS__)
 
 static void v3pr_info_dq(const struct ddebug_query *query, const char *msg)
 {
@@ -256,9 +268,21 @@ static inline bool ddebug_class_has_param(const struct ddebug_class_map *map)
 /* re-framed as a policy choice */
 #define ddebug_class_wants_protection(map) (ddebug_class_has_param(map))
 
-#define desc_modname(d)  ((d)->site->_modname)
-#define desc_filename(d) ((d)->site->_filename)
-#define desc_function(d) ((d)->site->_function)
+#define DEFINE_DYNDBG_SITE_ACCESSOR(column, mt_tree)		\
+static const char *desc_##column(struct _ddebug const *dp)	\
+{								\
+	struct maple_tree *mt = &mt_tree;			\
+	void *ret;						\
+								\
+	rcu_read_lock();					\
+	ret = mtree_load(mt, (unsigned long)dp);		\
+	rcu_read_unlock();					\
+	return (const char *)ret ?: "unknown";			\
+}
+
+DEFINE_DYNDBG_SITE_ACCESSOR(function, dd_func_map)
+DEFINE_DYNDBG_SITE_ACCESSOR(filename, dd_file_map)
+DEFINE_DYNDBG_SITE_ACCESSOR(modname, dd_mod_map)
 
 /*
  * Search the tables for _ddebug's which match the given `query' and
@@ -1554,6 +1578,114 @@ static int ddebug_class_user_overlap(struct ddebug_class_user *cli,
 	return 0;
 }
 
+static void ddebug_store_range(struct maple_tree *mt, const struct _ddebug *start,
+			       const struct _ddebug *next, const char *kind, const char *name)
+{
+	unsigned long first = (unsigned long)start;
+	unsigned long last = (unsigned long)(next - 1); /* cast after decrement */
+	int rc, reps = next - start;
+
+	v3pr_info("%3d debugs in %s: %s\n", reps, kind, name);
+	rc = mtree_store_range(mt, first, last, (void *)name, GFP_KERNEL);
+	if (rc)
+		pr_err("%s:%s range store failed: %d\n", kind, name, rc);
+}
+
+
+/* these are unusable after __init, when __dyndbg_sites is released */
+#define dref_modname(s)  ((s)->_modname)
+#define dref_filename(s) ((s)->_filename)
+#define dref_function(s) ((s)->_function)
+
+#define DYNDBG_SITE_GETTER(name)					\
+static inline const char *ddebug_get_##name(const struct _ddebug_site *s) \
+{									\
+	return dref_##name(s);						\
+}
+DYNDBG_SITE_GETTER(function)
+DYNDBG_SITE_GETTER(filename)
+DYNDBG_SITE_GETTER(modname)
+
+static void ddebug_log_compression_stats(int ct_sites, int mods,
+					 int files, int funcs)
+{
+	int ct_ranges = mods + files + funcs;
+	int before = ct_sites * sizeof(struct _ddebug_site);
+
+	int estimated_nodes = (ct_ranges + MAPLE_NODE_SLOTS - 1) /
+		MAPLE_NODE_SLOTS;
+	int overhead = estimated_nodes * sizeof(struct maple_node);
+	int net_savings = before - overhead;
+
+	v2pr_info("condensed %d sites into %d mods, %d files, %d funcs\n",
+		  ct_sites, mods, files, funcs);
+	vpr_info("memory: site data %d KiB, tree size ~%d KiB, saved ~%d KiB\n",
+		 before >> 10, overhead >> 10, net_savings >> 10);
+}
+
+static int ddebug_grow_tree(struct _ddebug_info *di,
+			    struct maple_tree *mt,
+			    const char *kind,
+			    const char *(*key_fn)(const struct _ddebug_site *))
+{
+	int count = 0;
+	struct _ddebug *p = di->descs.start,
+		*end = di->descs.start + di->descs.len;
+	struct _ddebug *range_start = di->descs.start;
+	const struct _ddebug_site *site_p, *site_range_start;
+
+	if (!di->descs.len)
+		return 0;
+
+	for (; p < end; ++p) {
+
+		site_p = &di->sites.start[p - di->descs.start];
+		site_range_start = &di->sites.start[range_start -
+						    di->descs.start];
+		/*
+		 * address != should be enough to find new ranges, but
+		 * for modules, the modname can be the same, even when
+		 * addys differ, and we want consolidated ranges.
+		 */
+		if (key_fn(site_range_start) != key_fn(site_p) &&
+		    !!strcmp(key_fn(site_range_start), key_fn(site_p))) {
+
+			ddebug_store_range(mt, range_start, p, kind,
+					   key_fn(site_range_start));
+			count++;
+			range_start = p;
+		}
+	}
+	site_range_start = &di->sites.start[range_start -
+					    di->descs.start];
+	ddebug_store_range(mt, range_start, p, kind,
+			   key_fn(site_range_start));
+	count++;
+
+	return count;
+}
+
+static void ddebug_condense_sites(struct _ddebug_info *di)
+{
+	int funcs = 0, files = 0, mods = 0;
+
+	if (!di->sites.len)
+		return;
+
+	if (WARN_ON(di->descs.len != di->sites.len))
+		return;
+
+	funcs = ddebug_grow_tree(di, &dd_func_map,
+				 "func", ddebug_get_function);
+	files = ddebug_grow_tree(di, &dd_file_map,
+				 "file", ddebug_get_filename);
+	mods = ddebug_grow_tree(di, &dd_mod_map,
+				"mod", ddebug_get_modname);
+
+	ddebug_log_compression_stats(di->descs.len, mods, files, funcs);
+	di->sites.len = 0;
+}
+
 /*
  * Allocate a new ddebug_table for the given module
  * and add it to the global list.
@@ -1593,6 +1725,7 @@ static int ddebug_add_module(struct _ddebug_info *di)
 	 * the module's presence.
 	 */
 	dt->info = *di;
+	ddebug_condense_sites(&dt->info);
 	dd_set_module_subrange(i, cm, &dt->info, maps);
 	dd_set_module_subrange(i, cli, &dt->info, users);
 
@@ -1702,6 +1835,35 @@ static void ddebug_table_free(struct ddebug_table *dt)
 #ifdef CONFIG_MODULES
 
 /*
+ * clear the 3 maple trees containing __dyndbg_sites info of their
+ * contents for a module being rmmod'd.
+ */
+static void ddebug_module_sites_clear(const struct _ddebug_info *di)
+{
+	unsigned long start = (unsigned long) di->descs.start;
+	unsigned long end = (unsigned long) &di->descs.start[di->descs.len - 1];
+
+	MA_STATE(mod_mas, &dd_mod_map, start, end);
+	MA_STATE(file_mas, &dd_file_map, start, end);
+	MA_STATE(func_mas, &dd_func_map, start, end);
+
+	v2pr_info("clearing %3d debugs of removed module %s\n",
+		  di->descs.len, di->mod_name);
+
+	mas_lock(&mod_mas);
+	mas_erase(&mod_mas);
+	mas_unlock(&mod_mas);
+
+	mas_lock(&file_mas);
+	mas_erase(&file_mas);
+	mas_unlock(&file_mas);
+
+	mas_lock(&func_mas);
+	mas_erase(&func_mas);
+	mas_unlock(&func_mas);
+}
+
+/*
  * Called in response to a module being unloaded.  Removes
  * any ddebug_table's which point at the module.
  */
@@ -1712,7 +1874,12 @@ static int ddebug_remove_module(const char *mod_name)
 
 	mutex_lock(&ddebug_lock);
 	list_for_each_entry_safe(dt, nextdt, &ddebug_tables, link) {
+		/*
+		 * NB: with multiple "main" builtins, strcmp would be
+		 * incorrect.  Linker gives us this one.
+		 */
 		if (dt->info.mod_name == mod_name) {
+			ddebug_module_sites_clear(&dt->info);
 			ddebug_table_free(dt);
 			ret = 0;
 			break;
@@ -1789,12 +1956,20 @@ static int __init dynamic_debug_init_control(void)
 	return 0;
 }
 
+struct ddebug_mod_info {
+	struct list_head link;
+	const char *mod_name;
+	unsigned long start_addr;
+	unsigned long end_addr;
+};
+
 static int __init dynamic_debug_init(void)
 {
-	struct _ddebug *iter, *iter_mod_start;
-	int ret, i, mod_sites, mod_ct;
-	const char *modname;
+	int i, ret = 0, mod_ct = 0;
+	void *mod_name;
 	char *cmdline;
+	LIST_HEAD(mod_list);
+	struct ddebug_mod_info *mod_info, *tmp;
 
 	struct _ddebug_info di = {
 		.descs.start = __start___dyndbg_descs,
@@ -1824,33 +1999,53 @@ static int __init dynamic_debug_init(void)
 		ddebug_init_success = 1;
 		return 0;
 	}
+	/*
+	 * fill the 3 function, file, module trees with the values and
+	 * their intervals, and then walk the module intervals and
+	 * call add_module for each.
+	 */
+	ddebug_condense_sites(&di);
 
-	iter = iter_mod_start = __start___dyndbg_descs;
-	modname = desc_modname(iter);
-	i = mod_sites = mod_ct = 0;
-
-	for (; iter < __stop___dyndbg_descs; iter++, i++, mod_sites++) {
-
-		if (strcmp(modname, desc_modname(iter))) {
-			mod_ct++;
-			di.descs.len = mod_sites;
-			di.descs.start = iter_mod_start;
-			di.mod_name = modname;
-			ret = ddebug_add_module(&di);
-			if (ret)
-				goto out_err;
-
-			mod_sites = 0;
-			modname = desc_modname(iter);
-			iter_mod_start = iter;
+	/*
+	 * under rcu-lock, gather the modules' descriptor intervals
+	 * into an atomically alloc'd list
+	 */
+	rcu_read_lock();
+	MA_STATE(mas, &dd_mod_map, 0, ULONG_MAX);
+	mas_for_each(&mas, mod_name, ULONG_MAX) {
+		mod_info = kmalloc(sizeof(*mod_info), GFP_ATOMIC);
+		if (!mod_info) {
+			pr_warn("kmalloc failed, some modules may not be processed\n");
+			break;
 		}
+		mod_info->mod_name = (const char *)mod_name;
+		mod_info->start_addr = mas.index;
+		mod_info->end_addr = mas.last;
+		list_add_tail(&mod_info->link, &mod_list);
 	}
-	di.descs.len = mod_sites;
-	di.descs.start = iter_mod_start;
-	di.mod_name = modname;
-	ret = ddebug_add_module(&di);
-	if (ret)
-		goto out_err;
+	rcu_read_unlock();
+
+	/*
+	 * walk the list, call ddebug_add_module for each, which may sleep
+	 */
+	list_for_each_entry_safe(mod_info, tmp, &mod_list, link) {
+		struct _ddebug_info mod_di = di;
+
+		mod_di.mod_name = mod_info->mod_name;
+		mod_di.descs.start = (struct _ddebug *)mod_info->start_addr;
+		mod_di.descs.len = (mod_info->end_addr - mod_info->start_addr) / sizeof(struct _ddebug) + 1;
+
+		ret = ddebug_add_module(&mod_di);
+		if (ret) {
+			pr_err("Failed to add module %s, error %d\n",
+			       mod_di.mod_name, ret);
+			goto out_err;
+		}
+		mod_ct++;
+		i += mod_di.descs.len;
+		list_del(&mod_info->link);
+		kfree(mod_info);
+	}
 
 	ddebug_init_success = 1;
 	vpr_info("%d prdebugs in %d modules, %d KiB in ddebug tables, %d+%d kiB in __dyndbg:_descs+_sites sections\n",
@@ -1876,8 +2071,13 @@ static int __init dynamic_debug_init(void)
 	return 0;
 
 out_err:
+	/* Clean up any remaining items in mod_list on error */
+	list_for_each_entry_safe(mod_info, tmp, &mod_list, link) {
+		list_del(&mod_info->link);
+		kfree(mod_info);
+	}
 	ddebug_remove_all_tables();
-	return 0;
+	return ret;
 }
 /* Allow early initialization for boot messages via boot param */
 early_initcall(dynamic_debug_init);
