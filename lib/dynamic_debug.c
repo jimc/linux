@@ -102,9 +102,19 @@ MODULE_PARM_DESC(verbose, " dynamic_debug/control processing "
  * non-overlapping) ranges intrinsically.  At runtime, they provide
  * values for use in `cat control` & `echo $cmd >control`
  */
-static DEFINE_MTREE(dd_func_map);
-static DEFINE_MTREE(dd_file_map);
-static DEFINE_MTREE(dd_mod_map);
+static DEFINE_MTREE(dd_site_map);
+
+#define DD_KEY_TAG_SHIFT	60
+#define DD_KEY_TAG_MASK		(0xFULL << DD_KEY_TAG_SHIFT)
+#define DD_TAG_MOD		(1ULL << DD_KEY_TAG_SHIFT)
+#define DD_TAG_FILE		(2ULL << DD_KEY_TAG_SHIFT)
+#define DD_TAG_FUNC		(3ULL << DD_KEY_TAG_SHIFT)
+#define DD_KEY_ADDR_MASK	(~DD_KEY_TAG_MASK)
+
+static inline unsigned long ddebug_site_tag_key(unsigned long addr, unsigned long tag)
+{
+	return tag | (addr & DD_KEY_ADDR_MASK);
+}
 
 /* cache of composed prefixes for enabled and invoked pr_debugs */
 static DEFINE_MTREE(pr_prefixes);
@@ -279,21 +289,34 @@ static inline bool ddebug_class_has_param(const struct ddebug_class_map *map)
 /* re-framed as a policy choice */
 #define ddebug_class_wants_protection(map) (ddebug_class_has_param(map))
 
-#define DEFINE_DYNDBG_SITE_ACCESSOR(column, mt_tree)		\
+#define DEFINE_DYNDBG_SITE_ACCESSOR(column, tag)		\
 static const char *desc_##column(struct _ddebug const *dp)	\
 {								\
-	struct maple_tree *mt = &mt_tree;			\
+	unsigned long key = ddebug_site_tag_key((unsigned long)dp, tag); \
 	void *ret;						\
 								\
 	rcu_read_lock();					\
-	ret = mtree_load(mt, (unsigned long)dp);		\
+	ret = mtree_load(&dd_site_map, key);			\
 	rcu_read_unlock();					\
 	return (const char *)ret ?: "unknown";			\
 }
 
-DEFINE_DYNDBG_SITE_ACCESSOR(function, dd_func_map)
-DEFINE_DYNDBG_SITE_ACCESSOR(filename, dd_file_map)
-DEFINE_DYNDBG_SITE_ACCESSOR(modname, dd_mod_map)
+DEFINE_DYNDBG_SITE_ACCESSOR(function, DD_TAG_FUNC)
+DEFINE_DYNDBG_SITE_ACCESSOR(filename, DD_TAG_FILE)
+DEFINE_DYNDBG_SITE_ACCESSOR(modname, DD_TAG_MOD)
+
+static void ddebug_resolve_site(struct maple_tree *mt, const struct _ddebug *dp,
+				const char **mod, const char **file, const char **func)
+{
+	unsigned long addr = (unsigned long)dp;
+
+	if (mod)
+		*mod = mtree_load(mt, ddebug_site_tag_key(addr, DD_TAG_MOD)) ?: "unknown";
+	if (file)
+		*file = mtree_load(mt, ddebug_site_tag_key(addr, DD_TAG_FILE)) ?: "unknown";
+	if (func)
+		*func = mtree_load(mt, ddebug_site_tag_key(addr, DD_TAG_FUNC)) ?: "unknown";
+}
 
 /*
  * Search the tables for _ddebug's which match the given `query' and
@@ -307,19 +330,25 @@ static bool ddebug_match_desc(const struct ddebug_query *query,
 			      int selected_class)
 {
 	struct ddebug_class_map *site_map;
+	const char *dp_filename = NULL, *dp_function = NULL;
+
+	/* get site vals needed to match this query */
+	ddebug_resolve_site(&dd_site_map, dp, NULL,
+			    query->filename ? &dp_filename : NULL,
+			    query->function ? &dp_function : NULL);
 
 	/* match against the source filename */
 	if (query->filename &&
-	    !match_wildcard(query->filename, desc_filename(dp)) &&
+	    !match_wildcard(query->filename, dp_filename) &&
 	    !match_wildcard(query->filename,
-			    kbasename(desc_filename(dp))) &&
+			    kbasename(dp_filename)) &&
 	    !match_wildcard(query->filename,
-			    trim_prefix(desc_filename(dp))))
+			    trim_prefix(dp_filename)))
 		return false;
 
 	/* match against the function */
 	if (query->function &&
-	    !match_wildcard(query->function, desc_function(dp)))
+	    !match_wildcard(query->function, dp_function))
 		return false;
 
 	/* match against the format */
@@ -1362,6 +1391,8 @@ static int ddebug_proc_show(struct seq_file *m, void *p)
 	struct flagsbuf flags;
 	char const *class;
 
+	const char *filename = NULL, *function = NULL;
+
 	if (p == SEQ_START_TOKEN) {
 		seq_puts(m,
 			 "# filename:lineno [module]function flags format\n");
@@ -1374,9 +1405,11 @@ static int ddebug_proc_show(struct seq_file *m, void *p)
 		return 0;
 	}
 
+	ddebug_resolve_site(&dd_site_map, dp, NULL, &filename, &function);
+
 	seq_printf(m, "%s:%u [%s]%s =%s \"",
-		   trim_prefix(desc_filename(dp)), dp->lineno,
-		   iter->table->info.mod_name, desc_function(dp),
+		   trim_prefix(filename), dp->lineno,
+		   iter->table->info.mod_name, function,
 		   ddebug_describe_flags(dp->flags, &flags));
 	seq_escape_str(m, dp->format, ESCAPE_SPACE, "\t\r\n\"");
 	seq_putc(m, '"');
@@ -1629,11 +1662,12 @@ static int ddebug_class_user_overlap(struct ddebug_class_user *cli,
 	return 0;
 }
 
-static void ddebug_store_range(struct maple_tree *mt, const struct _ddebug *start,
-			       const struct _ddebug *next, const char *kind, const char *name)
+static void ddebug_store_tagged_range(struct maple_tree *mt, const struct _ddebug *start,
+				      const struct _ddebug *next, const char *kind,
+				      const char *name, unsigned long tag)
 {
-	unsigned long first = (unsigned long)start;
-	unsigned long last = (unsigned long)(next - 1); /* cast after decrement */
+	unsigned long first = ddebug_site_tag_key((unsigned long)start, tag);
+	unsigned long last = ddebug_site_tag_key((unsigned long)(next - 1), tag);
 	int rc, reps = next - start;
 
 	v3pr_info("%3d debugs in %s: %s\n", reps, kind, name);
@@ -1677,7 +1711,8 @@ static void ddebug_log_compression_stats(int ct_sites, int mods,
 static int ddebug_grow_tree(struct _ddebug_info *di,
 			    struct maple_tree *mt,
 			    const char *kind,
-			    const char *(*key_fn)(const struct _ddebug_site *))
+			    const char *(*key_fn)(const struct _ddebug_site *),
+			    unsigned long tag)
 {
 	int count = 0;
 	struct _ddebug *p = di->descs.start,
@@ -1701,16 +1736,16 @@ static int ddebug_grow_tree(struct _ddebug_info *di,
 		if (key_fn(site_range_start) != key_fn(site_p) &&
 		    !!strcmp(key_fn(site_range_start), key_fn(site_p))) {
 
-			ddebug_store_range(mt, range_start, p, kind,
-					   key_fn(site_range_start));
+			ddebug_store_tagged_range(mt, range_start, p, kind,
+						  key_fn(site_range_start), tag);
 			count++;
 			range_start = p;
 		}
 	}
 	site_range_start = &di->sites.start[range_start -
 					    di->descs.start];
-	ddebug_store_range(mt, range_start, p, kind,
-			   key_fn(site_range_start));
+	ddebug_store_tagged_range(mt, range_start, p, kind,
+				  key_fn(site_range_start), tag);
 	count++;
 
 	return count;
@@ -1726,12 +1761,12 @@ static void ddebug_condense_sites(struct _ddebug_info *di)
 	if (WARN_ON(di->descs.len != di->sites.len))
 		return;
 
-	funcs = ddebug_grow_tree(di, &dd_func_map,
-				 "func", ddebug_get_function);
-	files = ddebug_grow_tree(di, &dd_file_map,
-				 "file", ddebug_get_filename);
-	mods = ddebug_grow_tree(di, &dd_mod_map,
-				"mod", ddebug_get_modname);
+	funcs = ddebug_grow_tree(di, &dd_site_map,
+				 "func", ddebug_get_function, DD_TAG_FUNC);
+	files = ddebug_grow_tree(di, &dd_site_map,
+				 "file", ddebug_get_filename, DD_TAG_FILE);
+	mods = ddebug_grow_tree(di, &dd_site_map,
+				"mod", ddebug_get_modname, DD_TAG_MOD);
 
 	ddebug_log_compression_stats(di->descs.len, mods, files, funcs);
 	di->sites.len = 0;
@@ -1893,25 +1928,20 @@ static void ddebug_module_sites_clear(const struct _ddebug_info *di)
 {
 	unsigned long start = (unsigned long) di->descs.start;
 	unsigned long end = (unsigned long) &di->descs.start[di->descs.len - 1];
-
-	MA_STATE(mod_mas, &dd_mod_map, start, end);
-	MA_STATE(file_mas, &dd_file_map, start, end);
-	MA_STATE(func_mas, &dd_func_map, start, end);
+	unsigned long tags[] = { DD_TAG_MOD, DD_TAG_FILE, DD_TAG_FUNC };
+	MA_STATE(mas, &dd_site_map, 0, 0);
+	int i;
 
 	v2pr_info("clearing %3d debugs of removed module %s\n",
 		  di->descs.len, di->mod_name);
 
-	mas_lock(&mod_mas);
-	mas_erase(&mod_mas);
-	mas_unlock(&mod_mas);
-
-	mas_lock(&file_mas);
-	mas_erase(&file_mas);
-	mas_unlock(&file_mas);
-
-	mas_lock(&func_mas);
-	mas_erase(&func_mas);
-	mas_unlock(&func_mas);
+	mas_lock(&mas);
+	for (i = 0; i < ARRAY_SIZE(tags); i++) {
+		mas_set_range(&mas, ddebug_site_tag_key(start, tags[i]),
+				    ddebug_site_tag_key(end, tags[i]));
+		mas_erase(&mas);
+	}
+	mas_unlock(&mas);
 }
 
 /*
@@ -2034,7 +2064,6 @@ static void ddebug_drop_cached_prefix(const struct _ddebug *dp)
 	}
 }
 
-
 static __initdata int ddebug_init_success;
 
 static int __init dynamic_debug_init_control(void)
@@ -2115,17 +2144,22 @@ static int __init dynamic_debug_init(void)
 	 * into an atomically alloc'd list
 	 */
 	rcu_read_lock();
-	MA_STATE(mas, &dd_mod_map, 0, ULONG_MAX);
-	mas_for_each(&mas, mod_name, ULONG_MAX) {
-		mod_info = kmalloc(sizeof(*mod_info), GFP_ATOMIC);
-		if (!mod_info) {
-			pr_warn("kmalloc failed, some modules may not be processed\n");
-			break;
+	{
+		unsigned long mod_start_key = ddebug_site_tag_key(0, DD_TAG_MOD);
+		unsigned long mod_end_key = ddebug_site_tag_key(ULONG_MAX, DD_TAG_MOD);
+		MA_STATE(mas, &dd_site_map, mod_start_key, mod_end_key);
+
+		mas_for_each(&mas, mod_name, mod_end_key) {
+			mod_info = kmalloc(sizeof(*mod_info), GFP_ATOMIC);
+			if (!mod_info) {
+				pr_warn("kmalloc failed, some modules may not be processed\n");
+				break;
+			}
+			mod_info->mod_name = (const char *)mod_name;
+			mod_info->start_addr = mas.index & DD_KEY_ADDR_MASK;
+			mod_info->end_addr = mas.last & DD_KEY_ADDR_MASK;
+			list_add_tail(&mod_info->link, &mod_list);
 		}
-		mod_info->mod_name = (const char *)mod_name;
-		mod_info->start_addr = mas.index;
-		mod_info->end_addr = mas.last;
-		list_add_tail(&mod_info->link, &mod_list);
 	}
 	rcu_read_unlock();
 
