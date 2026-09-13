@@ -12,8 +12,9 @@ extern const unsigned int kallsyms_num_syms;
 extern const char kallsyms_token_table[];
 extern const u16 kallsyms_token_index[];
 
-extern const unsigned int kallsyms_bucket_boundaries[];
+extern const unsigned int kallsyms_bucket_base[];
 extern const u8 kallsyms_seqs_of_names[];
-extern const u8 kallsyms_names_offsets[];
+extern const u16 kallsyms_names_slots[];
+extern const u8 kallsyms_names_lens[];
 
 #endif // LINUX_KALLSYMS_INTERNAL_H_

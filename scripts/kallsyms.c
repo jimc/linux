@@ -38,6 +38,7 @@ struct sym_entry {
 	unsigned int len;
 	unsigned int seq;
 	unsigned int byte_off;
+	unsigned int slot;
 	unsigned char sym[];
 };
 
@@ -350,6 +351,8 @@ static void sort_symbols_by_name(void)
 
 #define KALLSYMS_MAX_BUCKETS 128
 
+#define KALLSYMS_MAX_BUCKETS 128
+
 static void write_src(void)
 {
 	unsigned int i, k, off;
@@ -358,6 +361,7 @@ static void write_src(void)
 	struct sym_entry **bucket_table;
 	char buf[KSYM_NAME_LEN];
 	unsigned int cur_bucket;
+	unsigned int cur_slot;
 
 	for (i = 0; i < table_cnt; i++)
 		table[i]->seq = i;
@@ -378,6 +382,7 @@ static void write_src(void)
 	output_label("kallsyms_names");
 	off = 0;
 	cur_bucket = 1;
+	cur_slot = 0;
 	bucket_boundaries[1] = 0;
 
 	for (i = 0; i < table_cnt; i++) {
@@ -394,9 +399,11 @@ static void write_src(void)
 				cur_bucket++;
 				bucket_boundaries[cur_bucket] = off;
 			}
+			cur_slot = 0;
 		}
 
 		bucket_table[i]->byte_off = off;
+		bucket_table[i]->slot = cur_slot++;
 
 		/* Emit raw token bytes without length prefix */
 		for (k = 0; k < len; k++) {
@@ -422,10 +429,10 @@ static void write_src(void)
 	printf(".size kallsyms_names, . - kallsyms_names\n");
 	printf("\n");
 
-	output_label("kallsyms_bucket_boundaries");
+	output_label("kallsyms_bucket_base");
 	for (i = 0; i <= KALLSYMS_MAX_BUCKETS; i++)
 		printf("\t.long\t%u\n", bucket_boundaries[i]);
-	printf(".size kallsyms_bucket_boundaries, . - kallsyms_bucket_boundaries\n");
+	printf(".size kallsyms_bucket_base, . - kallsyms_bucket_base\n");
 	printf("\n");
 	free(bucket_table);
 
@@ -452,14 +459,18 @@ static void write_src(void)
 	printf(".size kallsyms_offsets, . - kallsyms_offsets\n");
 	printf("\n");
 
-	output_label("kallsyms_names_offsets");
+	output_label("kallsyms_names_slots");
 	for (i = 0; i < table_cnt; i++)
-		printf("\t.byte 0x%02x, 0x%02x, 0x%02x\t/* %s */\n",
-			(unsigned char)(table[i]->byte_off >> 16),
-			(unsigned char)(table[i]->byte_off >> 8),
-			(unsigned char)(table[i]->byte_off >> 0),
-		       table[i]->sym);
-	printf(".size kallsyms_names_offsets, . - kallsyms_names_offsets\n");
+		printf("\t.short\t%u\t/* %s (slot=%u) */\n",
+			table[i]->slot, table[i]->sym, table[i]->slot);
+	printf(".size kallsyms_names_slots, . - kallsyms_names_slots\n");
+	printf("\n");
+
+	output_label("kallsyms_names_lens");
+	for (i = 0; i < table_cnt; i++)
+		printf("\t.byte\t%u\t/* %s */\n",
+			table[i]->len, table[i]->sym);
+	printf(".size kallsyms_names_lens, . - kallsyms_names_lens\n");
 	printf("\n");
 
 	sort_symbols_by_name();
