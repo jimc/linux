@@ -34,41 +34,29 @@
 
 #include "kallsyms_internal.h"
 
-/*
- * Expand a compressed symbol data into the resulting uncompressed string,
- * if uncompressed string is too long (>= maxlen), it will be truncated,
- * given the offset to where the symbol is in the compressed stream.
- */
-static unsigned int kallsyms_expand_symbol(unsigned int off,
-					   char *result, size_t maxlen)
+static inline const u8 *get_symbol_data(unsigned int off, unsigned int *len)
 {
-	int len, skipped_first = 0;
+	const u8 *p = &kallsyms_names[off];
+	unsigned int l = *p++;
+
+	if (unlikely(l & 0x80))
+		l = ((l & 0x7F) | (*p++ << 7)) + 1;
+	*len = l;
+
+	return p;
+}
+
+/*
+ * Expand a compressed symbol data into the resulting uncompressed string.
+ */
+static void kallsyms_expand_symbol(unsigned int off,
+				   char *result, size_t maxlen)
+{
+	int skipped_first = 0;
 	const char *tptr;
-	const u8 *data;
+	unsigned int len;
+	const u8 *data = get_symbol_data(off, &len);
 
-	/* Get the compressed symbol length from the first symbol byte. */
-	data = &kallsyms_names[off];
-	len = *data;
-	data++;
-	off++;
-
-	/* If MSB is 1, it is a "big" symbol, so needs an additional byte. */
-	if ((len & 0x80) != 0) {
-		len = (len & 0x7F) | (*data << 7);
-		data++;
-		off++;
-	}
-
-	/*
-	 * Update the offset to return the offset for the next symbol on
-	 * the compressed stream.
-	 */
-	off += len;
-
-	/*
-	 * For every byte on the compressed symbol data, copy the table
-	 * entry for that byte.
-	 */
 	while (len) {
 		tptr = &kallsyms_token_table[kallsyms_token_index[*data]];
 		data++;
@@ -81,8 +69,9 @@ static unsigned int kallsyms_expand_symbol(unsigned int off,
 				*result = *tptr;
 				result++;
 				maxlen--;
-			} else
+			} else {
 				skipped_first = 1;
+			}
 			tptr++;
 		}
 	}
@@ -90,27 +79,18 @@ static unsigned int kallsyms_expand_symbol(unsigned int off,
 tail:
 	if (maxlen)
 		*result = '\0';
-
-	/* Return to offset to the next symbol. */
-	return off;
 }
 
 /*
- * Get symbol type information. This is encoded as a single char at the
- * beginning of the symbol name.
+ * Get symbol type information. Encoded at the first token of the symbol.
  */
 static char kallsyms_get_symbol_type(unsigned int off)
 {
-	/*
-	 * Get just the first code, look it up in the token table,
-	 * and return the first char from this token. If MSB of length
-	 * is 1, it is a "big" symbol, so needs an additional byte.
-	 */
-	if (kallsyms_names[off] & 0x80)
-		off++;
-	return kallsyms_token_table[kallsyms_token_index[kallsyms_names[off + 1]]];
-}
+	unsigned int len;
+	const u8 *data = get_symbol_data(off, &len);
 
+	return kallsyms_token_table[kallsyms_token_index[*data]];
+}
 
 /*
  * Find the offset on the compressed table given an index in the
@@ -123,6 +103,43 @@ static inline unsigned int get_symbol_offset(unsigned long pos)
 	return (p[0] << 16) | (p[1] << 8) | p[2];
 }
 
+/*
+ * Compare an uncompressed ASCII string against a compressed symbol table.
+ * Returns negative if name < sym, positive if name > sym, 0 if equal.
+ * Exits immediately on the first mismatched character without decompressing
+ * the rest of the symbol name.
+ */
+static int kallsyms_strcmp_symbol(unsigned int off, const char *name)
+{
+	int skipped_first = 0;
+	const char *tptr;
+	unsigned int len;
+	const u8 *data = get_symbol_data(off, &len);
+
+	while (len) {
+		tptr = &kallsyms_token_table[kallsyms_token_index[*data]];
+		data++;
+		len--;
+
+		while (*tptr) {
+			if (skipped_first) {
+				int diff = (unsigned char)*name - (unsigned char)*tptr;
+
+				if (diff != 0)
+					return diff;
+				if (*name == '\0')
+					return 0;
+				name++;
+			} else {
+				skipped_first = 1;
+			}
+			tptr++;
+		}
+	}
+
+	return (unsigned char)*name - '\0';
+}
+
 unsigned long kallsyms_sym_address(int idx)
 {
 	/* non-relocatable 32-bit kernels just embed the value directly */
@@ -131,14 +148,11 @@ unsigned long kallsyms_sym_address(int idx)
 	return (unsigned long)offset_to_ptr(kallsyms_offsets + idx);
 }
 
-static unsigned int get_symbol_seq(int index)
+static inline unsigned int get_symbol_seq(int index)
 {
-	unsigned int i, seq = 0;
+	const u8 *p = &kallsyms_seqs_of_names[3 * index];
 
-	for (i = 0; i < 3; i++)
-		seq = (seq << 8) | kallsyms_seqs_of_names[3 * index + i];
-
-	return seq;
+	return (p[0] << 16) | (p[1] << 8) | p[2];
 }
 
 static int kallsyms_lookup_names(const char *name,
@@ -148,7 +162,6 @@ static int kallsyms_lookup_names(const char *name,
 	int ret;
 	int low, mid, high;
 	unsigned int seq, off;
-	char namebuf[KSYM_NAME_LEN];
 
 	low = 0;
 	high = kallsyms_num_syms - 1;
@@ -157,8 +170,7 @@ static int kallsyms_lookup_names(const char *name,
 		mid = low + (high - low) / 2;
 		seq = get_symbol_seq(mid);
 		off = get_symbol_offset(seq);
-		kallsyms_expand_symbol(off, namebuf, ARRAY_SIZE(namebuf));
-		ret = strcmp(name, namebuf);
+		ret = kallsyms_strcmp_symbol(off, name);
 		if (ret > 0)
 			low = mid + 1;
 		else if (ret < 0)
@@ -168,26 +180,26 @@ static int kallsyms_lookup_names(const char *name,
 	}
 
 	if (low > high)
-		return -ESRCH;
+		return -ENOENT;
 
-	low = mid;
+	/*
+	 * We found a match. There might be several symbols with the same
+	 * name, so we expand the search to find the first and last matches.
+	 */
 	while (low) {
 		seq = get_symbol_seq(low - 1);
 		off = get_symbol_offset(seq);
-		kallsyms_expand_symbol(off, namebuf, ARRAY_SIZE(namebuf));
-		if (strcmp(name, namebuf))
+		if (kallsyms_strcmp_symbol(off, name) != 0)
 			break;
 		low--;
 	}
 	*start = low;
 
 	if (end) {
-		high = mid;
 		while (high < kallsyms_num_syms - 1) {
 			seq = get_symbol_seq(high + 1);
 			off = get_symbol_offset(seq);
-			kallsyms_expand_symbol(off, namebuf, ARRAY_SIZE(namebuf));
-			if (strcmp(name, namebuf))
+			if (kallsyms_strcmp_symbol(off, name) != 0)
 				break;
 			high++;
 		}
@@ -197,27 +209,6 @@ static int kallsyms_lookup_names(const char *name,
 	return 0;
 }
 
-/* Lookup the address for this symbol. Returns 0 if not found. */
-unsigned long kallsyms_lookup_name(const char *name)
-{
-	int ret;
-	unsigned int i;
-
-	/* Skip the search for empty string. */
-	if (!*name)
-		return 0;
-
-	ret = kallsyms_lookup_names(name, &i, NULL);
-	if (!ret)
-		return kallsyms_sym_address(get_symbol_seq(i));
-
-	return module_kallsyms_lookup_name(name);
-}
-
-/*
- * Iterate over all symbols in vmlinux.  For symbols from modules use
- * module_kallsyms_on_each_symbol instead.
- */
 int kallsyms_on_each_symbol(int (*fn)(void *, const char *, unsigned long),
 			    void *data)
 {
@@ -226,8 +217,9 @@ int kallsyms_on_each_symbol(int (*fn)(void *, const char *, unsigned long),
 	unsigned int off;
 	int ret;
 
-	for (i = 0, off = 0; i < kallsyms_num_syms; i++) {
-		off = kallsyms_expand_symbol(off, namebuf, ARRAY_SIZE(namebuf));
+	for (i = 0; i < kallsyms_num_syms; i++) {
+		off = get_symbol_offset(i);
+		kallsyms_expand_symbol(off, namebuf, ARRAY_SIZE(namebuf));
 		ret = fn(data, namebuf, kallsyms_sym_address(i));
 		if (ret != 0)
 			return ret;
@@ -645,25 +637,21 @@ static int get_ksymbol_kprobe(struct kallsym_iter *iter)
 				  iter->name) < 0 ? 0 : 1;
 }
 
-/* Returns space to next name. */
-static unsigned long get_ksymbol_core(struct kallsym_iter *iter)
+/* Populate iter with core symbol at iter->pos. */
+static void get_ksymbol_core(struct kallsym_iter *iter)
 {
-	unsigned off = iter->nameoff;
+	unsigned int off = get_symbol_offset(iter->pos);
 
 	iter->module_name[0] = '\0';
 	iter->value = kallsyms_sym_address(iter->pos);
-
 	iter->type = kallsyms_get_symbol_type(off);
-
-	off = kallsyms_expand_symbol(off, iter->name, ARRAY_SIZE(iter->name));
-
-	return off - iter->nameoff;
+	kallsyms_expand_symbol(off, iter->name, ARRAY_SIZE(iter->name));
 }
 
 static void reset_iter(struct kallsym_iter *iter, loff_t new_pos)
 {
 	iter->name[0] = '\0';
-	iter->nameoff = get_symbol_offset(new_pos);
+	iter->nameoff = 0;
 	iter->pos = new_pos;
 	if (new_pos == 0) {
 		iter->pos_mod_end = 0;
@@ -703,11 +691,8 @@ static int update_iter(struct kallsym_iter *iter, loff_t pos)
 	if (pos >= kallsyms_num_syms)
 		return update_iter_mod(iter, pos);
 
-	/* If we're not on the desired position, reset to new position. */
-	if (pos != iter->pos)
-		reset_iter(iter, pos);
-
-	iter->nameoff += get_ksymbol_core(iter);
+	iter->pos = pos;
+	get_ksymbol_core(iter);
 	iter->pos++;
 
 	return 1;
