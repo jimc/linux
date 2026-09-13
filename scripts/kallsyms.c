@@ -37,6 +37,7 @@ struct sym_entry {
 	unsigned long long addr;
 	unsigned int len;
 	unsigned int seq;
+	unsigned int byte_off;
 	unsigned char sym[];
 };
 
@@ -360,6 +361,7 @@ static void write_src(void)
 		if ((i & 0xFF) == 0)
 			markers[i >> 8] = off;
 		table[i]->seq = i;
+		table[i]->byte_off = off;
 
 		/* There cannot be any symbol of length zero. */
 		if (table[i]->len == 0) {
@@ -446,6 +448,16 @@ static void write_src(void)
 	}
 	printf(".size kallsyms_offsets, . - kallsyms_offsets\n");
 	printf("\n");
+	output_label("kallsyms_names_offsets");
+	for (i = 0; i < table_cnt; i++)
+		printf("\t.byte 0x%02x, 0x%02x, 0x%02x\t/* %s */\n",
+			(unsigned char)(table[i]->byte_off >> 16),
+			(unsigned char)(table[i]->byte_off >> 8),
+			(unsigned char)(table[i]->byte_off >> 0),
+		       table[i]->sym);
+	printf(".size kallsyms_names_offsets, . - kallsyms_names_offsets\n");
+	printf("\n");
+
 
 	sort_symbols_by_name();
 	output_label("kallsyms_seqs_of_names");

@@ -113,40 +113,14 @@ static char kallsyms_get_symbol_type(unsigned int off)
 
 
 /*
- * Find the offset on the compressed stream given and index in the
+ * Find the offset on the compressed table given an index in the
  * kallsyms array.
  */
-static unsigned int get_symbol_offset(unsigned long pos)
+static inline unsigned int get_symbol_offset(unsigned long pos)
 {
-	const u8 *name;
-	int i, len;
+	const u8 *p = &kallsyms_names_offsets[3 * pos];
 
-	/*
-	 * Use the closest marker we have. We have markers every 256 positions,
-	 * so that should be close enough.
-	 */
-	name = &kallsyms_names[kallsyms_markers[pos >> 8]];
-
-	/*
-	 * Sequentially scan all the symbols up to the point we're searching
-	 * for. Every symbol is stored in a [<len>][<len> bytes of data] format,
-	 * so we just need to add the len to the current pointer for every
-	 * symbol we wish to skip.
-	 */
-	for (i = 0; i < (pos & 0xFF); i++) {
-		len = *name;
-
-		/*
-		 * If MSB is 1, it is a "big" symbol, so we need to look into
-		 * the next byte (and skip it, too).
-		 */
-		if ((len & 0x80) != 0)
-			len = ((len & 0x7F) | (name[1] << 7)) + 1;
-
-		name = name + len + 1;
-	}
-
-	return name - kallsyms_names;
+	return (p[0] << 16) | (p[1] << 8) | p[2];
 }
 
 unsigned long kallsyms_sym_address(int idx)
