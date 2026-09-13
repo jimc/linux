@@ -34,16 +34,23 @@
 
 #include "kallsyms_internal.h"
 
+#define KALLSYMS_MAX_BUCKETS 128
+
 static inline const u8 *get_symbol_data(unsigned int off, unsigned int *len)
 {
-	const u8 *p = &kallsyms_names[off];
-	unsigned int l = *p++;
+	int low = 1, high = KALLSYMS_MAX_BUCKETS;
 
-	if (unlikely(l & 0x80))
-		l = ((l & 0x7F) | (*p++ << 7)) + 1;
-	*len = l;
+	while (low < high) {
+		int mid = (low + high + 1) / 2;
 
-	return p;
+		if (off >= kallsyms_bucket_boundaries[mid])
+			low = mid;
+		else
+			high = mid - 1;
+	}
+	*len = low;
+
+	return &kallsyms_names[off];
 }
 
 /*

@@ -332,17 +332,39 @@ static int compare_names(const void *a, const void *b)
 	return ret;
 }
 
+static int compare_bucket_symbols(const void *a, const void *b)
+{
+	const struct sym_entry *sa = *(const struct sym_entry **)a;
+	const struct sym_entry *sb = *(const struct sym_entry **)b;
+
+	if (sa->len != sb->len)
+		return (int)sa->len - (int)sb->len;
+
+	return strcmp(sym_name(sa), sym_name(sb));
+}
+
 static void sort_symbols_by_name(void)
 {
 	qsort(table, table_cnt, sizeof(table[0]), compare_names);
 }
 
+#define KALLSYMS_MAX_BUCKETS 128
+
 static void write_src(void)
 {
 	unsigned int i, k, off;
 	unsigned int best_idx[256];
-	unsigned int *markers, markers_cnt;
+	unsigned int bucket_boundaries[KALLSYMS_MAX_BUCKETS + 1];
+	struct sym_entry **bucket_table;
 	char buf[KSYM_NAME_LEN];
+	unsigned int cur_bucket;
+
+	for (i = 0; i < table_cnt; i++)
+		table[i]->seq = i;
+
+	bucket_table = xmalloc(sizeof(*bucket_table) * table_cnt);
+	memcpy(bucket_table, table, sizeof(*bucket_table) * table_cnt);
+	qsort(bucket_table, table_cnt, sizeof(bucket_table[0]), compare_bucket_symbols);
 
 	printf("\t.section .rodata, \"a\"\n");
 
@@ -350,66 +372,62 @@ static void write_src(void)
 	printf("\t.long\t%u\n", table_cnt);
 	printf("\n");
 
-	/* table of offset markers, that give the offset in the compressed stream
-	 * every 256 symbols */
-	markers_cnt = (table_cnt + 255) / 256;
-	markers = xmalloc(sizeof(*markers) * markers_cnt);
+	for (i = 0; i <= KALLSYMS_MAX_BUCKETS; i++)
+		bucket_boundaries[i] = 0;
 
 	output_label("kallsyms_names");
 	off = 0;
+	cur_bucket = 1;
+	bucket_boundaries[1] = 0;
+
 	for (i = 0; i < table_cnt; i++) {
-		if ((i & 0xFF) == 0)
-			markers[i >> 8] = off;
-		table[i]->seq = i;
-		table[i]->byte_off = off;
+		unsigned int len = bucket_table[i]->len;
 
-		/* There cannot be any symbol of length zero. */
-		if (table[i]->len == 0) {
-			fprintf(stderr, "kallsyms failure: "
-				"unexpected zero symbol length\n");
+		if (len > KALLSYMS_MAX_BUCKETS) {
+			fprintf(stderr, "kallsyms failure: symbol length %u exceeds max %u\n",
+				len, KALLSYMS_MAX_BUCKETS);
 			exit(EXIT_FAILURE);
 		}
 
-		/* Only lengths that fit in up-to-two-byte ULEB128 are supported. */
-		if (table[i]->len > 0x3FFF) {
-			fprintf(stderr, "kallsyms failure: "
-				"unexpected huge symbol length\n");
-			exit(EXIT_FAILURE);
+		if (cur_bucket != len) {
+			while (cur_bucket < len) {
+				cur_bucket++;
+				bucket_boundaries[cur_bucket] = off;
+			}
 		}
 
-		/* Encode length with ULEB128. */
-		if (table[i]->len <= 0x7F) {
-			/* Most symbols use a single byte for the length. */
-			printf("\t.byte 0x%02x", table[i]->len);
-			off += table[i]->len + 1;
-		} else {
-			/* "Big" symbols use two bytes. */
-			printf("\t.byte 0x%02x, 0x%02x",
-				(table[i]->len & 0x7F) | 0x80,
-				(table[i]->len >> 7) & 0x7F);
-			off += table[i]->len + 2;
-		}
-		for (k = 0; k < table[i]->len; k++)
-			printf(", 0x%02x", table[i]->sym[k]);
+		bucket_table[i]->byte_off = off;
 
-		/*
-		 * Now that we wrote out the compressed symbol name, restore the
-		 * original name and print it in the comment.
-		 */
-		expand_symbol(table[i]->sym, table[i]->len, buf);
-		strcpy((char *)table[i]->sym, buf);
-		printf("\t/* %s */\n", table[i]->sym);
+		/* Emit raw token bytes without length prefix */
+		for (k = 0; k < len; k++) {
+			if (k == 0)
+				printf("\t.byte 0x%02x", bucket_table[i]->sym[k]);
+			else
+				printf(", 0x%02x", bucket_table[i]->sym[k]);
+		}
+
+		expand_symbol(bucket_table[i]->sym, len, buf);
+		strcpy((char *)bucket_table[i]->sym, buf);
+		printf("\t/* %s */\n", bucket_table[i]->sym);
+
+		off += len;
 	}
+
+	while (cur_bucket <= KALLSYMS_MAX_BUCKETS) {
+		cur_bucket++;
+		if (cur_bucket <= KALLSYMS_MAX_BUCKETS)
+			bucket_boundaries[cur_bucket] = off;
+	}
+
 	printf(".size kallsyms_names, . - kallsyms_names\n");
 	printf("\n");
 
-	output_label("kallsyms_markers");
-	for (i = 0; i < markers_cnt; i++)
-		printf("\t.long\t%u\n", markers[i]);
-	printf(".size kallsyms_markers, . - kallsyms_markers\n");
+	output_label("kallsyms_bucket_boundaries");
+	for (i = 0; i <= KALLSYMS_MAX_BUCKETS; i++)
+		printf("\t.long\t%u\n", bucket_boundaries[i]);
+	printf(".size kallsyms_bucket_boundaries, . - kallsyms_bucket_boundaries\n");
 	printf("\n");
-
-	free(markers);
+	free(bucket_table);
 
 	output_label("kallsyms_token_table");
 	off = 0;
@@ -425,29 +443,15 @@ static void write_src(void)
 	output_label("kallsyms_token_index");
 	for (i = 0; i < 256; i++)
 		printf("\t.short\t%d\n", best_idx[i]);
+	printf(".size kallsyms_token_index, . - kallsyms_token_index\n");
 	printf("\n");
 
 	output_label("kallsyms_offsets");
-
-	for (i = 0; i < table_cnt; i++) {
-		if (pc_relative) {
-			long long offset = table[i]->addr - _text;
-
-			if (offset < INT_MIN || offset > INT_MAX) {
-				fprintf(stderr, "kallsyms failure: "
-					"relative symbol value %#llx out of range\n",
-					table[i]->addr);
-				exit(EXIT_FAILURE);
-			}
-			printf("\t.long\t_text - . + (%d)\t/* %s */\n",
-			       (int)offset, table[i]->sym);
-		} else {
-			printf("\t.long\t%#x\t/* %s */\n",
-			       (unsigned int)table[i]->addr, table[i]->sym);
-		}
-	}
+	for (i = 0; i < table_cnt; i++)
+		printf("\t.long\t%d\n", (int)table[i]->addr);
 	printf(".size kallsyms_offsets, . - kallsyms_offsets\n");
 	printf("\n");
+
 	output_label("kallsyms_names_offsets");
 	for (i = 0; i < table_cnt; i++)
 		printf("\t.byte 0x%02x, 0x%02x, 0x%02x\t/* %s */\n",
@@ -458,7 +462,6 @@ static void write_src(void)
 	printf(".size kallsyms_names_offsets, . - kallsyms_names_offsets\n");
 	printf("\n");
 
-
 	sort_symbols_by_name();
 	output_label("kallsyms_seqs_of_names");
 	for (i = 0; i < table_cnt; i++)
@@ -467,9 +470,9 @@ static void write_src(void)
 			(unsigned char)(table[i]->seq >> 8),
 			(unsigned char)(table[i]->seq >> 0),
 		       table[i]->sym);
+	printf(".size kallsyms_seqs_of_names, . - kallsyms_seqs_of_names\n");
 	printf("\n");
 }
-
 
 /* table lookup compression functions */
 
